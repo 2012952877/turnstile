@@ -284,6 +284,7 @@ def test_linux_dependency_command_uses_pinned_target_platform(tmp_path: Path) ->
     assert "3.11" in command
     assert "--compile-bytecode" not in command
     assert "--no-compile" not in command
+    assert "--requirements" in command
 
 
 def test_pip_fallback_uses_pinned_target_platform(tmp_path: Path) -> None:
@@ -297,6 +298,7 @@ def test_pip_fallback_uses_pinned_target_platform(tmp_path: Path) -> None:
     assert "manylinux2014_x86_64" in command
     assert "3.11" in command
     assert "--only-binary=:all:" in command
+    assert "--requirement" in command
 
 
 def test_frontend_asset_reads_the_hashed_entrypoint(tmp_path: Path) -> None:

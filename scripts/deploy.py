@@ -540,7 +540,7 @@ def pip_linux_dependency_command(staged: Path, pip: str) -> list[str]:
         "3.11",
         "--target",
         str(target),
-        "--requirements",
+        "--requirement",
         str(staged / "requirements.txt"),
     ]
 

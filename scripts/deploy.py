@@ -524,13 +524,11 @@ def linux_dependency_command(staged: Path) -> list[str]:
     ]
 
 
-def pip_linux_dependency_command(staged: Path, python: str) -> list[str]:
+def pip_linux_dependency_command(staged: Path, pip: str) -> list[str]:
     target = staged / ".python_packages" / "lib" / "site-packages"
     target.mkdir(parents=True, exist_ok=True)
     return [
-        python,
-        "-m",
-        "pip",
+        pip,
         "install",
         "--disable-pip-version-check",
         "--only-binary=:all:",
@@ -551,14 +549,14 @@ def _install_linux_dependencies(runner: CommandRunner, staged: Path) -> None:
     try:
         runner.run(linux_dependency_command(staged), cwd=REPOSITORY_ROOT)
     except subprocess.CalledProcessError:
-        python = shutil.which("python3")
-        if python is None:
+        pip = shutil.which("pip3")
+        if pip is None:
             raise DeploymentError(
-                "uv could not install Linux dependencies and python3 is unavailable for fallback"
+                "uv could not install Linux dependencies and pip3 is unavailable for fallback"
             ) from None
         print("uv dependency installation failed; retrying with pip.")
         runner.run(
-            pip_linux_dependency_command(staged, python),
+            pip_linux_dependency_command(staged, pip),
             cwd=REPOSITORY_ROOT,
         )
 

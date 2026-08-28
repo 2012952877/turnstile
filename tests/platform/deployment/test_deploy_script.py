@@ -291,9 +291,9 @@ def test_pip_fallback_uses_pinned_target_platform(tmp_path: Path) -> None:
     staged.mkdir()
     (staged / "requirements.txt").write_text("fastapi==0.139.2\n", encoding="utf-8")
 
-    command = pip_linux_dependency_command(staged, "/usr/bin/python3")
+    command = pip_linux_dependency_command(staged, "/usr/bin/pip3")
 
-    assert command[:4] == ["/usr/bin/python3", "-m", "pip", "install"]
+    assert command[:2] == ["/usr/bin/pip3", "install"]
     assert "manylinux2014_x86_64" in command
     assert "3.11" in command
     assert "--only-binary=:all:" in command

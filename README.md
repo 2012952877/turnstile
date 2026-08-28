@@ -21,11 +21,11 @@
 </p>
 
 <p align="center">
-   <a href="https://turn-stile.com">Website</a> ·
-   <a href="https://turn-stile.com/docs">Docs</a> ·
-   <a href="#local-setup">Local setup</a> ·
-   <a href="#deployment">Deployment</a> ·
-   <a href="CONTRIBUTING.md">Contributing</a>
+   <a href="https://turn-stile.com">🌐 Website</a> ·
+   <a href="https://turn-stile.com/docs">📚 Docs</a> ·
+   <a href="#local-setup">🛠️ Local setup</a> ·
+   <a href="#deployment">🚀 Deployment</a> ·
+   <a href="CONTRIBUTING.md">🤝 Contributing</a>
 </p>
 
 Turnstile is a self-hosted control plane for governed AI model access. It combines an Azure API Management gateway, token and cost telemetry, budgets, application access, model onboarding, release controls, and an operational web console.

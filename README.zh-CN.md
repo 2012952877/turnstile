@@ -21,11 +21,11 @@
 </p>
 
 <p align="center">
-   <a href="https://turn-stile.com">官网</a> ·
-   <a href="https://turn-stile.com/docs">文档</a> ·
-   <a href="#本地设置">本地设置</a> ·
-   <a href="#部署">部署</a> ·
-   <a href="CONTRIBUTING.md">参与贡献</a>
+   <a href="https://turn-stile.com">🌐 官网</a> ·
+   <a href="https://turn-stile.com/docs">📚 文档</a> ·
+   <a href="#本地设置">🛠️ 本地设置</a> ·
+   <a href="#部署">🚀 部署</a> ·
+   <a href="CONTRIBUTING.md">🤝 参与贡献</a>
 </p>
 
 Turnstile 是一个用于治理 AI 模型访问的自托管控制平面。它整合了 Azure API Management 网关、Token 与成本遥测、预算、应用访问、模型接入、发布控制和运维 Web 控制台。

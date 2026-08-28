@@ -767,6 +767,7 @@ class ModelRuntimeService:
         *,
         request_id: str | None = None,
         timeout_ms: int | None = None,
+        enforce_user_model_access: bool = True,
     ) -> ModelInvocationResponse:
         request_id = request_id or str(uuid4())
         route = self._repository.invocation_route(request.runtime_id, request.model_id)
@@ -786,7 +787,8 @@ class ModelRuntimeService:
                 status_code=409,
                 detail="Production model invocations must use Azure API Management",
             )
-        self._assert_model_allowed(request, route, request_id)
+        if enforce_user_model_access:
+            self._assert_model_allowed(request, route, request_id)
         self._assert_budget_available(request, route, request_id)
         route = self._decrypt_route(route)
         if (

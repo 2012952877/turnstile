@@ -303,7 +303,8 @@ class AssistantService:
                     tools=tools,
                     temperature=0,
                     max_output_tokens=1200,
-                )
+                ),
+                enforce_user_model_access=False,
             )
             if response.usage is not None:
                 total_tokens += (
@@ -516,7 +517,8 @@ class AssistantService:
                     # also the backstop against a model that ignores the prompt and starts
                     # writing the answer again.
                     max_output_tokens=32,
-                )
+                ),
+                enforce_user_model_access=False,
             )
         except Exception:  # noqa: BLE001 - a name is worth less than the conversation
             logger.exception("Failed to summarise conversation title")

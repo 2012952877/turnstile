@@ -189,6 +189,11 @@ def test_dynamic_model_requires_people_assignment_but_allows_runtime_health_prob
     assert error.value.detail == "model_not_assigned"
     assert calls == 0
 
+    assert (
+        service.invoke(person_request, enforce_user_model_access=False).content == "OK"
+    )
+    assert calls == 1
+
     health_request = person_request.model_copy(
         update={
             "metadata": person_request.metadata.model_copy(
@@ -200,7 +205,7 @@ def test_dynamic_model_requires_people_assignment_but_allows_runtime_health_prob
         }
     )
     assert service.invoke(health_request).content == "OK"
-    assert calls == 1
+    assert calls == 2
 
 
 def test_a_denial_trace_names_the_runtime_it_routed_to() -> None:

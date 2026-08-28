@@ -64,6 +64,8 @@ The command runs these phases in order:
 
 Generated packages and deployment state remain under `.turnstile/deployments`. The script prints and stores only non-secret Azure outputs.
 
+The VNet-integrated Functions host reaches its Storage account through Blob, Queue, and Table private endpoints. The telemetry Function reaches the budget ledger through a separate Table private endpoint; deployment does not depend on public Storage access for either path.
+
 ## Initial Owner
 
 The deployment command reads the password interactively and never sends plaintext to ARM. It deploys only the scrypt hash. API startup applies the schema and atomically creates the Owner only when `app_user` is empty; restarts and reruns do not reset the account. Enabled Owner accounts are immediately listed in People under the default AI Platform department so the bootstrap Owner can assign model access before generating gateway traffic. Member department placement still comes from attributed gateway usage.

@@ -97,6 +97,16 @@ def test_functions_allow_vnet_cold_start_to_complete() -> None:
     assert startup_limit in CONTROL_PLANE
 
 
+def test_function_and_ledger_storage_have_required_private_endpoints() -> None:
+    for service in ("blob", "queue", "table"):
+        assert f"'privatelink.{service}.${{environment().suffixes.storage}}'" in DATA_PLANE
+        assert f"'pe-${{storageName}}-{service}'" in DATA_PLANE
+        assert f"'{service}'" in DATA_PLANE
+    assert "'pe-${ledgerStorageName}-table'" in DATA_PLANE
+    assert "privateLinkServiceId: ledgerStorage.id" in DATA_PLANE
+    assert "privateDnsZoneId: tablePrivateDnsZone.id" in DATA_PLANE
+
+
 def test_api_and_apim_share_the_same_gateway_path() -> None:
     assert "var gatewayApiRelativePath = 'turnstile/llm'" in MAIN
     assert (

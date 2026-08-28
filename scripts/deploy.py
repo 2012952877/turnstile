@@ -706,6 +706,8 @@ def runtime_release_parameters(
     secrets_: SecretMaterial,
     platform_outputs: Mapping[str, Any],
     observer_outputs: Mapping[str, Any],
+    current_api_settings: Mapping[str, str],
+    current_control_plane_settings: Mapping[str, str],
 ) -> JsonObject:
     return _arm_parameter_document(
         {
@@ -721,8 +723,40 @@ def runtime_release_parameters(
             ),
             "publicationWorkerEnabled": True,
             "releaseWorkerEnabled": True,
+            "currentApiSettings": dict(current_api_settings),
+            "currentControlPlaneSettings": dict(current_control_plane_settings),
         }
     )
+
+
+def current_app_settings(
+    runner: CommandRunner,
+    inputs: DeploymentInputs,
+    app_name: str,
+) -> dict[str, str]:
+    resource_id = (
+        f"/subscriptions/{inputs.subscription}/resourceGroups/{inputs.resource_group_name}"
+        f"/providers/Microsoft.Web/sites/{app_name}/config/appsettings/list"
+    )
+    result = runner.run_json(
+        [
+            "az",
+            "rest",
+            "--method",
+            "post",
+            "--url",
+            f"https://management.azure.com{resource_id}?api-version=2024-11-01",
+            "--output",
+            "json",
+        ]
+    )
+    properties = result.get("properties")
+    if not isinstance(properties, dict) or any(
+        not isinstance(name, str) or not isinstance(value, str)
+        for name, value in properties.items()
+    ):
+        raise DeploymentError(f"App Service returned invalid settings for {app_name}")
+    return dict(properties)
 
 
 def build_and_start_observer(
@@ -959,8 +993,20 @@ def execute(args: argparse.Namespace, runner: CommandRunner) -> None:
         platform_outputs = deployment_outputs(base_result)
     else:
         platform_outputs = saved_outputs
+        api_settings = current_app_settings(
+            runner, inputs, _output_string(platform_outputs, "apiName")
+        )
+        control_plane_settings = current_app_settings(
+            runner,
+            inputs,
+            _output_string(platform_outputs, "controlPlaneFunctionName"),
+        )
         release_parameters = runtime_release_parameters(
-            secrets_, platform_outputs, platform_outputs
+            secrets_,
+            platform_outputs,
+            platform_outputs,
+            api_settings,
+            control_plane_settings,
         )
         what_if_resource_group(
             runner,
@@ -1003,8 +1049,20 @@ def execute(args: argparse.Namespace, runner: CommandRunner) -> None:
     build_and_start_observer(runner, inputs, observer_outputs, version)
     wait_for_health(_output_string(observer_outputs, "webAppUrl"))
 
+    api_settings = current_app_settings(
+        runner, inputs, _output_string(platform_outputs, "apiName")
+    )
+    control_plane_settings = current_app_settings(
+        runner,
+        inputs,
+        _output_string(platform_outputs, "controlPlaneFunctionName"),
+    )
     release_parameters = runtime_release_parameters(
-        secrets_, platform_outputs, observer_outputs
+        secrets_,
+        platform_outputs,
+        observer_outputs,
+        api_settings,
+        control_plane_settings,
     )
     what_if_resource_group(
         runner,

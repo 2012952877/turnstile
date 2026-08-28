@@ -344,6 +344,8 @@ def test_repository_parameter_example_and_generated_documents_match_bicep(
             "webAppUrl": "https://observer.test",
             "adapterKeyNamedValueName": "turnstile-observer-key",
         },
+        {"EXISTING_API_SETTING": "preserved"},
+        {"EXISTING_CONTROL_SETTING": "preserved"},
     )
 
     root_declared = set(
@@ -372,6 +374,10 @@ def test_repository_parameter_example_and_generated_documents_match_bicep(
     assert set(root_document["parameters"]) <= root_declared
     assert set(observer_document["parameters"]) <= observer_declared
     assert set(release_document["parameters"]) <= release_declared
+    assert (
+        release_document["parameters"]["currentApiSettings"]["value"]
+        == {"EXISTING_API_SETTING": "preserved"}
+    )
 
 
 class WhatIfRunner(CommandRunner):

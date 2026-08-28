@@ -22,6 +22,14 @@ param usageObserverKeyNamedValue string
 param publicationWorkerEnabled bool = true
 param releaseWorkerEnabled bool = true
 
+@description('Existing API settings read immediately before deployment so unrelated values are preserved.')
+@secure()
+param currentApiSettings object
+
+@description('Existing control-plane settings read immediately before deployment so unrelated values are preserved.')
+@secure()
+param currentControlPlaneSettings object
+
 resource api 'Microsoft.Web/sites@2024-11-01' existing = {
   name: apiName
 }
@@ -29,9 +37,6 @@ resource api 'Microsoft.Web/sites@2024-11-01' existing = {
 resource controlPlane 'Microsoft.Web/sites@2024-11-01' existing = {
   name: controlPlaneFunctionName
 }
-
-var currentApiSettings = list('${api.id}/config/appsettings', '2024-11-01').properties
-var currentControlPlaneSettings = list('${controlPlane.id}/config/appsettings', '2024-11-01').properties
 
 resource apiSettings 'Microsoft.Web/sites/config@2024-11-01' = {
   parent: api

@@ -47,8 +47,6 @@ var virtualNetworkName = 'vnet-${resourcePrefix}-${suffix}'
 var functionSubnetName = 'snet-functions'
 var privateEndpointSubnetName = 'snet-private-endpoints'
 var blobPrivateDnsZoneName = 'privatelink.blob.${environment().suffixes.storage}'
-var queuePrivateDnsZoneName = 'privatelink.queue.${environment().suffixes.storage}'
-var tablePrivateDnsZoneName = 'privatelink.table.${environment().suffixes.storage}'
 var postgresConnectionString = 'postgresql://${postgresAdministratorLogin}:${postgresAdministratorPassword}@${postgresServerName}.postgres.database.azure.com:5432/${databaseName}?sslmode=require'
 var logAnalyticsReaderRoleDefinitionId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
@@ -328,40 +326,6 @@ resource blobPrivateDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLin
   }
 }
 
-resource queuePrivateDnsZone 'Microsoft.Network/privateDnsZones@2024-06-01' = {
-  name: queuePrivateDnsZoneName
-  location: 'global'
-}
-
-resource queuePrivateDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
-  parent: queuePrivateDnsZone
-  name: 'turnstile-vnet'
-  location: 'global'
-  properties: {
-    registrationEnabled: false
-    virtualNetwork: {
-      id: virtualNetwork.id
-    }
-  }
-}
-
-resource tablePrivateDnsZone 'Microsoft.Network/privateDnsZones@2024-06-01' = {
-  name: tablePrivateDnsZoneName
-  location: 'global'
-}
-
-resource tablePrivateDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
-  parent: tablePrivateDnsZone
-  name: 'turnstile-vnet'
-  location: 'global'
-  properties: {
-    registrationEnabled: false
-    virtualNetwork: {
-      id: virtualNetwork.id
-    }
-  }
-}
-
 resource storageBlobPrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = {
   name: 'pe-${storageName}-blob'
   location: location
@@ -392,114 +356,6 @@ resource storageBlobPrivateDnsZoneGroup 'Microsoft.Network/privateEndpoints/priv
         name: 'blob'
         properties: {
           privateDnsZoneId: blobPrivateDnsZone.id
-        }
-      }
-    ]
-  }
-}
-
-resource storageQueuePrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = {
-  name: 'pe-${storageName}-queue'
-  location: location
-  properties: {
-    subnet: {
-      id: privateEndpointSubnet.id
-    }
-    privateLinkServiceConnections: [
-      {
-        name: 'storage-queue'
-        properties: {
-          privateLinkServiceId: storage.id
-          groupIds: [
-            'queue'
-          ]
-        }
-      }
-    ]
-  }
-}
-
-resource storageQueuePrivateDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = {
-  parent: storageQueuePrivateEndpoint
-  name: 'default'
-  properties: {
-    privateDnsZoneConfigs: [
-      {
-        name: 'queue'
-        properties: {
-          privateDnsZoneId: queuePrivateDnsZone.id
-        }
-      }
-    ]
-  }
-}
-
-resource storageTablePrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = {
-  name: 'pe-${storageName}-table'
-  location: location
-  properties: {
-    subnet: {
-      id: privateEndpointSubnet.id
-    }
-    privateLinkServiceConnections: [
-      {
-        name: 'storage-table'
-        properties: {
-          privateLinkServiceId: storage.id
-          groupIds: [
-            'table'
-          ]
-        }
-      }
-    ]
-  }
-}
-
-resource storageTablePrivateDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = {
-  parent: storageTablePrivateEndpoint
-  name: 'default'
-  properties: {
-    privateDnsZoneConfigs: [
-      {
-        name: 'table'
-        properties: {
-          privateDnsZoneId: tablePrivateDnsZone.id
-        }
-      }
-    ]
-  }
-}
-
-resource ledgerTablePrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = {
-  name: 'pe-${ledgerStorageName}-table'
-  location: location
-  properties: {
-    subnet: {
-      id: privateEndpointSubnet.id
-    }
-    privateLinkServiceConnections: [
-      {
-        name: 'ledger-table'
-        properties: {
-          privateLinkServiceId: ledgerStorage.id
-          groupIds: [
-            'table'
-          ]
-        }
-      }
-    ]
-  }
-}
-
-resource ledgerTablePrivateDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = {
-  parent: ledgerTablePrivateEndpoint
-  name: 'default'
-  properties: {
-    privateDnsZoneConfigs: [
-      {
-        name: 'table'
-        properties: {
-          privateDnsZoneId: tablePrivateDnsZone.id
         }
       }
     ]

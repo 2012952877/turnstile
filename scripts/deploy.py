@@ -617,10 +617,13 @@ def deploy_packages(
             "true",
             "--restart",
             "true",
+            "--track-status",
+            "false",
             "--output",
             "json",
         ]
     )
+    wait_for_health(_output_string(outputs, "apiUrl"), timeout_seconds=1800)
     for output_name, package_name in (
         ("telemetryFunctionName", "telemetry"),
         ("controlPlaneFunctionName", "control-plane"),

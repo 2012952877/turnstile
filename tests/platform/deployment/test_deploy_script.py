@@ -14,6 +14,7 @@ from scripts.deploy import (
     DeploymentError,
     DeploymentInputs,
     ExistingCore,
+    deploy_packages,
     deployment_parameters,
     deterministic_zip,
     frontend_asset,
@@ -270,6 +271,40 @@ def test_deterministic_zip_has_stable_bytes_and_order(tmp_path: Path) -> None:
     assert first.read_bytes() == second.read_bytes()
     with zipfile.ZipFile(first) as archive:
         assert archive.namelist() == ["a.txt", "b.txt"]
+
+
+def test_api_deployment_uses_turnstile_health_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    commands: list[list[str]] = []
+    health_calls: list[tuple[str, int]] = []
+
+    class Runner:
+        def run(self, command: Sequence[str], **_: object) -> None:
+            commands.append(list(command))
+
+    monkeypatch.setattr(
+        "scripts.deploy.wait_for_health",
+        lambda url, timeout_seconds=180: health_calls.append((url, timeout_seconds)),
+    )
+    deploy_packages(
+        Runner(),  # type: ignore[arg-type]
+        type("Inputs", (), {"subscription": "sub", "resource_group_name": "rg"})(),
+        {
+            "resourceGroupName": "rg",
+            "apiName": "api",
+            "apiUrl": "https://api.example.test",
+            "telemetryFunctionName": "telemetry",
+            "controlPlaneFunctionName": "control",
+        },
+        {
+            "api": Path("api.zip"),
+            "telemetry": Path("telemetry.zip"),
+            "control-plane": Path("control-plane.zip"),
+        },
+    )
+
+    assert "--track-status" in commands[0]
+    assert commands[0][commands[0].index("--track-status") + 1] == "false"
+    assert health_calls == [("https://api.example.test", 1800)]
 
 
 def test_linux_dependency_command_uses_pinned_target_platform(tmp_path: Path) -> None:

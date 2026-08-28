@@ -410,6 +410,7 @@ resource api 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'WEBSITE_RUN_FROM_PACKAGE', value: '1' }
         { name: 'PYTHONPATH', value: '/home/site/wwwroot:/home/site/wwwroot/.python_packages/lib/site-packages' }
         { name: 'WEBSITES_PORT', value: '8000' }
+        { name: 'WEBSITES_CONTAINER_START_TIME_LIMIT', value: '1800' }
         { name: 'DATABASE_URL', value: postgresConnectionString }
         { name: 'DATA_BACKEND', value: 'postgresql' }
         { name: 'CREDENTIAL_ENCRYPTION_KEY', value: credentialEncryptionKey }

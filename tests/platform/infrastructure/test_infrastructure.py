@@ -93,7 +93,7 @@ def test_functions_allow_vnet_cold_start_to_complete() -> None:
     startup_limit = (
         "{ name: 'WEBSITES_CONTAINER_START_TIME_LIMIT', value: '1800' }"
     )
-    assert startup_limit in DATA_PLANE
+    assert DATA_PLANE.count(startup_limit) == 2
     assert startup_limit in CONTROL_PLANE
 
 

@@ -1,0 +1,288 @@
+schemas:
+  PinnedChartWrite:
+    type: object
+    additionalProperties: false
+    required:
+    - original_question
+    - chart
+    properties:
+      report_id:
+        type:
+        - string
+        - 'null'
+        format: uuid
+        description: Absent starts a new report; present adds the chart to that one.
+      title:
+        type:
+        - string
+        - 'null'
+        minLength: 1
+        maxLength: 120
+        description: 'Required only when starting a new report. An existing report already has a
+
+          name, and letting this field rename it would make adding a chart destructive.
+
+          '
+      description:
+        type: string
+        maxLength: 500
+        default: ''
+      original_question:
+        type: string
+        minLength: 1
+        maxLength: 4000
+      chart:
+        $ref: ../../openapi.yaml#/components/schemas/ChartSpec
+  PinnedChartRename:
+    type: object
+    additionalProperties: false
+    required:
+    - title
+    properties:
+      title:
+        type: string
+        minLength: 1
+        maxLength: 120
+      description:
+        type: string
+        maxLength: 500
+        default: ''
+  PinnedReportVisibilityWrite:
+    type: object
+    additionalProperties: false
+    required:
+    - visibility
+    properties:
+      visibility:
+        type: string
+        enum:
+        - private
+        - public
+  PinnedChartOrder:
+    type: object
+    additionalProperties: false
+    required:
+    - chart_ids
+    description: 'The report''s charts in their new order. The whole list is sent rather than a moved
+
+      id and an index, so the request states the outcome instead of describing an edit.
+
+      '
+    properties:
+      chart_ids:
+        type: array
+        minItems: 1
+        items:
+          type: string
+          format: uuid
+  PinnedReportLayout:
+    type: object
+    additionalProperties: false
+    description: Versioned canonical desktop card widths and row heights.
+    properties:
+      version:
+        type: integer
+        const: 1
+        default: 1
+      spans:
+        type: object
+        maxProperties: 500
+        propertyNames:
+          format: uuid
+        additionalProperties:
+          type: integer
+          minimum: 1
+          maximum: 12
+        default: {}
+      row_heights:
+        type: object
+        maxProperties: 500
+        propertyNames:
+          pattern: ^\d+$
+        additionalProperties:
+          type: integer
+          minimum: 200
+          maximum: 1400
+        default: {}
+  PinnedChart:
+    type: object
+    additionalProperties: false
+    required:
+    - id
+    - report_id
+    - original_question
+    - chart
+    - position
+    - created_at
+    - updated_at
+    properties:
+      id:
+        type: string
+        format: uuid
+      report_id:
+        type: string
+        format: uuid
+      original_question:
+        type: string
+      chart:
+        $ref: ../../openapi.yaml#/components/schemas/ChartSpec
+      position:
+        type: integer
+        minimum: 0
+      created_at:
+        type: string
+        format: date-time
+      updated_at:
+        type: string
+        format: date-time
+  PinnedReport:
+    type: object
+    additionalProperties: false
+    required:
+    - id
+    - title
+    - description
+    - owner_id
+    - visibility
+    - can_manage
+    - position
+    - layout
+    - created_at
+    - updated_at
+    description: One nav item, holding one or more charts.
+    properties:
+      id:
+        type: string
+        format: uuid
+      title:
+        type: string
+      description:
+        type: string
+      owner_id:
+        type: string
+      visibility:
+        type: string
+        enum:
+        - private
+        - public
+      can_manage:
+        type: boolean
+      position:
+        type: integer
+        minimum: 0
+      layout:
+        $ref: ../../openapi.yaml#/components/schemas/PinnedReportLayout
+      created_at:
+        type: string
+        format: date-time
+      updated_at:
+        type: string
+        format: date-time
+      charts:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/PinnedChart
+  PinnedReportList:
+    type: object
+    additionalProperties: false
+    required:
+    - items
+    properties:
+      items:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/PinnedReport
+  AssistantSettingsWrite:
+    type: object
+    additionalProperties: false
+    properties:
+      model_id:
+        type:
+        - string
+        - 'null'
+        format: uuid
+        default: null
+        description: 'The model the assistant calls. Null means automatic selection, which is the
+
+          registry''s own order: the default model first, then alphabetically.
+
+          '
+      auto_title:
+        type: boolean
+        default: true
+        description: 'Whether a new conversation is named by the model. One small extra call per
+
+          thread; switching it off leaves the first question as the title.
+
+          '
+  AssistantSettings:
+    allOf:
+    - $ref: ../../openapi.yaml#/components/schemas/AssistantSettingsWrite
+    - type: object
+      additionalProperties: false
+      properties:
+        effective_model_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: The model that will actually be called. Null if none qualifies.
+        effective_model_name:
+          type:
+          - string
+          - 'null'
+        model_available:
+          type: boolean
+          description: 'False when a model is pinned but no longer qualifies, so the assistant has
+
+            fallen back to automatic selection. True whenever nothing is pinned.
+
+            '
+        available_models:
+          type: array
+          description: 'The models the assistant may be pointed at. Served rather than derived by
+
+            the client because eligibility is a server rule that includes the
+
+            runtime''s tool protocol; a second copy in the browser would offer models
+
+            the server then rejects.
+
+            '
+          items:
+            $ref: ../../openapi.yaml#/components/schemas/AssistantModelChoice
+        updated_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        updated_by:
+          type:
+          - string
+          - 'null'
+  AssistantModelChoice:
+    type: object
+    additionalProperties: false
+    required:
+    - id
+    - display_name
+    - model_key
+    - runtime_name
+    properties:
+      id:
+        type: string
+        format: uuid
+      display_name:
+        type: string
+      model_key:
+        type: string
+      runtime_name:
+        type: string
+      input_cost_per_million:
+        type:
+        - number
+        - 'null'
+      output_cost_per_million:
+        type:
+        - number
+        - 'null'

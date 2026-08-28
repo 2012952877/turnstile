@@ -1,0 +1,1 @@
+export const FINOPS_NAVIGATE_EVENT = "finops:navigate"

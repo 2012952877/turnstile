@@ -1,0 +1,8 @@
+@import "./styles/base.css";
+@import "./styles/finops.css";
+@import "./styles/model-platform.css";
+@import "./styles/gateway-releases.css";
+@import "./styles/applications.css";
+@import "./styles/navigation.css";
+@import "./styles/assistant-reports.css";
+@import "./styles/auth.css";

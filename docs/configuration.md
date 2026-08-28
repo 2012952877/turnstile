@@ -1,0 +1,38 @@
+# Configuration
+
+Copy `.env.example` to `.env` for the API and `frontend/.env.example` to `frontend/.env.local` for Vite. Never commit populated files.
+
+## Required runtime settings
+
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` | PostgreSQL 16+ connection string. Require TLS outside a developer machine. |
+| `CREDENTIAL_ENCRYPTION_KEY` | Encrypts provider and integration credentials at rest. |
+| `MANAGEMENT_API_KEY` | Protects management automation where session authentication is unavailable. |
+
+## Authentication
+
+| Variable | Purpose |
+| --- | --- |
+| `ENTRA_CLIENT_ID` | Public client ID accepted by the backend token verifier. |
+| `VITE_ENTRA_CLIENT_ID` | Same public client ID compiled into the frontend. |
+| `ENTRA_ALLOWED_EMAIL_DOMAINS` | JSON array of exact email domains allowed to sign in. |
+| `MEMBER_SESSION_TTL_HOURS` | Fixed member session duration. |
+| `OWNER_SESSION_TTL_HOURS` | Fixed owner session duration. |
+| `SESSION_COOKIE_NAME` | Session cookie name; defaults to `turnstile_session`. |
+
+The frontend uses the Microsoft `organizations` authority. Tenant admission is enforced by exact email-domain matching in the backend. Password login is available for explicitly provisioned local users.
+
+## APIM and control plane
+
+Set `AZURE_SUBSCRIPTION_ID`, `APIM_RESOURCE_GROUP`, `APIM_SERVICE_NAME`, `APIM_PRINCIPAL_ID`, and `APIM_GATEWAY_URL` to the deployed resources. Keep all control-plane feature flags false until the corresponding managed identities and roles exist.
+
+`APIM_REGRESSION_MODEL_KEY` has no default. Set it only after onboarding a model that can be used for publication probes.
+
+## Frontend proxy
+
+`API_PROXY_TARGET` controls the Vite proxy and defaults to `http://127.0.0.1:8000`. `VITE_API_BASE_URL` is normally unset because production uses same-origin API requests.
+
+## Secret generation
+
+Generate secrets with an approved password manager or cryptographically secure tool. Use separate values per environment. Store deployed values in Key Vault or your CI secret store, never in parameter files or GitHub variables that are visible to untrusted workflows.

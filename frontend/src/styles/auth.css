@@ -1,0 +1,212 @@
+/* ---------------------------------------------------------------------------
+   Sign-in
+
+   SmartHive's `packages/views/auth/login-page.tsx`, translated rather than copied. Its
+   geometry lives in Tailwind classes and this project has no Tailwind, so every class was
+   resolved to a number against `packages/ui/styles/tokens.css` and written out here. The
+   two that are not the usual guesses:
+
+     rounded-xl  ->  14px, NOT 12px. Tailwind v4 resolves it through SmartHive's own
+                     `--radius-xl: calc(var(--radius) * 1.4)` with --radius 0.625rem.
+     text-display-sm -> 24px/32px, a named token rather than a step on the default scale.
+
+   Card 384px (max-w-sm) / 16px padding / 16px section gap; header gap 4px; form 16px
+   between fields and 8px between a label and its input; footer 16px padding, 12px gap,
+   top border, tinted; buttons 36px (size="lg"); input 32px (h-8).
+   --------------------------------------------------------------------------- */
+.login-shell {
+	min-height: 100svh;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 24px 16px;
+	background: var(--background);
+}
+.login-card {
+	width: 100%;
+	max-width: 384px;
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+	padding: 24px 0 0;
+	border: 1px solid var(--border);
+	border-radius: 14px;
+	background: var(--card);
+	color: var(--foreground);
+	overflow: hidden;
+	box-shadow: 0 1px 2px rgb(15 23 42 / 4%), 0 1px 1px rgb(15 23 42 / 3%);
+}
+.login-head {
+	display: grid;
+	gap: 4px;
+	justify-items: center;
+	padding: 0 16px;
+	text-align: center;
+}
+/* Brand-filled tile with the mark knocked out in white. TurnstileMark strokes in
+   `currentColor`, so setting the colour here is all it takes -- do not add a fill. */
+.login-mark {
+	display: grid;
+	place-items: center;
+	width: 40px;
+	height: 40px;
+	margin-bottom: 12px;
+	border-radius: 10px;
+	background: var(--brand);
+	color: oklch(1 0 0);
+}
+.login-title { font-size: 24px; line-height: 32px; font-weight: 500; letter-spacing: -0.01em; }
+.login-subtitle { color: var(--muted-foreground); font-size: 14px; line-height: 20px; text-wrap: balance; }
+
+/* Microsoft sits above the form now, so the card body owns the same 16px rhythm the
+   footer does and the button rule has to cover both regions. */
+.login-body { display: flex; flex-direction: column; gap: 16px; padding: 0 16px; }
+.login-hint { margin: -8px 0 0; color: var(--muted-foreground); font-size: 12px; line-height: 16px; text-align: center; }
+.login-form { display: flex; flex-direction: column; gap: 16px; }
+.login-field { display: grid; gap: 8px; }
+.login-field [data-slot="label"] { font-size: 14px; line-height: 1; font-weight: 500; color: var(--foreground); }
+.login-field [data-slot="input"] {
+	width: 100%;
+	min-width: 0;
+	height: 34px;
+	padding: 4px 10px;
+	border: 1px solid var(--input);
+	border-radius: 9px;
+	outline: none;
+	background: transparent;
+	color: var(--foreground);
+	font-size: 14px;
+	line-height: 20px;
+	transition: border-color 100ms ease, box-shadow 100ms ease;
+}
+.login-field [data-slot="input"]::placeholder { color: var(--muted-foreground); }
+.login-field [data-slot="input"]:focus-visible { border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring) 50%, transparent); }
+.login-field [data-slot="input"]:disabled { cursor: not-allowed; opacity: .5; }
+
+/* The wrapper owns the border so the reveal button can sit inside the field without a
+   seam; the input inside it therefore drops its own border and focus ring.
+   The button is the field height minus its two 1px borders, so it has to move whenever the
+   field does -- at 34px that is 32, and leaving it at 30 opens a 1px seam top and bottom
+   that only shows up on hover, when the button paints a background. */
+.login-password { position: relative; display: flex; align-items: center; }
+.login-password [data-slot="input"] { padding-right: 36px; }
+.login-reveal {
+	position: absolute;
+	right: 1px;
+	display: grid;
+	place-items: center;
+	width: 32px;
+	height: 32px;
+	border: 0;
+	border-radius: 8px;
+	background: transparent;
+	color: var(--muted-foreground);
+	cursor: pointer;
+	transition: color 100ms ease, background-color 100ms ease;
+}
+.login-reveal:hover { color: var(--foreground); background: var(--accent); }
+.login-reveal:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.login-reveal:disabled { pointer-events: none; opacity: .5; }
+
+.login-error { margin: 0; color: var(--destructive); font-size: 14px; line-height: 20px; }
+
+.login-actions {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	/* Horizontal stays 16px to line up with the header and body above; only the vertical
+	   grows, so the card gains breathing room at the top and bottom without the content
+	   column narrowing. */
+	padding: 24px 16px;
+	border-top: 1px solid var(--border);
+	background: color-mix(in oklch, var(--accent) 70%, transparent);
+}
+.login-card [data-slot="button"] { width: 100%; height: 36px; padding: 0 10px; gap: 8px; border-radius: 9px; font-size: 14px; }
+.login-submit { background: var(--brand); color: oklch(1 0 0); }
+.login-submit:hover:not(:disabled) { background: color-mix(in oklch, var(--brand) 88%, black); }
+/* Microsoft ships two button assets and the choice between them is the page background,
+   not the app's own palette -- so these are literal brand values, deliberately not theme
+   tokens, exactly like the four squares in the logo. Read out of the official SVGs at
+   learn.microsoft.com/entra/identity-platform/media/howto-add-branding-in-apps:
+
+     ms-symbollockup_signin_dark   rect #2f2f2f, text #fff, no frame   -> on light pages
+     ms-symbollockup_signin_light  rect #fff, frame #8c8c8c, text #5e5e5e -> on dark pages
+
+   Note the naming trap: `dark` is the dark *button*, which belongs on the *light* page.
+   Wiring these to --background/--foreground would have inverted both themes at once and
+   still looked plausible, which is why the values are pinned rather than derived. */
+.login-entra { border-color: #2f2f2f; background: #2f2f2f; color: #fff; }
+.login-entra:hover:not(:disabled) { border-color: #1f1f1f; background: #1f1f1f; }
+.dark .login-entra { border-color: #8c8c8c; background: #fff; color: #5e5e5e; }
+.dark .login-entra:hover:not(:disabled) { border-color: #8c8c8c; background: #f3f3f3; }
+
+.login-divider { display: flex; align-items: center; gap: 12px; color: var(--muted-foreground); font-size: 12px; line-height: 16px; }
+.login-divider::before, .login-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+
+.login-note { margin: 0; color: var(--muted-foreground); font-size: 12px; line-height: 16px; text-align: center; text-wrap: balance; }
+
+.login-spin { animation: spin 900ms linear infinite; }
+
+@media (max-width: 480px) {
+	/* 16px stops iOS zooming the page on focus; SmartHive does the same with
+	   `text-title-sm md:text-body` on its Input. */
+	.login-field [data-slot="input"] { height: 38px; font-size: 16px; }
+	.login-shell { padding: 16px; align-items: flex-start; padding-top: 48px; }
+}
+
+/* ---------------------------------------------------------------------------
+   Sign-in skeleton
+
+   Shown while the session is being resolved. That is normally one fetch and gone inside a
+   frame, but coming back from Microsoft it is MSAL initialising, the redirect being
+   processed, a round trip to exchange the token, and the server fetching Microsoft's
+   signing keys -- several seconds, during which the page used to be blank.
+
+   The shape is the login card's own geometry (384px, 14px radius, 24px top padding, the
+   same 40px mark and 16px rhythm) rather than a generic spinner, so when the answer is
+   "not signed in" the skeleton becomes the real card in place instead of the layout
+   jumping. When the answer is "signed in" it is replaced by the dashboard, which is a
+   change of scene either way.
+   --------------------------------------------------------------------------- */
+.login-skeleton {
+	width: 100%;
+	max-width: 384px;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 16px;
+	padding: 24px 16px;
+	border: 1px solid var(--border);
+	border-radius: 14px;
+	background: var(--card);
+	box-shadow: 0 1px 2px rgb(15 23 42 / 4%), 0 1px 1px rgb(15 23 42 / 3%);
+}
+.login-skeleton i {
+	display: block;
+	border-radius: 6px;
+	/* color-mix keeps one rule working in both themes: --foreground flips, so the tint
+	   stays a faint version of whatever the text colour is rather than a fixed grey that
+	   would disappear on one of them. */
+	background: color-mix(in oklch, var(--foreground) 9%, transparent);
+	animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+.login-skeleton .sk-mark { width: 40px; height: 40px; border-radius: 10px; }
+.login-skeleton .sk-title { width: 60%; height: 24px; margin-top: 8px; }
+.login-skeleton .sk-subtitle { width: 78%; height: 14px; }
+.login-skeleton .sk-button { width: 100%; height: 36px; border-radius: 9px; margin-top: 8px; }
+.login-skeleton .sk-field { width: 100%; height: 34px; border-radius: 9px; }
+/* Staggered so it reads as one surface loading rather than several things blinking in
+   lockstep, which is what a single shared animation looks like. */
+.login-skeleton i:nth-child(2) { animation-delay: 80ms; }
+.login-skeleton i:nth-child(3) { animation-delay: 160ms; }
+.login-skeleton i:nth-child(4) { animation-delay: 240ms; }
+.login-skeleton i:nth-child(5) { animation-delay: 320ms; }
+
+@keyframes skeleton-pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: .45; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.login-skeleton i { animation: none; }
+}

@@ -1,0 +1,906 @@
+from __future__ import annotations
+
+import hashlib
+import hmac
+import logging
+import re
+import time
+from datetime import UTC, date, datetime
+from typing import Any, NoReturn
+from urllib.parse import unquote, urlsplit
+from uuid import UUID, uuid4
+
+from fastapi import HTTPException
+
+from ..config import Settings
+from ..domain.models import ModelPrice, TokenUsageRecord
+from ..domain.runtime_models import (
+    FOUNDRY_INFERENCE_RESOURCE,
+    FOUNDRY_INFERENCE_ROLE_ID,
+    BrandKey,
+    ConnectionAuthMode,
+    GatewayKind,
+    GatewayProfile,
+    GatewayProfileWrite,
+    InvocationUsage,
+    ManagedModel,
+    ManagedModelWrite,
+    ModelConnectionCreate,
+    ModelConnectionUpdate,
+    ModelFamilyKey,
+    ModelInvocationRequest,
+    ModelInvocationResponse,
+    Provider,
+    ProviderKind,
+    ProviderWrite,
+    RegistryResponse,
+    Runtime,
+    RuntimeHealth,
+    RuntimeKind,
+    RuntimeWrite,
+    foundry_runtime_name,
+)
+from ..integrations.gateway import GatewayInvocationError, GatewayRouter, elapsed_ms
+from ..persistence.repository import QueryRepository
+from ..security import CredentialCipher, credential_hint
+
+logger = logging.getLogger(__name__)
+
+
+class ModelRuntimeService:
+    _MODEL_ROUTING_FIELDS = ("provider_id", "runtime_id", "model_key", "upstream_model_id")
+
+    def __init__(
+        self,
+        repository: QueryRepository,
+        settings: Settings,
+        router: GatewayRouter | None = None,
+    ) -> None:
+        self._repository = repository
+        self._settings = settings
+        self._cipher = CredentialCipher.from_settings(settings)
+        self._router = router or GatewayRouter()
+
+    def authorize(self, role: str, authorization: str | None, *, manage: bool) -> None:
+        if manage:
+            configured = self._settings.management_api_key
+            if configured is not None:
+                expected = f"Bearer {configured.get_secret_value()}"
+                if authorization is None or not hmac.compare_digest(authorization, expected):
+                    raise HTTPException(status_code=401, detail="Invalid management credential")
+            elif self._settings.production:
+                raise HTTPException(
+                    status_code=503, detail="Management authentication is not configured"
+                )
+        allowed = {"owner", "admin"} if manage else {"owner", "admin", "member", "service"}
+        if role not in allowed:
+            raise HTTPException(status_code=403, detail="Role is not allowed for this operation")
+
+    def authorize_model_update(
+        self,
+        item_id: UUID,
+        write: ManagedModelWrite,
+        role: str,
+        authorization: str | None,
+    ) -> None:
+        current = next(
+            (
+                model
+                for model in self._repository.registry()["models"]
+                if model["id"] == item_id
+            ),
+            None,
+        )
+        if current is None:
+            raise HTTPException(status_code=404, detail=f"Unknown model: {item_id}")
+        incoming = write.model_dump(mode="python")
+        changes_routing_identity = any(
+            str(current.get(field) or "") != str(incoming.get(field) or "")
+            for field in self._MODEL_ROUTING_FIELDS
+        )
+        self.authorize(role, authorization, manage=changes_routing_identity)
+
+    def registry(self) -> RegistryResponse:
+        rows = self._repository.registry()
+        github_provider_ids, copilot_runtime_ids = self._copilot_registry_ids(rows)
+        providers = [
+            row for row in rows["providers"] if row["id"] not in github_provider_ids
+        ]
+        provider_ids = {row["id"] for row in providers}
+        runtimes = [
+            row for row in rows["runtimes"] if row["id"] not in copilot_runtime_ids
+        ]
+        runtime_ids = {row["id"] for row in runtimes}
+        return RegistryResponse(
+            gateways=[
+                GatewayProfile.model_validate(self._public_secret(row))
+                for row in rows["gateways"]
+            ],
+            providers=[
+                Provider.model_validate(self._public_secret(row))
+                for row in providers
+            ],
+            runtimes=[Runtime.model_validate(row) for row in runtimes],
+            models=[
+                ManagedModel.model_validate(row)
+                for row in rows["models"]
+                if row["runtime_id"] in runtime_ids and row["provider_id"] in provider_ids
+                and row.get("family_key") != ModelFamilyKey.COPILOT
+            ],
+        )
+
+    @staticmethod
+    def _copilot_registry_ids(rows: dict[str, Any]) -> tuple[set[UUID], set[UUID]]:
+        github_provider_ids = {
+            row["id"]
+            for row in rows["providers"]
+            if row["provider_kind"] == ProviderKind.GITHUB
+            or row.get("brand_key") == BrandKey.GITHUB
+        }
+        copilot_runtime_ids = {
+            row["id"]
+            for row in rows["runtimes"]
+            if row["runtime_kind"] == RuntimeKind.COPILOT_CLI
+            or row.get("brand_key") == BrandKey.GITHUB
+            or row["provider_id"] in github_provider_ids
+        }
+        return github_provider_ids, copilot_runtime_ids
+
+    def save_gateway(
+        self, write: GatewayProfileWrite, item_id: UUID | None = None
+    ) -> RegistryResponse:
+        values = self._secret_values(write, creating=item_id is None)
+        self._save("gateway", values, item_id)
+        return self.registry()
+
+    def delete_gateway(self, gateway_id: UUID) -> RegistryResponse:
+        registry = self._repository.registry()
+        gateway = next(
+            (row for row in registry["gateways"] if row["id"] == gateway_id),
+            None,
+        )
+        if gateway is None:
+            raise HTTPException(status_code=404, detail="Gateway not found")
+        if gateway.get("is_default"):
+            raise HTTPException(
+                status_code=409,
+                detail="Select another default gateway before deleting this one",
+            )
+        if any(
+            runtime.get("gateway_profile_id") == gateway_id
+            for runtime in registry["runtimes"]
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Remove every connection from this gateway before deleting it",
+            )
+        if self._repository.list_gateway_publications(gateway_id, 1):
+            raise HTTPException(
+                status_code=409,
+                detail="A gateway with publication history cannot be deleted",
+            )
+        if not self._repository.delete_gateway_if_unused(gateway_id):
+            raise HTTPException(
+                status_code=409,
+                detail="The gateway changed and could not be deleted",
+            )
+        return self.registry()
+
+    def save_provider(
+        self, write: ProviderWrite, item_id: UUID | None = None
+    ) -> RegistryResponse:
+        registry = self._repository.registry()
+        github_provider_ids, _ = self._copilot_registry_ids(registry)
+        if (
+            write.provider_kind is ProviderKind.GITHUB
+            or write.brand_key is BrandKey.GITHUB
+            or item_id in github_provider_ids
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="GitHub Copilot is managed through its separate data source",
+            )
+        values = self._secret_values(write, creating=item_id is None)
+        self._save("provider", values, item_id)
+        return self.registry()
+
+    def save_runtime(self, write: RuntimeWrite, item_id: UUID | None = None) -> RegistryResponse:
+        registry = self._repository.registry()
+        github_provider_ids, copilot_runtime_ids = self._copilot_registry_ids(registry)
+        if (
+            write.runtime_kind is RuntimeKind.COPILOT_CLI
+            or write.brand_key is BrandKey.GITHUB
+            or write.provider_id in github_provider_ids
+            or item_id in copilot_runtime_ids
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="GitHub Copilot is managed through its separate data source",
+            )
+        self._save("runtime", write.model_dump(mode="python"), item_id)
+        return self.registry()
+
+    def save_connection(self, write: ModelConnectionCreate) -> RegistryResponse:
+        registry = self._repository.registry()
+        gateway = next(
+            (
+                row
+                for row in registry["gateways"]
+                if row["id"] == write.gateway_profile_id
+            ),
+            None,
+        )
+        if gateway is None or not gateway["enabled"] or gateway["implementation"] != "apim":
+            raise HTTPException(status_code=409, detail="The selected APIM gateway is unavailable")
+        provider_values: dict[str, Any] | None = None
+        if write.provider.existing_id is not None:
+            provider = next(
+                (
+                    row
+                    for row in registry["providers"]
+                    if row["id"] == write.provider.existing_id
+                ),
+                None,
+            )
+            if provider is None or not provider["enabled"]:
+                raise HTTPException(
+                    status_code=409,
+                    detail="The selected provider is unavailable",
+                )
+            brand = BrandKey(provider.get("brand_key", BrandKey.GENERIC))
+            provider_id = provider["id"]
+        else:
+            assert write.provider.template is not None
+            brand = BrandKey(write.provider.template)
+            provider_id = None
+            provider_name = (
+                "Microsoft Foundry"
+                if brand is BrandKey.MICROSOFT_FOUNDRY
+                else "Amazon Bedrock"
+            )
+            provider_values = {
+                "name": provider_name,
+                "provider_kind": (
+                    "microsoft_foundry"
+                    if brand is BrandKey.MICROSOFT_FOUNDRY
+                    else "anthropic"
+                ),
+                "endpoint_url": None,
+                "auth_type": "none",
+                "credential_ciphertext": None,
+                "credential_hint": None,
+                "enabled": True,
+                "brand_key": brand,
+                "config": {"hosting_platform": brand},
+            }
+        if brand is BrandKey.MICROSOFT_FOUNDRY:
+            values = self._foundry_connection_values(write, registry["runtimes"])
+        elif brand is BrandKey.AMAZON_BEDROCK:
+            values = self._bedrock_connection_values(write, registry["runtimes"])
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail="This provider does not support managed connection onboarding",
+            )
+        try:
+            self._repository.create_connection(
+                provider_id,
+                provider_values,
+                {
+                "gateway_profile_id": gateway["id"],
+                "enabled": True,
+                "is_default": False,
+                "brand_key": brand,
+                "allowed_roles": ["owner", "admin", "member"],
+                **values,
+            },
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return self.registry()
+
+    def update_connection(
+        self, runtime_id: UUID, write: ModelConnectionUpdate
+    ) -> RegistryResponse:
+        current = next(
+            (
+                runtime
+                for runtime in self._repository.registry()["runtimes"]
+                if runtime["id"] == runtime_id
+            ),
+            None,
+        )
+        if current is None:
+            raise HTTPException(status_code=404, detail="Connection not found")
+        values = write.model_dump(mode="python", exclude={"is_default"})
+        if bool(current.get("is_default")) != write.is_default:
+            values["is_default"] = write.is_default
+        self._save("runtime", values, runtime_id)
+        return self.registry()
+
+    def delete_connection(self, runtime_id: UUID) -> RegistryResponse:
+        registry = self._repository.registry()
+        runtime = next(
+            (row for row in registry["runtimes"] if row["id"] == runtime_id),
+            None,
+        )
+        if runtime is None:
+            raise HTTPException(status_code=404, detail="Connection not found")
+        config = dict(runtime.get("config") or {})
+        if not config.get("control_plane_managed") or runtime.get("gateway_profile_id") is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Only control-plane-managed connections can be deleted",
+            )
+        if runtime.get("is_default"):
+            raise HTTPException(
+                status_code=409,
+                detail="Select another default connection before deleting this one",
+            )
+        if any(model["runtime_id"] == runtime_id for model in registry["models"]):
+            raise HTTPException(
+                status_code=409,
+                detail="Remove every model from this connection before deleting it",
+            )
+        active_statuses = {
+            "queued",
+            "validating",
+            "provisioning",
+            "building_revision",
+            "verifying",
+            "awaiting_authorization",
+            "promoting",
+            "rolling_back",
+        }
+        for publication in self._repository.list_gateway_publications(
+            runtime["gateway_profile_id"],
+            100,
+        ):
+            if publication["status"] not in active_statuses:
+                continue
+            bindings = dict(publication["desired_spec"]).get("bindings", [])
+            if any(str(binding.get("runtime_id")) == str(runtime_id) for binding in bindings):
+                raise HTTPException(
+                    status_code=409,
+                    detail="A publication is still using this connection",
+                )
+        if not self._repository.delete_runtime_if_empty(runtime_id):
+            raise HTTPException(
+                status_code=409,
+                detail="The connection changed and could not be deleted",
+            )
+        return self.registry()
+
+    def _foundry_connection_values(
+        self,
+        write: ModelConnectionCreate,
+        runtimes: list[dict[str, Any]] | Any,
+    ) -> dict[str, Any]:
+        if write.foundry_project_endpoint is None or write.auth_mode is None:
+            raise HTTPException(status_code=400, detail="Foundry connection fields are missing")
+        endpoint = urlsplit(str(write.foundry_project_endpoint))
+        host = (endpoint.hostname or "").casefold()
+        suffix = ".services.ai.azure.com"
+        account = host.removesuffix(suffix) if host.endswith(suffix) else ""
+        path_match = re.fullmatch(
+            r"/api/projects/(?P<project>[A-Za-z0-9._-]+)/?",
+            endpoint.path,
+        )
+        if (
+            endpoint.scheme != "https"
+            or not account
+            or path_match is None
+            or endpoint.query
+            or endpoint.fragment
+            or endpoint.username is not None
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "The Foundry project endpoint must use "
+                    "https://<account>.services.ai.azure.com/api/projects/<project>"
+                ),
+            )
+        project = unquote(path_match.group("project"))
+        project_endpoint = f"https://{endpoint.netloc}/api/projects/{project}"
+        backend_url = project_endpoint
+        auth_strategy = "managed_identity"
+        named_value_name = None
+        managed_identity_resource: str | None = FOUNDRY_INFERENCE_RESOURCE
+        config: dict[str, Any] = {
+            "project_endpoint": project_endpoint,
+            "max_tokens_field": "max_completion_tokens",
+            "supports_temperature": False,
+        }
+        if write.auth_mode is ConnectionAuthMode.API_KEY:
+            assert write.foundry_inference_endpoint is not None
+            inference = urlsplit(str(write.foundry_inference_endpoint))
+            inference_host = (inference.hostname or "").casefold()
+            if (
+                inference.scheme != "https"
+                or inference_host
+                not in {
+                    f"{account}.openai.azure.com",
+                    f"{account}.services.ai.azure.com",
+                }
+                or inference.path.rstrip("/") != "/openai/v1"
+                or inference.query
+                or inference.fragment
+                or inference.username is not None
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="The Foundry inference endpoint must use the same account",
+                )
+            inference_endpoint = str(write.foundry_inference_endpoint).rstrip("/")
+            backend_url = f"{inference.scheme}://{inference.netloc}"
+            named_value_name = f"finops-foundry-key-{uuid4().hex[:20]}"
+            auth_strategy = "named_value_api_key"
+            managed_identity_resource = None
+            config.update(
+                inference_endpoint=inference_endpoint,
+                credential_kind="api_key",
+                credential_provisioned=False,
+            )
+        else:
+            if not self._settings.apim_principal_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail="APIM managed identity is not configured for Foundry onboarding",
+                )
+            config["authorization"] = {
+                "kind": "azure_rbac",
+                "principal_id": self._settings.apim_principal_id,
+                "resource_endpoint": f"https://{endpoint.netloc}",
+                "role_id": FOUNDRY_INFERENCE_ROLE_ID,
+                "role_name": "Cognitive Services User",
+            }
+        self._ensure_unique_connection(
+            runtimes,
+            write.gateway_profile_id,
+            "project_endpoint",
+            project_endpoint,
+        )
+        return {
+            "name": foundry_runtime_name(account, project),
+            "runtime_kind": "foundry",
+            "config": {
+                **config,
+                "path": "/chat/completions",
+                "api_format": "openai_chat",
+                "streaming_mode": "native",
+                "control_plane_managed": True,
+                "backend_url": backend_url,
+                "backend_path": "/openai/v1/chat/completions",
+                "auth_strategy": auth_strategy,
+                "named_value_name": named_value_name,
+                "key_vault_secret_id": None,
+                "managed_identity_resource": managed_identity_resource,
+            },
+        }
+
+    def _bedrock_connection_values(
+        self,
+        write: ModelConnectionCreate,
+        runtimes: list[dict[str, Any]] | Any,
+    ) -> dict[str, Any]:
+        if write.bedrock_runtime_url is None:
+            raise HTTPException(status_code=400, detail="Bedrock Runtime URL is missing")
+        endpoint = urlsplit(str(write.bedrock_runtime_url))
+        host = (endpoint.hostname or "").casefold()
+        prefix = "bedrock-runtime."
+        suffix = ".amazonaws.com"
+        if (
+            endpoint.scheme != "https"
+            or not host.startswith(prefix)
+            or not host.endswith(suffix)
+            or endpoint.path not in {"", "/"}
+            or endpoint.query
+            or endpoint.fragment
+        ):
+            raise HTTPException(status_code=400, detail="Enter a regional Bedrock Runtime URL")
+        region = host.removeprefix(prefix).removesuffix(suffix)
+        backend_url = f"{endpoint.scheme}://{endpoint.netloc}"
+        self._ensure_unique_connection(
+            runtimes,
+            write.gateway_profile_id,
+            "backend_url",
+            backend_url,
+        )
+        scope = f"{write.gateway_profile_id}:{backend_url}"
+        return {
+            "name": f"Amazon Bedrock Claude ({region}) via APIM",
+            "runtime_kind": "openai_compatible",
+            "config": {
+                "region": region,
+                "path": "/v1/messages",
+                "api_format": "anthropic_messages",
+                "streaming_mode": "buffered",
+                "control_plane_managed": True,
+                "backend_url": backend_url,
+                "backend_path": "/model/{upstream_model_id}/invoke",
+                "auth_strategy": "named_value_bearer",
+                "named_value_name": (
+                    "finops-bedrock-"
+                    + hashlib.sha256(scope.encode("utf-8")).hexdigest()[:16]
+                ),
+                "credential_kind": "api_key",
+                "credential_provisioned": False,
+                "key_vault_secret_id": None,
+                "managed_identity_resource": None,
+            },
+        }
+
+    @staticmethod
+    def _ensure_unique_connection(
+        runtimes: Any,
+        gateway_id: UUID,
+        config_key: str,
+        expected: str,
+    ) -> None:
+        if any(
+            runtime.get("gateway_profile_id") == gateway_id
+            and str((runtime.get("config") or {}).get(config_key, "")).rstrip("/").casefold()
+            == expected.rstrip("/").casefold()
+            for runtime in runtimes
+        ):
+            raise HTTPException(status_code=409, detail="This connection already exists")
+
+    def save_model(
+        self, write: ManagedModelWrite, item_id: UUID | None = None
+    ) -> RegistryResponse:
+        registry = self._repository.registry()
+        github_provider_ids, copilot_runtime_ids = self._copilot_registry_ids(registry)
+        current = next(
+            (row for row in registry["models"] if row["id"] == item_id),
+            None,
+        )
+        if (
+            write.family_key is ModelFamilyKey.COPILOT
+            or write.provider_id in github_provider_ids
+            or write.runtime_id in copilot_runtime_ids
+            or current is not None
+            and (
+                current["provider_id"] in github_provider_ids
+                or current["runtime_id"] in copilot_runtime_ids
+                or current.get("family_key") == ModelFamilyKey.COPILOT
+            )
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="GitHub Copilot is managed through its separate data source",
+            )
+        self._save("model", write.model_dump(mode="python"), item_id)
+        return self.registry()
+
+    def check_runtime(self, runtime_id: UUID) -> RuntimeHealth:
+        route = self._repository.invocation_route(runtime_id, None)
+        if route is None:
+            raise HTTPException(
+                status_code=409, detail="Runtime has no enabled model or is disabled"
+            )
+        route = self._decrypt_route(route)
+        result = self._router.adapter(route).check(route)
+        self._repository.update_runtime_health(
+            runtime_id, result.status.value, result.message, result.checked_at
+        )
+        return result
+
+    def _assert_model_allowed(
+        self,
+        request: ModelInvocationRequest,
+        route: dict[str, Any],
+        request_id: str,
+    ) -> None:
+        """Enforce the person's model policy on the path where we are the caller.
+
+        The APIM ledger check only covers employee tokens, because that is the only path
+        where the identity is unforgeable. On this path the identity comes from our own
+        UI, so the trustworthy place to enforce is here, before the outbound call: the
+        policy is in PostgreSQL next to us, which is also exact rather than eventually
+        consistent. This is not the removed policy-snapshot endpoint — APIM still never
+        calls back into this application, so nothing we operate sits on the employee
+        inference path.
+        """
+        user_id = request.metadata.user_id
+        if not user_id or user_id == "system-runtime-health-check":
+            return
+        policies = self._repository.list_user_model_policies([user_id])
+        policy = next((row for row in policies if str(row["user_id"]) == user_id), None)
+        if policy is None:
+            # Legacy models preserve the compatibility rule that an unconfigured person is
+            # unrestricted. Dynamically published models opt out: promotion and a Table
+            # Storage policy write cannot be one transaction, so requiring an explicit
+            # assignment keeps a newly routable alias closed during that boundary.
+            if route.get("assignment_required"):
+                self._deny(
+                    request,
+                    route,
+                    "model_not_assigned",
+                    request_id,
+                    model_admission="denied",
+                )
+            return
+        allowed = {str(value) for value in (policy.get("model_ids") or [])}
+        if str(request.model_id) in allowed:
+            return
+        self._deny(
+            request,
+            route,
+            "model_not_assigned",
+            request_id,
+            model_admission="denied",
+        )
+
+    def _assert_budget_available(
+        self,
+        request: ModelInvocationRequest,
+        route: dict[str, Any],
+        request_id: str,
+    ) -> None:
+        """Enforce the monthly allowance on the same path, for the same reason.
+
+        The employee path reserves against a Table Storage ledger because APIM cannot ask
+        this application anything. Here the allowance and the usage are both one query
+        away, so the check is a direct comparison instead. It is intentionally not a
+        reservation: telemetry for a console call lands seconds later, so a burst can
+        overshoot slightly. That is the accepted cost of not putting a write on the
+        request path for a human-driven, low-volume surface.
+
+        A department in audit mode is not blocked, and a person with no budget row is not
+        blocked either — the same two rules the ledger admission already follows.
+        """
+        user_id = request.metadata.user_id
+        if not user_id:
+            return
+        now = datetime.now(UTC)
+        period_start = date(now.year, now.month, 1)
+        period_end = (
+            date(now.year + 1, 1, 1) if now.month == 12 else date(now.year, now.month + 1, 1)
+        )
+        state = self._repository.person_budget_state(user_id, period_start, period_end)
+        if state is None:
+            return
+        if str(state["mode"]) != "block":
+            return
+        if int(state["used_tokens"]) < int(state["token_limit"]):
+            return
+        self._deny(
+            request,
+            route,
+            "budget_exceeded",
+            request_id,
+            budget_admission="denied",
+        )
+
+    def _deny(
+        self,
+        request: ModelInvocationRequest,
+        route: dict[str, Any],
+        reason: str,
+        request_id: str,
+        *,
+        budget_admission: str | None = None,
+        model_admission: str | None = None,
+    ) -> NoReturn:
+        """Reject the call and leave a trace of it.
+
+        A denial that nobody can see is the worse of the two failure modes: it still stops
+        the person working but the dashboard cannot explain why. The APIM policy learned
+        this the hard way and emits its denial before returning, so this path does the
+        same. Usage is zero and `estimated` is false because a rejected request's zero is
+        exact, not missing.
+
+        The model and runtime come from the resolved route, never from the caller's
+        metadata. Those metadata fields are display values a client asserts, and the
+        console asserted registry UUIDs for both: three denial rows landed with a bare
+        runtime UUID, which then rendered as its own bar beside the same runtime's real
+        name in the runtime distribution. That is the split identity migrations 013 and
+        018 collapsed for the model and the organization, arriving through the client
+        instead of through a second column. The route is the routing decision this
+        service just made, so it is authoritative and costs no extra query.
+
+        The provider stays `unattributed` on purpose: the runtime is a decision we made,
+        but no provider was ever contacted.
+        """
+        metadata = request.metadata
+        try:
+            self._repository.write_token_usage(
+                TokenUsageRecord(
+                    id=request_id,
+                    request_id=request_id,
+                    correlation_id=request_id,
+                    ts=datetime.now(UTC),
+                    team=metadata.department or "unattributed",
+                    organization=metadata.organization,
+                    organization_id=metadata.organization_id,
+                    department=metadata.department,
+                    department_id=metadata.department_id,
+                    project=metadata.project,
+                    project_id=metadata.project_id,
+                    user=metadata.user,
+                    user_id=metadata.user_id,
+                    agent=metadata.agent,
+                    agent_id=metadata.agent_id,
+                    workflow=metadata.workflow,
+                    run_id=metadata.run_id,
+                    turn_index=metadata.turn_index,
+                    provider="unattributed",
+                    model=str(route["display_name"]),
+                    model_id=str(route["model_id"]),
+                    runtime=str(route["runtime_name"]),
+                    request_source=metadata.request_source,
+                    usage_domain=metadata.usage_domain,
+                    input_tokens=0,
+                    cached_tokens=0,
+                    output_tokens=0,
+                    et=0.0,
+                    # The column is NOT NULL CHECK (et_coeff_m > 0), so a denial cannot
+                    # store zero even though its ET is zero by construction. The value is
+                    # the catalog default, which is what a real request of this shape
+                    # would have been priced with.
+                    et_coeff_m=self._settings.model_coefficients.get("default", 1.0),
+                    latency_ms=0,
+                    status="403",
+                    status_code=403,
+                    estimated_cost=0.0,
+                    error_message=f"API policy denied: {reason}",
+                    estimated=False,
+                    ingest_source="policy",
+                    budget_admission=budget_admission,
+                    model_admission=model_admission,
+                )
+            )
+        except Exception:  # noqa: BLE001 - the denial itself must not depend on telemetry
+            # Loud on purpose: this except exists so a telemetry failure cannot stop the
+            # denial, and it once hid a CHECK violation that silently dropped every trace.
+            logger.exception("Denial trace could not be written for %s", reason)
+        raise HTTPException(
+            status_code=403,
+            detail=reason,
+            headers={"x-request-id": request_id},
+        )
+
+    def invoke(
+        self,
+        request: ModelInvocationRequest,
+        *,
+        request_id: str | None = None,
+        timeout_ms: int | None = None,
+    ) -> ModelInvocationResponse:
+        request_id = request_id or str(uuid4())
+        route = self._repository.invocation_route(request.runtime_id, request.model_id)
+        if route is None:
+            raise HTTPException(
+                status_code=404, detail="No enabled model route matches the request"
+            )
+        route = self._model_protocol_route(route)
+        if self._settings.production and route.get("gateway_implementation") != GatewayKind.APIM:
+            raise HTTPException(
+                status_code=409,
+                detail="Production model invocations must use Azure API Management",
+            )
+        self._assert_model_allowed(request, route, request_id)
+        self._assert_budget_available(request, route, request_id)
+        route = self._decrypt_route(route)
+        if timeout_ms is not None:
+            runtime_config = dict(route.get("runtime_config") or {})
+            configured_timeout = float(runtime_config.get("timeout_seconds", 120))
+            runtime_config["timeout_seconds"] = min(
+                configured_timeout,
+                timeout_ms / 1_000,
+            )
+            route["runtime_config"] = runtime_config
+        route["request_id"] = request_id
+        started = time.monotonic()
+        try:
+            result = self._router.adapter(route).invoke(request, route)
+        except GatewayInvocationError as error:
+            headers = dict(error.headers)
+            headers.setdefault("x-request-id", request_id)
+            raise HTTPException(
+                status_code=error.status_code,
+                detail=str(error),
+                headers=headers,
+            ) from error
+
+        latency_ms = elapsed_ms(started)
+        correlation_id = result.correlation_id or request_id
+        estimated_cost = self._estimated_cost(route, result.usage)
+        return ModelInvocationResponse(
+            request_id=request_id,
+            correlation_id=correlation_id,
+            content=result.content,
+            tool_calls=list(result.tool_calls) or None,
+            provider=str(route["provider_name"]),
+            runtime=str(route["runtime_name"]),
+            model=str(route["model_key"]),
+            gateway=result.gateway,
+            latency_ms=latency_ms,
+            usage=result.usage,
+            estimated_cost=estimated_cost,
+        )
+
+    @staticmethod
+    def _estimated_cost(
+        route: dict[str, Any], usage: InvocationUsage | None
+    ) -> float | None:
+        input_price = route.get("input_cost_per_million")
+        output_price = route.get("output_cost_per_million")
+        if usage is None or input_price is None or output_price is None:
+            return None
+        cached_price = route.get("cached_cost_per_million")
+        if cached_price is None:
+            cached_price = input_price
+        cache_write_price = route.get("cache_write_cost_per_million")
+        if cache_write_price is None:
+            cache_write_price = cached_price
+        return ModelPrice(
+            input_price_per_million=float(input_price),
+            cached_price_per_million=float(cached_price),
+            cache_write_price_per_million=float(cache_write_price),
+            output_price_per_million=float(output_price),
+        ).cost(
+            usage.input_tokens,
+            usage.cached_tokens,
+            usage.output_tokens,
+            usage.cache_write_tokens,
+        )
+
+    @staticmethod
+    def _model_protocol_route(route: dict[str, Any]) -> dict[str, Any]:
+        if (
+            route.get("provider_kind") != ProviderKind.MICROSOFT_FOUNDRY
+            or route.get("model_family_key") != ModelFamilyKey.CLAUDE
+        ):
+            return route
+        return {
+            **route,
+            "runtime_config": {
+                **dict(route.get("runtime_config") or {}),
+                "path": "/v1/messages",
+                "api_format": "anthropic_messages",
+                "anthropic_version": "2023-06-01",
+            },
+        }
+
+    def _save(self, kind: str, values: dict[str, Any], item_id: UUID | None) -> None:
+        try:
+            if item_id is None:
+                self._repository.create_registry_item(kind, values)
+            elif self._repository.update_registry_item(kind, item_id, values) is None:
+                raise HTTPException(status_code=404, detail=f"Unknown {kind}: {item_id}")
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    def _secret_values(
+        self, write: GatewayProfileWrite | ProviderWrite, *, creating: bool
+    ) -> dict[str, Any]:
+        values = write.model_dump(mode="python", exclude={"credential"})
+        credential = write.credential
+        if credential is not None:
+            plaintext = credential.get_secret_value()
+            values["credential_ciphertext"] = self._cipher.encrypt(plaintext)
+            values["credential_hint"] = credential_hint(plaintext)
+        elif creating:
+            values["credential_ciphertext"] = None
+            values["credential_hint"] = None
+        return values
+
+    @staticmethod
+    def _public_secret(row: dict[str, Any]) -> dict[str, Any]:
+        public = dict(row)
+        encrypted = public.pop("credential_ciphertext", None)
+        public["credential"] = None
+        public["credential_configured"] = encrypted is not None
+        return public
+
+    def _decrypt_route(self, route: dict[str, Any]) -> dict[str, Any]:
+        result = dict(route)
+        result["provider_credential"] = self._cipher.decrypt(
+            result.pop("provider_credential_ciphertext", None)
+        )
+        result["gateway_credential"] = self._cipher.decrypt(
+            result.pop("gateway_credential_ciphertext", None)
+        )
+        return result

@@ -1,0 +1,115 @@
+<policies>
+  <inbound>
+    <base />
+    <set-variable name="team" value="@(context.Subscription?.Name ?? &quot;unattributed&quot;)" />
+    <set-variable name="hiveOrganization" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-hive-organization&quot;, &quot;unattributed&quot;))" />
+    <set-variable name="hiveDepartment" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-hive-department&quot;, &quot;unattributed&quot;))" />
+    <set-variable name="hiveProject" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-hive-project&quot;, &quot;unattributed&quot;))" />
+    <set-variable name="hiveUser" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-hive-user&quot;, &quot;unattributed&quot;))" />
+    <set-variable name="hiveAgent" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-hive-agent&quot;, &quot;unattributed&quot;))" />
+    <set-variable name="hiveWorkflow" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-hive-workflow&quot;, &quot;unattributed&quot;))" />
+    <set-variable name="hiveRunId" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-hive-run-id&quot;, context.RequestId.ToString()))" />
+    <set-variable name="hiveRuntime" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-hive-runtime&quot;, &quot;unattributed&quot;))" />
+    <set-variable name="turnIndex" value="@(context.Request.Headers.GetValueOrDefault(&quot;x-hive-turn-index&quot;, &quot;1&quot;))" />
+    <set-variable name="requestStarted" value="@(DateTime.UtcNow)" />
+    <set-header name="__AUTH_HEADER__" exists-action="override">
+      <value>__AUTH_VALUE__</value>
+    </set-header>
+    <set-backend-service backend-id="__BACKEND_ID__" />
+    <llm-emit-token-metric namespace="SmartHive.TokenObservability">
+      <dimension name="team" value="@((string)context.Variables[&quot;team&quot;])" />
+      <dimension name="agent" value="@((string)context.Variables[&quot;hiveAgent&quot;])" />
+      <dimension name="workflow" value="@((string)context.Variables[&quot;hiveWorkflow&quot;])" />
+      <dimension name="provider" value="__PROVIDER__" />
+      <dimension name="API ID" />
+    </llm-emit-token-metric>
+  </inbound>
+  <backend>
+    <base />
+  </backend>
+  <outbound>
+    <base />
+    <set-variable name="usagePayload" value="@{
+      var contentType = context.Response.Headers.GetValueOrDefault(&quot;Content-Type&quot;, &quot;&quot;);
+      if (contentType.IndexOf(&quot;text/event-stream&quot;, StringComparison.OrdinalIgnoreCase) >= 0)
+      {
+        return new JObject(
+          new JProperty(&quot;input_tokens&quot;, null),
+          new JProperty(&quot;cached_tokens&quot;, null),
+          new JProperty(&quot;output_tokens&quot;, null),
+          new JProperty(&quot;estimated&quot;, true),
+          new JProperty(&quot;ingest_error&quot;, &quot;stream_usage_breakdown_unavailable&quot;)
+        );
+      }
+      try
+      {
+        var body = context.Response.Body.As&lt;JObject&gt;(preserveContent: true);
+        var usage = body[&quot;usage&quot;] as JObject;
+        var input = usage?[&quot;prompt_tokens&quot;] ?? usage?[&quot;input_tokens&quot;];
+        var output = usage?[&quot;completion_tokens&quot;] ?? usage?[&quot;output_tokens&quot;];
+        var cached = usage?[&quot;prompt_tokens_details&quot;]?[&quot;cached_tokens&quot;]
+          ?? usage?[&quot;cache_read_input_tokens&quot;]
+          ?? 0;
+        return new JObject(
+          new JProperty(&quot;input_tokens&quot;, input),
+          new JProperty(&quot;cached_tokens&quot;, cached),
+          new JProperty(&quot;output_tokens&quot;, output),
+          new JProperty(&quot;estimated&quot;, input == null || output == null),
+          new JProperty(&quot;ingest_error&quot;, input == null || output == null ? &quot;usage_missing&quot; : null)
+        );
+      }
+      catch
+      {
+        return new JObject(
+          new JProperty(&quot;input_tokens&quot;, null),
+          new JProperty(&quot;cached_tokens&quot;, null),
+          new JProperty(&quot;output_tokens&quot;, null),
+          new JProperty(&quot;estimated&quot;, true),
+          new JProperty(&quot;ingest_error&quot;, &quot;usage_parse_failed&quot;)
+        );
+      }
+    }" />
+    <choose>
+      <when condition="@(((JObject)context.Variables[&quot;usagePayload&quot;])[&quot;ingest_error&quot;].Type != JTokenType.Null)">
+        <emit-metric name="token_ingest_error" value="1" namespace="SmartHive.TokenObservability">
+          <dimension name="provider" value="__PROVIDER__" />
+          <dimension name="reason" value="@((string)((JObject)context.Variables[&quot;usagePayload&quot;])[&quot;ingest_error&quot;])" />
+        </emit-metric>
+      </when>
+    </choose>
+    <log-to-eventhub logger-id="token-usage-eventhub" partition-key="@((string)context.Variables[&quot;hiveRunId&quot;])">@{
+      var usage = (JObject)context.Variables[&quot;usagePayload&quot;];
+      return new JObject(
+        new JProperty(&quot;id&quot;, context.RequestId.ToString()),
+        new JProperty(&quot;ts&quot;, DateTime.UtcNow.ToString(&quot;o&quot;)),
+        new JProperty(&quot;team&quot;, (string)context.Variables[&quot;team&quot;]),
+        new JProperty(&quot;organization&quot;, (string)context.Variables[&quot;hiveOrganization&quot;]),
+        new JProperty(&quot;department&quot;, (string)context.Variables[&quot;hiveDepartment&quot;]),
+        new JProperty(&quot;project&quot;, (string)context.Variables[&quot;hiveProject&quot;]),
+        new JProperty(&quot;user&quot;, (string)context.Variables[&quot;hiveUser&quot;]),
+        new JProperty(&quot;agent&quot;, (string)context.Variables[&quot;hiveAgent&quot;]),
+        new JProperty(&quot;workflow&quot;, (string)context.Variables[&quot;hiveWorkflow&quot;]),
+        new JProperty(&quot;run_id&quot;, (string)context.Variables[&quot;hiveRunId&quot;]),
+        new JProperty(&quot;turn_index&quot;, int.Parse((string)context.Variables[&quot;turnIndex&quot;])),
+        new JProperty(&quot;provider&quot;, &quot;__PROVIDER__&quot;),
+        new JProperty(&quot;model&quot;, context.Request.Headers.GetValueOrDefault(&quot;x-hive-model&quot;, &quot;unattributed&quot;)),
+        new JProperty(&quot;runtime&quot;, (string)context.Variables[&quot;hiveRuntime&quot;]),
+        new JProperty(&quot;input_tokens&quot;, usage[&quot;input_tokens&quot;]),
+        new JProperty(&quot;cached_tokens&quot;, usage[&quot;cached_tokens&quot;]),
+        new JProperty(&quot;output_tokens&quot;, usage[&quot;output_tokens&quot;]),
+        new JProperty(&quot;latency_ms&quot;, (long)(DateTime.UtcNow - (DateTime)context.Variables[&quot;requestStarted&quot;]).TotalMilliseconds),
+        new JProperty(&quot;status&quot;, context.Response.StatusCode.ToString()),
+        new JProperty(&quot;estimated&quot;, usage[&quot;estimated&quot;]),
+        new JProperty(&quot;ingest_source&quot;, &quot;eventhub&quot;),
+        new JProperty(&quot;ingest_error&quot;, usage[&quot;ingest_error&quot;])
+      ).ToString(Newtonsoft.Json.Formatting.None);
+    }</log-to-eventhub>
+  </outbound>
+  <on-error>
+    <emit-metric name="token_ingest_error" value="1" namespace="SmartHive.TokenObservability">
+      <dimension name="provider" value="__PROVIDER__" />
+      <dimension name="reason" value="@(context.LastError?.Reason ?? &quot;unknown&quot;)" />
+    </emit-metric>
+    <base />
+  </on-error>
+</policies>

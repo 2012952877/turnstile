@@ -1,0 +1,673 @@
+/* ---------- AI Assistant ---------- */
+/* Geometry copied from SmartHive's ChatFab/ChatWindow: 40px bubble and a 380x600
+   window anchored bottom-right, both inset 8px, so the assistant sits in the same
+   place here as it does there. */
+:root {
+  /* How much vertical room the panel leaves above itself. The value is bounded on both
+     sides by measured geometry, which is why it is a token rather than a guess: the page
+     header's divider sits at 64px and the filter chips run 77-107px, so the top edge has
+     to land inside that 13px band. 84px puts it at 68px — 4px under the divider, 9px
+     clear of the chips. Desktop reads the same number from use-assistant-resize.ts, which
+     owns the size once the panel can be dragged; this token is the mobile fallback. */
+  --assistant-top-reserve: 84px;
+}
+.assistant-fab { position: fixed; right: 16px; bottom: 16px; z-index: 60; width: 40px; height: 40px; border-radius: 999px; display: grid; place-items: center; background: var(--card); color: var(--muted-foreground); border: 1px solid var(--border); box-shadow: 0 6px 20px rgb(0 0 0 / 12%); cursor: pointer; transition: transform .15s ease, color .15s ease; }
+.assistant-fab:hover { transform: scale(1.08); color: var(--brand); }
+.assistant-fab:active { transform: scale(.95); }
+
+/* SmartHive's ChatWindow is `rounded-xl ring-1 ring-foreground/10 bg-sidebar shadow-2xl`.
+   The sidebar token is a light grey, and the white input card sitting on it is what gives
+   the panel its depth — a white panel loses that separation entirely.
+
+   Width and height are inline styles on desktop because the panel is drag-resizable; the
+   values here are the mobile geometry and the pre-measurement fallback. */
+.assistant-window { position: fixed; right: 16px; bottom: 16px; z-index: 60; width: 380px; height: calc(100vh - var(--assistant-top-reserve)); display: flex; flex-direction: column; background: var(--sidebar); color: var(--sidebar-foreground); border-radius: 12px; box-shadow: 0 0 0 1px color-mix(in oklch, var(--foreground) 10%, transparent), 0 25px 50px -12px rgb(0 0 0 / 25%); overflow: hidden; }
+
+/* Docked, the panel stops floating above the page and joins the shell's flex row, so
+   `main` — which is `flex: 1 1 0%` — gives up exactly the panel's width and nothing is
+   covered. That is the whole point of the mode: a full-height floating panel still hides
+   the right of the dashboard it is describing. Nothing has to coordinate the two widths
+   because the shell is already a flex row; docking is only a matter of joining it.
+
+   It is then chrome, not an overlay, so it is treated exactly as the sidebar is: no ring,
+   no shadow, and no radius. The panel and the shell are both `--sidebar`, so the surfaces
+   merge and `main` is left as the one rounded card floating between them. The margins stay
+   because they keep `main`'s 8px inset; they are invisible once the two surfaces match. */
+.assistant-window[data-mode="docked"] { position: relative; right: auto; bottom: auto; flex: 0 0 auto; height: calc(100vh - 16px); margin: 8px 8px 8px 0; border-radius: 0; box-shadow: none; overflow: visible; }
+/* Docked, the header sits in the same horizontal band as the page header, so it takes the
+   same height: 14 + 28 + 14 = 56px, which puts its icons on the page header's own centre
+   line. Floating there is nothing to line up with, so it keeps SmartHive's tighter 48px. */
+.assistant-window[data-mode="docked"] .assistant-head { padding-block: 14px; }
+/* No corner handle to stay clear of, so the width handle owns the whole edge. It also
+   straddles the gutter rather than starting at the panel, which is what puts the rail on
+   the boundary instead of 8px inside the panel. Measured on the sidebar, which is the
+   mirror of this: its surface ends at 247, an 8px gutter runs to 255, and its rail draws
+   at 255 -- flush against main's white card, with the gutter kept on the sidebar's own
+   side. Reproducing that here means moving the handle, not main's margin: collapsing the
+   margin does put the rail on the wall, but it also removes the panel's inner gutter and
+   leaves its contents 12px from the content wall and 20px from the window.
+   Docked the radius is 0, so `overflow: visible` costs nothing and is what lets the handle
+   reach outside; floating still clips to its 12px corners. */
+.assistant-window[data-mode="docked"] .assistant-resize.left { top: 0; left: -8px; width: 16px; }
+.assistant-window[data-mode="docked"] .assistant-resize.left::after { inset-block: 0; left: 0; }
+
+/* SmartHive's ChatResizeHandles: a 4px left edge, a 4px top edge and a 16px corner that
+   owns both. They start below/right of the corner so the three never overlap.
+
+   Two departures from it, both forced by measurement rather than taste.
+
+   The hit area is 8px, not 4px. It cannot be 16px like `.sidebar-resize-rail`, and it
+   cannot straddle the edge the way that rail does (`right: -8px`), because the panel sets
+   `overflow: hidden` -- anything outside is clipped, so the extra width has to come from
+   inside. Inside, the header's icon button sits at exactly 8px from the left in both
+   modes, so 8px doubles the target and stops flush against it. Wider steals the button's
+   first pixels and puts a col-resize cursor on it. */
+.assistant-resize { position: absolute; z-index: 10; }
+.assistant-resize.left { left: 0; top: 16px; bottom: 0; width: 8px; cursor: col-resize; }
+.assistant-resize.top { top: 0; left: 16px; right: 0; height: 8px; cursor: row-resize; }
+.assistant-resize.corner { top: 0; left: 0; width: 16px; height: 16px; z-index: 20; cursor: nw-resize; }
+
+/* The second departure: SmartHive draws nothing at all, so a resizable edge is
+   undiscoverable -- the cursor only changes once you have already guessed. This is the
+   same rail `.sidebar-resize-rail` establishes, down to the 2px line, the 120ms fade and
+   the brand fill, because the two gestures are the same gesture and the user reads them
+   as one control. `[data-dragging]` replaces that rail's `.is-resizing-sidebar` body
+   class: there are three handles here and only the one in use may light up.
+
+   The line stops 12px short of the far end because the panel is a 12px-radius card with
+   `overflow: hidden`, so the last 12px would otherwise be sliced by the curve at an angle
+   and read as a rendering fault. Docked, the radius is 0 and the inset is dropped. */
+.assistant-resize::after {
+	content: "";
+	position: absolute;
+	background: var(--border);
+	opacity: 0;
+	transition: opacity 120ms ease, background-color 120ms ease, border-color 120ms ease;
+}
+.assistant-resize.left::after { inset-block: 0 12px; left: 0; width: 2px; }
+.assistant-resize.top::after { inset-inline: 0 12px; top: 0; height: 2px; }
+.assistant-resize.corner::after {
+	inset: 0;
+	background: none;
+	border-left: 2px solid var(--border);
+	border-top: 2px solid var(--border);
+	border-top-left-radius: 12px;
+}
+.assistant-resize:hover::after,
+.assistant-resize[data-dragging]::after { opacity: 1; background-color: var(--brand); }
+.assistant-resize.corner:hover::after,
+.assistant-resize.corner[data-dragging]::after { background: none; border-color: var(--brand); }
+
+/* 28px icon buttons + 10px block padding = 48px. SmartHive's `border-b` is deliberately
+   dropped: the header and the thread share the panel's one `--sidebar` surface, so a rule
+   between them draws a boundary that the content does not actually have. Removing it also
+   removes the thing that had to line up with the page header's own divider.
+
+   The 8px inline padding is measured rather than chosen: a 16px icon centred in a 28px
+   button sits 6px inside it, so 8px puts the glyph at 14px — exactly the thread's own
+   content inset below it, on both edges. A larger value leaves the icons hanging inside
+   the text column. */
+.assistant-head { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 8px; }
+.assistant-head-left { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.assistant-head-right { display: flex; align-items: center; gap: 2px; }
+.assistant-head-action { width: 28px; height: 28px; display: grid; place-items: center; border: 0; border-radius: 8px; background: transparent; color: var(--muted-foreground); cursor: pointer; }
+.assistant-head-action:hover { background: var(--sidebar-accent); color: var(--sidebar-accent-foreground); }
+
+/* SmartHive's SessionDropdown trigger: the conversation's name is the control. It must
+   be allowed to shrink (`min-width: 0`) or a long first question widens the header and
+   pushes the window controls off the panel. */
+.assistant-session-trigger { display: flex; align-items: center; gap: 6px; min-width: 0; height: 28px; padding: 0 8px; border: 0; border-radius: 8px; background: transparent; color: var(--sidebar-foreground); font-size: 13px; cursor: pointer; }
+.assistant-session-trigger:hover, .assistant-session-trigger[data-popup-open] { background: var(--sidebar-accent); }
+.assistant-session-trigger svg { flex: 0 0 auto; color: var(--muted-foreground); }
+.assistant-session-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+
+.assistant-history { width: 300px; max-height: 340px; overflow-y: auto; padding: 4px; border-radius: 10px; background: var(--card); color: var(--foreground); box-shadow: 0 0 0 1px color-mix(in oklch, var(--foreground) 10%, transparent), 0 12px 32px -12px rgb(0 0 0 / 30%); }
+.assistant-history-label { margin: 0; padding: 6px 8px; font-size: 11px; font-weight: 500; color: var(--muted-foreground); }
+.assistant-history-empty { margin: 0; padding: 6px 8px 10px; font-size: 12px; color: var(--muted-foreground); }
+/* The row carries its own background in a variable so the hover action's fade can match
+   it. Both states set it, and [data-current] comes last so a row that is both current and
+   hovered fades from accent rather than from the lighter hover tint. */
+.assistant-history-row { --row-bg: transparent; position: relative; display: flex; align-items: center; border-radius: 7px; }
+/* `bg-accent/50` and `bg-accent`, from ChatThreadList: the current row is a neutral grey,
+   not a brand tint. It was --brand-soft here, which is a light blue -- selection is not a
+   status, and colouring it brand-blue makes one history entry look like it carries a
+   meaning the others do not. That was tolerable in the dropdown, where the list is on
+   screen for a second; it is not in the rail, which is permanent and much larger. */
+.assistant-history-row:hover { --row-bg: color-mix(in oklch, var(--accent) 50%, var(--background)); background: var(--row-bg); }
+.assistant-history-row[data-current] { --row-bg: var(--accent); background: var(--row-bg); }
+.assistant-history-open { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 7px 8px; border: 0; border-radius: 7px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.assistant-history-open:disabled { cursor: default; }
+.assistant-history-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+/* Pushed to the right edge; nothing sits between it and the wall, because the delete
+   button no longer reserves a slot there. It fades out on hover so the delete button takes
+   its place -- masking it with the action's gradient alone was not enough, because the
+   timestamp's width varies ("1 min ago" against "23 hr ago") and a mask sized for one
+   leaves the other half-covered, which reads as clipped text rather than a swap. */
+.assistant-history-meta { flex: 0 0 auto; margin-left: auto; display: inline-flex; align-items: center; font-size: 11px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; transition: opacity 100ms ease; }
+.assistant-history-row:hover .assistant-history-meta { opacity: 0; }
+/* ChatThreadList's hover actions: absolutely positioned so appearing and disappearing
+   cannot change the row's height or shift its text, and a gradient from the row's own
+   background so the timestamp underneath fades out instead of being abruptly covered.
+
+   Upstream toggles `hidden`, which is display:none; this uses opacity plus pointer-events
+   instead, because display:none also removes the button from the accessibility tree and
+   makes it unfocusable -- and then the :focus-visible rule meant to reveal it can never
+   fire, leaving no keyboard path to delete a conversation at all. Opacity keeps the
+   element reachable while reserving no space, which is what the layout complaint was
+   about. */
+.assistant-history-delete { position: absolute; inset-block: 2px; right: 3px; width: 26px; padding-left: 24px; box-sizing: content-box; display: grid; place-items: center; border: 0; border-radius: 6px; background: linear-gradient(to left, var(--row-bg) 60%, transparent); color: var(--muted-foreground); cursor: pointer; opacity: 0; pointer-events: none; }
+.assistant-history-row:hover .assistant-history-delete, .assistant-history-delete:focus-visible { opacity: 1; pointer-events: auto; }
+.assistant-history-delete:hover { color: var(--destructive); }
+
+.assistant-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 16px; }
+
+/* The full-page surface. SmartHive's ChatPage is a resizable two-pane; this rail is a
+   fixed 280px instead, because that page's list carries agent avatars and unread state
+   while ours carries a title and a timestamp -- there is nothing to reveal by widening it,
+   so a drag handle would be a control with no outcome. */
+.assistant-page-body { flex: 1; min-height: 0; display: flex; }
+/* Background, not --sidebar. SmartHive's list panel is default-background plus a right
+   border, and copying its colour instead of its structure was wrong here: this rail sits
+   immediately right of the app sidebar, which already owns --sidebar, so the two ran
+   together into one wide grey column with only the workspace's rounded edge between them.
+   The border does the separating, as upstream. */
+.assistant-rail { flex: 0 0 280px; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--background); }
+.assistant-rail-head { flex: 0 0 auto; display: flex; align-items: center; padding: 10px 12px 6px 16px; font-size: 11px; font-weight: 500; color: var(--muted-foreground); }
+/* px-2 py-1, copied from ChatPage's listBody wrapper. */
+.assistant-rail-list { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 8px; display: flex; flex-direction: column; gap: 2px; }
+
+/* CHAT_GUTTER + CHAT_COLUMN, copied rather than approximated -- an earlier version capped
+   the column at 760px and then added the panel's own 14px padding on top, which put the
+   first character 58px from the pane edge instead of 32px.
+
+   Upstream nests these deliberately: the gutter is OUTSIDE the cap, so it acts as a floor
+   that only bites while the pane is narrower than the column, and past that the column
+   parks at max-w-4xl and centres. `width: min(cap, 100% - 2*gutter)` is that same rule in
+   one expression.
+
+   The steps track the CONTAINER, not the viewport, which is why this pane declares
+   container-type: a viewport media query would widen the gutter of a narrow pane just
+   because the window behind it is wide. Breakpoints are Tailwind's @2xl (42rem) and
+   @4xl (56rem) verbatim. */
+.assistant-page-thread { flex: 1; min-width: 0; display: flex; flex-direction: column; container-type: inline-size; }
+.assistant-page-thread .assistant-scroll { padding: 16px 20px; }
+.assistant-page-thread .assistant-scroll > * { width: 100%; max-width: 896px; margin-inline: auto; }
+.assistant-page-thread .assistant-composer { width: min(896px, 100% - 40px); margin: 10px auto 16px; }
+@container (min-width: 42rem) {
+	.assistant-page-thread .assistant-scroll { padding-inline: 32px; }
+	.assistant-page-thread .assistant-composer { width: min(896px, 100% - 64px); }
+}
+@container (min-width: 56rem) {
+	.assistant-page-thread .assistant-scroll { padding-inline: 48px; }
+	.assistant-page-thread .assistant-composer { width: min(896px, 100% - 96px); }
+}
+.assistant-page-back { flex: 0 0 auto; display: flex; align-items: center; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+/* The copied Button carries size="sm" as Tailwind utilities (h-7 px-2.5), and this project
+   does not run Tailwind -- those classes do nothing, and [data-slot="button"] sets no
+   height of its own. Without this the button fell back to the browser's default
+   `padding: 1px 6px` and rendered 24px tall beside a 30px icon tile in a 56px header,
+   which is why it looked squashed. 30px is the header-control size this product already
+   uses for .finops-header-refresh. The size prop is not a shortcut here: every other
+   Button in the app is given its height by the context that renders it. */
+.assistant-new-chat { height: 30px; padding: 0 10px; border: 1px solid var(--border); background: var(--card); color: var(--foreground); font-size: 12px; line-height: 16px; font-weight: 500; }
+.assistant-new-chat:hover:not(:disabled) { border-color: var(--input); background: var(--background); }
+@media (max-width: 767px) {
+	.assistant-page-body { flex-direction: column; }
+	.assistant-rail { flex: 1; border-right: 0; }
+}
+/* With no rule to clip against, a hard cut at the scroll box edge reads as a rendering
+   fault rather than as an edge. The fade only exists once there is something scrolled
+   past it, so the first line is never dimmed while the thread sits at the top. */
+.assistant-scroll[data-scrolled="true"] { mask-image: linear-gradient(to bottom, transparent 0, #000 24px); }
+
+/* SmartHive's EmptyState is `flex-1 flex-col items-center justify-center gap-5 px-6 py-8`
+   around a `text-center space-y-3` block and a `w-full max-w-xs space-y-2` prompt list.
+   The scroll container already contributes 14px of inline padding, so 12px here lands on
+   SmartHive's 24px inset rather than doubling it. */
+.assistant-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; padding: 32px 12px; }
+.assistant-empty-copy { text-align: center; display: grid; gap: 12px; }
+.assistant-empty-copy h3 { margin: 0; font-size: 16px; font-weight: 600; }
+.assistant-empty-copy p { margin: 0; color: var(--muted-foreground); font-size: 14px; line-height: 20px; }
+.assistant-empty-copy b { font-weight: 500; color: var(--foreground); }
+.assistant-starters { width: 100%; max-width: 320px; display: grid; gap: 8px; }
+.assistant-starters button { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px; text-align: left; font-size: 14px; line-height: 20px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--foreground); cursor: pointer; transition: background-color .15s ease, border-color .15s ease; }
+.assistant-starters button:hover { background: var(--muted); border-color: color-mix(in oklch, var(--brand) 40%, var(--border)); }
+/* The emoji takes a column of its own, so a prompt that wraps keeps its second line under
+   the first word rather than under the icon. Centred against the whole text block rather
+   than aligned to its first line: the icon labels the prompt, not its opening words. */
+.assistant-starter-emoji { grid-column: 1; }
+
+/* SmartHive gives every message `px-5 py-2`, so any two adjacent messages sit 16px apart.
+   The question and its answer are two messages, not two parts of one, so they take the
+   same 16px the scroll container puts between separate exchanges. `.assistant-answer`
+   keeps a tighter 8px because those are the parts *inside* one reply. */
+/* `min-width: 0` on all three is load-bearing, not tidying. A flex or grid item's
+   automatic minimum size is its min-content width, and a `pre` line does not wrap, so one
+   long code line gave the exchange a 431px minimum inside a 380px panel — the whole answer
+   was widened and then clipped by the panel's `overflow: hidden`. Letting the chain shrink
+   puts the scrolling back where it belongs, inside the code block and the table. */
+.assistant-exchange { display: grid; gap: 16px; min-width: 0; }
+.assistant-question { justify-self: end; max-width: 85%; background: var(--muted); border-radius: 12px; padding: 8px 12px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
+/* Must stay a grid: as a plain block the prose paragraph overlapped the chart card and
+   swallowed clicks on the Pin button, which is exactly what the self-check caught. */
+.assistant-answer { display: grid; gap: 8px; min-width: 0; }
+.assistant-answer > p { margin: 0; font-size: 13px; line-height: 1.7; white-space: pre-wrap; }
+
+/* SmartHive's `minimal` render mode, its Tailwind utilities written out. `break-words` is
+   the one rule that is not cosmetic here: an unbroken model-emitted identifier would
+   otherwise force the whole panel wider than the width the person dragged it to. */
+.assistant-markdown { min-width: 0; font-size: 13px; line-height: 1.7; overflow-wrap: break-word; }
+.assistant-markdown > *:first-child { margin-top: 0; }
+.assistant-markdown > *:last-child { margin-bottom: 0; }
+.assistant-markdown p { margin: 8px 0; }
+.assistant-markdown ul { margin: 8px 0; padding-inline: 16px 8px; list-style: disc; }
+.assistant-markdown ol { margin: 8px 0; padding-left: 24px; list-style: decimal; }
+.assistant-markdown li { margin: 4px 0; }
+.assistant-markdown ::marker { color: var(--muted-foreground); }
+.assistant-markdown h1, .assistant-markdown h2 { font-size: 14px; margin: 16px 0 10px; }
+.assistant-markdown h1 { font-weight: 700; }
+.assistant-markdown h2 { font-weight: 600; }
+.assistant-markdown h3, .assistant-markdown h4 { font-size: 13px; font-weight: 600; margin: 14px 0 8px; }
+.assistant-markdown strong { font-weight: 600; }
+.assistant-markdown em { font-style: italic; }
+.assistant-markdown del { text-decoration: line-through; color: var(--muted-foreground); }
+.assistant-markdown a { color: var(--brand); text-decoration: none; }
+.assistant-markdown a:hover { text-decoration: underline; }
+.assistant-markdown blockquote { margin: 8px 0; padding-left: 12px; border-left: 2px solid color-mix(in oklch, var(--muted-foreground) 30%, transparent); color: var(--muted-foreground); font-style: italic; }
+.assistant-markdown hr { margin: 16px 0; border: 0; border-top: 1px solid var(--border); }
+.assistant-markdown code { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; padding: 1px 5px; border-radius: 4px; background: color-mix(in oklch, var(--foreground) 4%, transparent); border: 1px solid color-mix(in oklch, var(--foreground) 6%, transparent); }
+.assistant-markdown pre { margin: 8px 0; padding: 10px 12px; border-radius: 8px; background: var(--card); border: 1px solid var(--border); overflow-x: auto; }
+.assistant-markdown pre code { padding: 0; border: 0; background: none; }
+.assistant-md-table { margin: 12px 0; overflow-x: auto; }
+.assistant-md-table table { min-width: 100%; border-collapse: collapse; font-size: 12px; }
+.assistant-md-table thead { border-bottom: 1px solid var(--border); }
+.assistant-md-table th { text-align: left; padding: 6px 10px; font-weight: 600; color: var(--muted-foreground); white-space: nowrap; }
+.assistant-md-table td { padding: 6px 10px; border-bottom: 1px solid color-mix(in oklch, var(--border) 50%, transparent); }
+.assistant-thinking, .assistant-error { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted-foreground); }
+.assistant-error { color: var(--destructive); }
+.assistant-meta { font-size: 10px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.assistant-spin { animation: assistant-spin 1s linear infinite; }
+@keyframes assistant-spin { to { transform: rotate(360deg); } }
+
+.assistant-steps-trigger { display: flex; align-items: center; gap: 4px; padding: 0; border: 0; background: transparent; color: var(--muted-foreground); font-size: 11px; cursor: pointer; }
+.assistant-steps-trigger:hover { color: var(--foreground); }
+.assistant-steps-caret { transition: transform .15s ease; }
+.assistant-steps-caret.open { transform: rotate(90deg); }
+.assistant-steps-body { margin-top: 6px; border: 1px solid var(--border); border-radius: 8px; background: color-mix(in oklch, var(--muted) 45%, transparent); padding: 8px; display: grid; gap: 4px; }
+.assistant-step { display: flex; align-items: baseline; gap: 6px; font-size: 11px; color: var(--muted-foreground); }
+.assistant-step b { color: var(--foreground); font-weight: 600; }
+.assistant-step-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--brand); flex: 0 0 auto; }
+.assistant-step-fail { color: var(--destructive); flex: 0 0 auto; }
+.assistant-steps-note { margin: 4px 0 0; font-size: 10px; color: var(--muted-foreground); line-height: 1.5; }
+
+.assistant-chart { margin: 0; border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: var(--card); display: grid; gap: 6px; }
+.assistant-chart-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.assistant-chart-title { display: grid; gap: 2px; min-width: 0; }
+.assistant-chart-title b { font-size: 12px; font-weight: 600; }
+.assistant-chart-title span { font-size: 10px; color: var(--muted-foreground); }
+.assistant-chart-actions { display: flex; gap: 2px; flex: 0 0 auto; overflow: visible; }
+/* Recharts fills its container exactly, so without this the plot sits 6px from the
+   subtitle above and 6px from the dashed rule below, which reads as cramped on the
+   densest element in the card. `content-box` keeps `height` meaning the plot area, so
+   adding room grows the card rather than shrinking the chart. */
+.assistant-chart-plot { box-sizing: content-box; padding: 16px 0; }
+.assistant-chart-action { position: relative; width: 24px; height: 24px; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--muted-foreground); cursor: pointer; }
+.assistant-chart-action:hover:not(:disabled) { background: var(--muted); color: var(--brand); }
+.assistant-chart-action:disabled { opacity: .5; cursor: default; }
+.assistant-chart-action-question .assistant-chart-tooltip {
+	position: absolute;
+	top: calc(100% + 6px);
+	right: 0;
+	z-index: 20;
+	width: max-content;
+	min-width: 220px;
+	max-width: min(480px, calc(100vw - 48px));
+	padding: 7px 9px;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	background: var(--popover);
+	color: var(--popover-foreground);
+	box-shadow: 0 12px 30px oklch(0 0 0 / 18%);
+	font-size: 11px;
+	line-height: 16px;
+	text-align: left;
+	white-space: normal;
+	opacity: 0;
+	transform: translateY(-2px);
+	pointer-events: none;
+	transition: opacity 120ms ease, transform 120ms ease;
+}
+.assistant-chart-action-question:hover .assistant-chart-tooltip,
+.assistant-chart-action-question:focus-visible .assistant-chart-tooltip {
+	opacity: 1;
+	transform: translateY(0);
+}
+.assistant-chart-basis { display: grid; gap: 2px; font-size: 10px; color: var(--muted-foreground); line-height: 1.5; border-top: 1px dashed var(--border); padding-top: 6px; }
+.assistant-chart-empty { padding: 18px 10px; text-align: center; font-size: 12px; color: var(--muted-foreground); }
+
+.assistant-kpi-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(88px, 1fr)); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.assistant-kpi { background: var(--card); padding: 8px 10px; display: grid; gap: 2px; }
+.assistant-kpi span { font-size: 10px; color: var(--muted-foreground); }
+.assistant-kpi b { font-size: 15px; font-variant-numeric: tabular-nums; }
+
+.assistant-table-scroll { max-height: 260px; overflow: auto; }
+.assistant-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.assistant-table th { position: sticky; top: 0; background: var(--card); text-align: left; font-weight: 600; color: var(--muted-foreground); padding: 5px 6px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.assistant-table td { padding: 5px 6px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+.assistant-table tr:last-child td { border-bottom: 0; }
+
+.assistant-composer { flex: 0 0 auto; margin: 10px 12px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); display: grid; }
+.assistant-composer:focus-within { border-color: var(--brand); }
+.assistant-composer textarea { border: 0; background: transparent; resize: none; padding: 10px 10px 4px; font: inherit; font-size: 13px; color: var(--foreground); min-height: 42px; max-height: 132px; outline: none; }
+.assistant-composer-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 6px 6px 8px; }
+.assistant-agent-chip { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px 0 6px; border-radius: 999px; background: var(--muted); color: var(--muted-foreground); font-size: 11px; font-weight: 500; }
+.assistant-agent-chip svg { color: var(--brand); }
+.assistant-send { width: 26px; height: 26px; display: grid; place-items: center; border: 0; border-radius: 6px; background: var(--brand); color: var(--brand-foreground); cursor: pointer; flex: 0 0 auto; }
+.assistant-send:disabled { opacity: .45; cursor: default; }
+
+/* The body and its fields reuse `.registry-editor-body` / `.registry-field` so this dialog
+   is built from the same primitives as the registry editor. Writing private classes here
+   is what produced a dialog whose fields ran edge to edge and whose inputs fell back to
+   the browser's native controls, because the input styling is scoped to `.registry-field`.
+   Only the row gap and the shorter description box differ. */
+.assistant-pin-body { gap: 12px; }
+.assistant-pin-body .registry-field [data-slot="textarea"] { min-height: 56px; font-family: inherit; }
+.assistant-pin-summary { margin: 0; display: grid; gap: 6px; border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: color-mix(in oklch, var(--muted) 40%, transparent); }
+.assistant-pin-summary > div { display: grid; grid-template-columns: 72px 1fr; gap: 8px; font-size: 11px; }
+.assistant-pin-summary dt { color: var(--muted-foreground); }
+.assistant-pin-summary dd { margin: 0; line-height: 1.5; }
+/* Pushed to the right of the option row so the report title stays the thing being read
+   and the count stays a secondary fact. */
+.assistant-pin-option-meta { margin-left: auto; padding-left: 12px; color: var(--muted-foreground); font-size: 11px; }
+.assistant-pin-note { margin: 0; font-size: 12px; line-height: 1.6; color: var(--muted-foreground); }
+
+/* The grid sizes itself from THIS element's width, not the viewport's. The sidebar can
+   collapse or be dragged to any width, so a viewport breakpoint answers the wrong
+   question: the same 1440px window can leave 1180px or 1430px of room here. */
+.pinned-report-body {
+	min-height: 0;
+	flex: 1 1 auto;
+	overflow-y: auto;
+	padding: 14px 16px 16px;
+	container-type: inline-size;
+	container-name: pinned-report;
+}
+.pinned-report-content {
+	width: 100%;
+	max-width: none;
+	margin-inline: 0;
+	display: grid;
+	gap: 16px;
+	align-content: start;
+}
+.pinned-report-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.pinned-visibility-control {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	color: var(--muted-foreground);
+	font-size: 11px;
+	font-weight: 500;
+	white-space: nowrap;
+}
+.pinned-layout-switcher {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	height: 30px;
+	padding: 2px;
+	border: 1px solid var(--border);
+	border-radius: 7px;
+	background: var(--muted);
+}
+.pinned-layout-switcher button {
+	height: 24px;
+	border: 0;
+	border-radius: 5px;
+	padding: 0 8px;
+	background: transparent;
+	color: var(--muted-foreground);
+	font-size: 11px;
+	line-height: 16px;
+	font-weight: 500;
+	cursor: pointer;
+}
+.pinned-layout-switcher button.active {
+	background: var(--card);
+	color: var(--foreground);
+	box-shadow: 0 1px 2px oklch(0 0 0 / 8%);
+}
+
+.pinned-layout-list {
+	max-width: none;
+	grid-template-columns: minmax(0, 1fr);
+}
+/* auto-fit derives the column count from the room actually available: as many 380px
+   tracks as fit, then share the remainder. No breakpoint list to keep in sync, and a
+   wider window simply gets more columns instead of stopping at two.
+   `min(100%, 380px)` is the overflow guard -- below 380px the track collapses to the
+   container instead of pushing a horizontal scrollbar onto the page. */
+/* A fixed 12-column base, the standard dashboard grid.
+
+   `auto-fit` sized a track to a whole card, so a card could only be 1, 2 or 3 tracks wide
+   -- measured at 424 / 864 / 1304px, with nothing reachable in between. Twelve columns
+   decouple the drag step from the card width: the step becomes one twelfth (~110px at
+   1304px) while cards still share a column rhythm, still reflow, and still stretch to a
+   common row height.
+
+   The column count is now constant, so how many cards sit in a row is expressed as the
+   default span instead, per container width. The thresholds come from the same ~380px
+   readable-card floor the previous layout used: 2 cards need 776px, 3 need 1172px and
+   4 need 1568px, rounded up to leave a little slack. */
+.pinned-layout-grid,
+.pinned-layout-mixed {
+	max-width: none;
+	margin-inline: 0;
+	grid-template-columns: repeat(12, minmax(0, 1fr));
+	align-items: stretch;
+}
+.pinned-layout-grid > :not(.pinned-report-item),
+.pinned-layout-mixed > :not(.pinned-report-item) {
+	grid-column: 1 / -1;
+}
+.pinned-layout-grid .pinned-report-item,
+.pinned-layout-mixed .pinned-report-item {
+	grid-column: span 12;
+	min-width: 0;
+}
+.pinned-layout-grid .pinned-report-question,
+.pinned-layout-mixed .pinned-report-question {
+	overflow: hidden;
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	line-height: 1.45;
+}
+
+.pinned-report-description { margin: 0; font-size: 13px; line-height: 1.6; }
+/* Both states inherit the h1's type, so entering edit mode does not resize or reflow the
+   title. */
+.pinned-title-button, .pinned-title-input {
+	font: inherit;
+	color: inherit;
+	padding: 2px 6px;
+	border-radius: 6px;
+	max-width: 100%;
+}
+.pinned-title-button {
+	appearance: none;
+	border: 1px solid transparent;
+	background: transparent;
+	text-align: start;
+	/* A text caret rather than a pointer: this edits in place, it does not navigate. */
+	cursor: text;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.pinned-title-button:hover { background: var(--muted); }
+.pinned-title-button:focus-visible { outline: none; border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring) 50%, transparent); }
+.pinned-title-input {
+	width: 320px;
+	border: 1px solid var(--border);
+	background: var(--background);
+}
+/* The heading has to be allowed to shrink below its content, or the fixed-width input
+   keeps its 320px on a narrow screen and lies across the layout switcher instead.
+   The offset that cancels the children's padding lives HERE rather than on the children,
+   which keeps the glyphs on the x a plain h1 would put them without lying about how wide
+   the title is. A negative margin on the child is subtracted from this element's
+   intrinsic width, and the child's own `max-width: 100%` then resolves against that
+   short measurement -- so the name truncated 6px early with the rest of the header
+   empty, which is a truncation caused entirely by the padding meant to make room for the
+   hover background. */
+.pinned-report-workspace .finops-header h1 { min-width: 0; margin-inline-start: -6px; }
+.pinned-title-input:focus-visible { outline: none; border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring) 50%, transparent); }
+.pinned-report-question { margin: 0; font-size: 11px; color: var(--muted-foreground); }
+/* Each chart carries the question that produced it, so a report holding several charts
+   stays readable as a sequence of answers rather than an unlabelled stack. */
+.pinned-report-item { position: relative; display: grid; gap: 8px; }
+
+/* Handles sit in the 16px gutter between cards rather than on top of the card, so they
+   never cover the chart or the pin/question buttons. Hidden until the card is hovered:
+   six always-visible grips would read as chrome on a page whose point is the data. */
+.pinned-card-resize {
+	position: absolute;
+	z-index: 5;
+	opacity: 0;
+	transition: opacity 120ms ease;
+}
+.pinned-card-resize::after {
+	content: "";
+	position: absolute;
+	border-radius: 999px;
+	background: var(--brand);
+}
+.pinned-card-resize.right { top: 16px; bottom: 16px; right: -8px; width: 16px; cursor: col-resize; }
+.pinned-card-resize.right::after { top: 50%; right: 6px; width: 3px; height: 26px; transform: translateY(-50%); }
+.pinned-card-resize.bottom { left: 16px; right: 16px; bottom: -8px; height: 16px; cursor: row-resize; }
+.pinned-card-resize.bottom::after { left: 50%; bottom: 6px; height: 3px; width: 26px; transform: translateX(-50%); }
+.pinned-card-resize.corner { right: -8px; bottom: -8px; width: 18px; height: 18px; z-index: 6; cursor: nwse-resize; }
+.pinned-card-resize.corner::after { right: 5px; bottom: 5px; width: 7px; height: 7px; border-radius: 2px; }
+.pinned-report-item:hover .pinned-card-resize,
+.pinned-report-item:focus-within .pinned-card-resize { opacity: .65; }
+.pinned-card-resize:hover { opacity: 1 !important; }
+
+/* The grip is the only always-visible action, because it is the only one whose existence
+   is not otherwise discoverable: the pin and the question mark describe a card you can
+   already see, while nothing about a card suggests it can be moved. */
+.pinned-card-drag { cursor: grab; }
+.pinned-card-drag:active { cursor: grabbing; }
+
+/* The card being dragged is lifted rather than dimmed: it is the thing under the cursor,
+   so it has to stay readable. `transform` is written by the pointer handler, which is why
+   there is no transition on it -- a transition would make the card lag the pointer. */
+.pinned-report-item[data-dragging] > .assistant-chart {
+	box-shadow: 0 18px 40px oklch(0 0 0 / 22%);
+	border-color: var(--brand);
+}
+.pinned-report-item[data-drop-target] > .assistant-chart {
+	border-color: var(--brand);
+	box-shadow: 0 0 0 1px var(--brand);
+}
+
+/* A card sized by hand keeps its plot filling it, so the drag enlarges the chart rather
+   than the whitespace under it. */
+.assistant-chart.fill { display: flex; flex-direction: column; }
+
+/* In light mode `--card` is the same pure white as `--background`, so a report card is
+   distinguishable only by its border. `--sidebar` is the one surface token that sits a
+   shade off the page, which is exactly what makes the nav read as a surface.
+
+   Dark mode is provably unchanged rather than merely untouched: `--sidebar` and `--card`
+   are the identical value there (oklch(0.21 0.006 285.885)), which is why the cards
+   already matched the nav.
+
+   Scoped to the report instead of to `.assistant-chart` globally, because inside the
+   assistant panel the surface itself IS `--sidebar`; a card painted to match would
+   dissolve into it and lose the separation that panel is built on. The sticky table
+   header and the KPI cells carry `--card` of their own and have to move with it, or they
+   render as white patches on the new surface. */
+.pinned-report-item > .assistant-chart,
+.pinned-report-item > .assistant-chart .assistant-table th,
+.pinned-report-item > .assistant-chart .assistant-kpi {
+	background: var(--sidebar);
+}
+
+/* The border is back, but softened: with the card carrying its own surface colour the
+   outline no longer has to do the work of separating it from the page, so it only needs
+   to define the edge. The same `color-mix` softening `.finops-chart-tooltip` already
+   uses, one step lighter. */
+.pinned-report-item > .assistant-chart {
+	border: 1px solid color-mix(in oklch, var(--border) 60%, transparent);
+}
+.assistant-chart.fill .assistant-chart-plot.fill {
+	box-sizing: border-box;
+	min-height: 150px;
+	flex: 1 1 auto;
+}
+.assistant-chart.fill .assistant-table-scroll.fill {
+	max-height: none;
+	min-height: 0;
+	flex: 1 1 auto;
+}
+.pinned-layout-grid .pinned-report-item,
+.pinned-layout-mixed .pinned-report-item {
+	height: 100%;
+}
+/* The card fills whatever height its item has, whether that came from the row's stretch or
+   from an explicit drag, so the plot and the table scroll region are the parts that give
+   way rather than the card growing past its size. */
+.pinned-report-item > .assistant-chart {
+	height: 100%;
+	min-height: 0;
+}
+
+/* Two cards per row and up. `[data-wide]` is set from the card's own column count in
+   pinned-report-page.tsx, and the mixed layout's lead card takes the same treatment: both
+   mean "twice the default", so the pair stays expressed as one rule per breakpoint rather
+   than a hardcoded track number that stops making sense at another width.
+
+   A blanket full row on tables was the earlier bug: it gave a MODEL/REQUESTS pair the
+   whole 1481px. */
+@container pinned-report (min-width: 800px) {
+	.pinned-layout-grid .pinned-report-item,
+	.pinned-layout-mixed .pinned-report-item { grid-column: span 6; }
+	.pinned-layout-grid .pinned-report-item[data-wide],
+	.pinned-layout-mixed .pinned-report-item[data-wide],
+	.pinned-layout-mixed .pinned-report-item[data-index="0"] { grid-column: span 12; }
+}
+
+@container pinned-report (min-width: 1180px) {
+	.pinned-layout-grid .pinned-report-item,
+	.pinned-layout-mixed .pinned-report-item { grid-column: span 4; }
+	.pinned-layout-grid .pinned-report-item[data-wide],
+	.pinned-layout-mixed .pinned-report-item[data-wide],
+	.pinned-layout-mixed .pinned-report-item[data-index="0"] { grid-column: span 8; }
+}
+
+@container pinned-report (min-width: 1580px) {
+	.pinned-layout-grid .pinned-report-item,
+	.pinned-layout-mixed .pinned-report-item { grid-column: span 3; }
+	.pinned-layout-grid .pinned-report-item[data-wide],
+	.pinned-layout-mixed .pinned-report-item[data-wide],
+	.pinned-layout-mixed .pinned-report-item[data-index="0"] { grid-column: span 6; }
+}
+
+@media (max-width: 680px) {
+  /* Mobile pins the panel to both side insets and drops the drag handles, so the
+     stylesheet owns the geometry here rather than the resize hook. The page header is
+     56px rather than 64px, so the band the top edge has to land in moves up with it. */
+  :root { --assistant-top-reserve: 68px; }
+  .assistant-window { right: 8px; left: 8px; bottom: 8px; width: auto; height: calc(100vh - var(--assistant-top-reserve)); }
+  .assistant-fab { right: 12px; bottom: 12px; }
+}
+@media (max-width: 680px) and (min-height: 740px) {
+  /* Same band jump as the desktop default: below this height the panel is full height
+     with its top pinned at 60px, above it a fixed height starts well clear of the chips. */
+  .assistant-window { height: 560px; }
+}

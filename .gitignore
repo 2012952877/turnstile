@@ -1,0 +1,51 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+!frontend/.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+local.settings.json
+*.parameters.json
+!*.parameters.example.json
+.turnstile/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.python_packages/
+
+# Node and frontend output
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+
+# Deployment and infrastructure output
+infra/main.json
+*.zip
+*.tfstate
+*.tfstate.*
+.azure/
+.azd/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Logs and temporary files
+*.log
+tmp/
+temp/

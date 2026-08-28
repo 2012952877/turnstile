@@ -1,0 +1,376 @@
+schemas:
+  BrandKey:
+    type: string
+    enum:
+    - generic
+    - amazon_bedrock
+    - anthropic
+    - azure_databricks
+    - github
+    - microsoft
+    - microsoft_foundry
+    - openai
+  BudgetScopeType:
+    type: string
+    enum:
+    - organization
+    - department
+    - user
+  AssistantTurn:
+    type: object
+    additionalProperties: false
+    required:
+    - role
+    - content
+    properties:
+      role:
+        type: string
+        enum:
+        - user
+        - assistant
+      content:
+        type: string
+        minLength: 1
+        maxLength: 20000
+  AssistantAskRequest:
+    type: object
+    additionalProperties: false
+    required:
+    - question
+    properties:
+      question:
+        type: string
+        minLength: 1
+        maxLength: 4000
+      history:
+        type: array
+        maxItems: 20
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/AssistantTurn
+        description: 'Prior text turns only. Charts are deliberately not replayed through the context
+
+          window, so a long conversation does not grow unboundedly.
+
+          '
+      conversation_id:
+        type:
+        - string
+        - 'null'
+      timezone:
+        type: string
+        maxLength: 64
+        default: UTC
+      locale:
+        type: string
+        maxLength: 16
+        default: en
+  AssistantStep:
+    type: object
+    additionalProperties: false
+    required:
+    - sequence
+    - tool
+    - arguments
+    - status
+    - summary
+    description: One tool call, surfaced so an answer can be audited.
+    properties:
+      sequence:
+        type: integer
+        minimum: 1
+      tool:
+        type: string
+      arguments:
+        type: object
+        additionalProperties: true
+      status:
+        type: string
+        enum:
+        - ok
+        - error
+      summary:
+        type: string
+        maxLength: 500
+      row_count:
+        type: integer
+        minimum: 0
+        default: 0
+  AssistantReply:
+    type: object
+    additionalProperties: false
+    required:
+    - conversation_id
+    - message
+    - charts
+    - steps
+    - latency_ms
+    - model
+    properties:
+      conversation_id:
+        type: string
+      message:
+        type: string
+      charts:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/ChartSpec
+      steps:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/AssistantStep
+      latency_ms:
+        type: integer
+        minimum: 0
+      model:
+        type: string
+      total_tokens:
+        type: integer
+        minimum: 0
+        default: 0
+        description: 'The assistant''s own spend. It calls the same gateway as every other caller and
+
+          is attributed in the dashboard it analyses.
+
+          '
+  ChartSeries:
+    type: object
+    additionalProperties: false
+    required:
+    - key
+    - label
+    properties:
+      key:
+        type: string
+        minLength: 1
+        maxLength: 64
+      label:
+        type: string
+        minLength: 1
+        maxLength: 120
+  ChartQuery:
+    type: object
+    additionalProperties: false
+    required:
+    - tool
+    - arguments
+    description: 'Everything needed to reproduce a chart, and nothing else. `arguments` has already
+
+      been validated against the tool''s own argument model, so replaying it cannot widen
+
+      what the original question was allowed to read. No SQL is ever persisted.
+
+      '
+    properties:
+      tool:
+        type: string
+        minLength: 1
+        maxLength: 64
+      arguments:
+        type: object
+        additionalProperties: true
+  ChartSpec:
+    type: object
+    additionalProperties: false
+    required:
+    - id
+    - kind
+    - title
+    - time_range_label
+    - basis
+    - unit
+    - category_key
+    - category_label
+    - series
+    - rows
+    - generated_at
+    - query
+    properties:
+      id:
+        type: string
+        minLength: 1
+        maxLength: 64
+      kind:
+        type: string
+        enum:
+        - bar
+        - line
+        - table
+        - kpi
+      title:
+        type: string
+        minLength: 1
+        maxLength: 200
+      time_range_label:
+        type: string
+        minLength: 1
+        maxLength: 120
+      basis:
+        type: string
+        minLength: 1
+        maxLength: 400
+      unit:
+        type: string
+        maxLength: 60
+      category_key:
+        type: string
+        minLength: 1
+        maxLength: 64
+      category_label:
+        type: string
+        minLength: 1
+        maxLength: 120
+      series:
+        type: array
+        minItems: 1
+        maxItems: 12
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/ChartSeries
+      rows:
+        type: array
+        maxItems: 500
+        items:
+          type: object
+          additionalProperties: true
+      generated_at:
+        type: string
+        format: date-time
+      range_start:
+        type:
+        - string
+        - 'null'
+        format: date
+        description: 'The first calendar day this chart covered. Present so pinning can freeze a
+
+          relative preset onto the window the reader saw; absent on charts stored before
+
+          it existed, which keep resolving their preset on every refresh.
+
+          '
+      range_end:
+        type:
+        - string
+        - 'null'
+        format: date
+        description: The last calendar day covered, inclusive.
+      query:
+        $ref: ../../openapi.yaml#/components/schemas/ChartQuery
+  ConversationSummary:
+    type: object
+    additionalProperties: false
+    required:
+    - id
+    - title
+    - owner_id
+    - turn_count
+    - created_at
+    - updated_at
+    properties:
+      id:
+        type: string
+        format: uuid
+      title:
+        type: string
+        description: The label shown in the history list. See `title_source`.
+      title_source:
+        type: string
+        enum:
+        - question
+        - model
+        - user
+        default: question
+        description: 'Where the title came from, and therefore whether it may be replaced.
+
+          `question` is the placeholder taken from the first question and is the only
+
+          value the title endpoint will overwrite; `model` and `user` are final.
+
+          '
+      owner_id:
+        type: string
+      turn_count:
+        type: integer
+        minimum: 0
+      created_at:
+        type: string
+        format: date-time
+      updated_at:
+        type: string
+        format: date-time
+  ConversationExchange:
+    type: object
+    additionalProperties: false
+    required:
+    - position
+    - question
+    - reply
+    - created_at
+    properties:
+      position:
+        type: integer
+        minimum: 0
+      question:
+        type: string
+      reply:
+        $ref: ../../openapi.yaml#/components/schemas/AssistantReply
+      created_at:
+        type: string
+        format: date-time
+  Conversation:
+    allOf:
+    - $ref: ../../openapi.yaml#/components/schemas/ConversationSummary
+    - type: object
+      required:
+      - exchanges
+      properties:
+        exchanges:
+          type: array
+          items:
+            $ref: ../../openapi.yaml#/components/schemas/ConversationExchange
+  ConversationList:
+    type: object
+    additionalProperties: false
+    required:
+    - items
+    properties:
+      items:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/ConversationSummary
+  ConversationRename:
+    type: object
+    additionalProperties: false
+    required:
+    - title
+    properties:
+      title:
+        type: string
+        minLength: 1
+        maxLength: 200
+  ConversationTitleRequest:
+    type: object
+    additionalProperties: false
+    properties:
+      locale:
+        type: string
+        minLength: 2
+        maxLength: 16
+        default: en
+        description: 'The language to write the title in. This is the reader''s current UI locale,
+
+          not the one the conversation was held in, because the title is read now.
+
+          '
+  Error:
+    type: object
+    additionalProperties: false
+    required:
+    - code
+    - message
+    - request_id
+    properties:
+      code:
+        type: string
+      message:
+        type: string
+      request_id:
+        type: string

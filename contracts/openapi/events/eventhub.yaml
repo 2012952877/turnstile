@@ -1,0 +1,5 @@
+eventContracts:
+  usage-event:
+    transport: Azure Event Hubs
+    schema:
+      $ref: ../../openapi.yaml#/components/schemas/UsageEvent

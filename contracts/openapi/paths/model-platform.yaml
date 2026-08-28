@@ -1,0 +1,872 @@
+paths:
+  /api/v1/model-management/connections:
+    post:
+      tags:
+      - Model Control Plane
+      operationId: createModelConnection
+      summary: Register a zero-model provider connection
+      description: 'Stores provider endpoint identity, authentication mode, and target APIM gateway.
+
+        This operation does not create a model, mutate APIM, or collect a provider key.
+
+        The first model publication performs the real candidate-revision validation and,
+
+        for API-key connections, carries the one-time key.
+
+        '
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/ModelConnectionCreate
+      responses:
+        '200':
+          description: Updated model registry with the zero-model connection
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/ModelRegistry
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '422':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/model-management/connections/{runtime_id}:
+    put:
+      tags:
+      - Model Control Plane
+      operationId: updateModelConnection
+      summary: Update safe connection metadata
+      description: 'Updates only the display name and enabled/default state. Provider, gateway,
+
+        endpoint, authentication, and routing configuration remain immutable so an
+
+        existing database connection cannot drift from its published APIM route.
+
+        '
+      parameters:
+      - name: runtime_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/ModelConnectionUpdate
+      responses:
+        '200':
+          description: Updated model registry
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/ModelRegistry
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '422':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+    delete:
+      tags:
+      - Model Control Plane
+      operationId: deleteModelConnection
+      summary: Delete an empty Turnstile-managed connection
+      description: 'Deletes only the zero-model Runtime row. Connections with models, default
+
+        connections, unmanaged runtimes, and connections used by an in-progress publication
+
+        are rejected. Historical usage, immutable publications, and retained APIM resources
+
+        are not deleted.
+
+        '
+      parameters:
+      - name: runtime_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Updated model registry without the deleted connection
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/ModelRegistry
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/model-management/models/{item_id}:
+    delete:
+      tags:
+      - Model Control Plane
+      security:
+      - sessionCookie: []
+      operationId: deleteManagedModel
+      summary: Remove a model from Turnstile and its managed APIM API
+      description: 'Queues a subtractive APIM revision. The active Registry row remains available until
+
+        the candidate revision proves the alias is absent and is promoted. Activation then
+
+        physically deletes the Turnstile managed_model row and its current access relations.
+
+        Historical usage and immutable publication records remain. Upstream provider assets,
+
+        including Amazon Bedrock models and Microsoft Foundry deployments, are never deleted.
+
+        '
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '202':
+          description: Model removal publication queued
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayPublicationAccepted
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/model-management/models/{item_id}/backend-pool:
+    get:
+      tags:
+      - Model Control Plane
+      security:
+      - sessionCookie: []
+      operationId: getManagedModelBackendPool
+      summary: Read one model's effective APIM-native backend Pool
+      description: Authenticated readback for both Owner and Member Router users.
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Effective resolved Pool configuration
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayBackendPoolConfig
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+    put:
+      tags:
+      - Model Control Plane
+      security:
+      - sessionCookie: []
+      operationId: configureManagedModelBackendPool
+      summary: Queue an APIM-native equivalent-deployment Pool for one model
+      description: 'Owner-only. This publishes independently of Router draft persistence.
+
+        Resolves only existing compatible managed Runtimes. All members must share the
+
+        model provider, gateway, protocol, backend path, upstream deployment identity,
+
+        authentication strategy, and streaming mode. The Publisher creates immutable
+
+        Single backends that isolate 429, 408, 5xx, connection failures, and timeouts, plus a
+
+        priority/weight Pool, one 429-only request retry, a 120-second response-header
+
+        timeout, and deterministic per-member candidate probes before promotion.
+
+        '
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/GatewayBackendPoolWrite
+      responses:
+        '202':
+          description: Pool route reconciliation queued
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayPublicationAccepted
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '422':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+    delete:
+      tags:
+      - Model Control Plane
+      security:
+      - sessionCookie: []
+      operationId: removeManagedModelBackendPool
+      summary: Queue removal of one model's APIM-native backend Pool
+      description: 'Owner-only. Queues restoration of the model''s direct backend route; the active
+
+        Revision remains unchanged until candidate verification and promotion complete.
+
+        '
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '202':
+          description: Direct backend route reconciliation queued
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayPublicationAccepted
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/model-management/publications:
+    post:
+      tags:
+      - Model Control Plane
+      operationId: createGatewayPublication
+      summary: Queue a model and runtime for APIM publication
+      description: 'Saves an immutable desired release and returns 202. The request never mutates the
+
+        current APIM revision synchronously. Credential-bearing providers use an encrypted
+
+        one-time sidecar. Foundry uses the APIM managed identity and may pause for customer
+
+        authorization. A separate managed-identity Function provisions and verifies a candidate.
+
+        '
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/GatewayPublicationCreate
+      responses:
+        '202':
+          description: Publication queued
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayPublicationAccepted
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '422':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+    get:
+      tags:
+      - Model Control Plane
+      operationId: listGatewayPublications
+      summary: List recent gateway publications
+      parameters:
+      - name: gateway_profile_id
+        in: query
+        schema:
+          type: string
+          format: uuid
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 50
+      responses:
+        '200':
+          description: Recent publications
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - items
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: ../../openapi.yaml#/components/schemas/GatewayPublication
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/model-management/releases:
+    get:
+      tags:
+      - Model Control Plane
+      operationId: listGatewayReleases
+      summary: List Gateway Releases and their rollback roles
+      description: 'Authenticated read-only projection of immutable gateway publications. Current and
+
+        immediate-rollback roles come from the effective release pointer and recorded base release.
+
+        A recorded manifest is not treated as live dependency validation.
+
+        '
+      parameters:
+      - name: gateway_profile_id
+        in: query
+        schema:
+          type: string
+          format: uuid
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 100
+      responses:
+        '200':
+          description: Gateway Release summaries ordered newest first
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseList
+        '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/model-management/releases/{release_id}:
+    get:
+      tags:
+      - Model Control Plane
+      operationId: getGatewayRelease
+      summary: Read one Gateway Release with diff, dependencies, and audit
+      parameters:
+      - name: release_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Gateway Release detail
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseDetail
+        '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/model-management/releases/{release_id}/diff:
+    get:
+      tags:
+      - Model Control Plane
+      operationId: getGatewayReleaseDiff
+      summary: Compare one Gateway Release with its base or another release
+      parameters:
+      - name: release_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: against_release_id
+        in: query
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Semantic model and Backend Pool diff
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseDiff
+        '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/model-management/releases/{release_id}/integrity:
+    get:
+      tags:
+      - Model Control Plane
+      operationId: getGatewayReleaseIntegrity
+      summary: Read recorded and live dependency-integrity state
+      description: 'Phase A reports recorded manifest completeness separately from live ARM integrity.
+
+        `not_checked` never makes a release rollback-eligible.
+
+        '
+      parameters:
+      - name: release_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Dependency inventory and rollback blockers
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseIntegrity
+        '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/model-management/releases/{release_id}/protection:
+    put:
+      tags:
+      - Model Control Plane
+      operationId: protectGatewayRelease
+      summary: Pin or retain a Gateway Release
+      parameters:
+      - name: release_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseProtectionWrite
+      responses:
+        '200':
+          description: Current release protection state
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseProtection
+        '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+    delete:
+      tags:
+      - Model Control Plane
+      operationId: unprotectGatewayRelease
+      summary: Remove explicit protection from a Gateway Release
+      parameters:
+      - name: release_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: Protection removed and audited
+        '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/model-management/releases/{release_id}/integrity-checks:
+    post:
+      tags:
+      - Model Control Plane
+      operationId: requestGatewayReleaseIntegrityCheck
+      summary: Queue a live dependency-integrity check
+      parameters:
+      - name: release_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '202':
+          description: Integrity operation queued
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseOperationAccepted
+        '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '503':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/model-management/releases/{release_id}/rollback-preview:
+    get:
+      tags:
+      - Model Control Plane
+      operationId: previewGatewayReleaseRollback
+      summary: Build the current semantic rollback preview and confirmation hash
+      parameters:
+      - name: release_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Rollback preview bound to current and target snapshots
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseRollbackPreview
+        '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/model-management/releases/{release_id}/rollback:
+    post:
+      tags:
+      - Model Control Plane
+      operationId: requestGatewayReleaseRollback
+      summary: Queue a confirmed guarded rollback
+      parameters:
+      - name: release_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseRollbackRequest
+      responses:
+        '202':
+          description: Rollback operation queued
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseOperationAccepted
+        '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '503':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/model-management/release-operations/{operation_id}:
+    get:
+      tags:
+      - Model Control Plane
+      operationId: getGatewayReleaseOperation
+      summary: Read a resumable release operation and immutable audit timeline
+      parameters:
+      - name: operation_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Release operation status
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseOperation
+        '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/model-management/gateways/{gateway_profile_id}/gc-plans:
+    post:
+      tags:
+      - Model Control Plane
+      operationId: requestGatewayReleaseGcPlan
+      summary: Queue a release-resource garbage-collection dry run
+      description: Produces an immutable reference-graph report only. It never deletes cloud resources.
+      parameters:
+      - name: gateway_profile_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '202':
+          description: GC dry-run operation queued
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseOperationAccepted
+        '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '503':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/model-management/publications/{publication_id}:
+    get:
+      tags:
+      - Model Control Plane
+      operationId: getGatewayPublication
+      summary: Read one gateway publication state
+      parameters:
+      - name: publication_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Publication status
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayPublication
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+    delete:
+      tags:
+      - Model Control Plane
+      operationId: cancelGatewayPublicationAuthorization
+      summary: Cancel an unstarted or authorization-paused publication
+      description: Cancels only a queued candidate with zero attempts or an authorization-paused candidate. Marks it as rolled back and leaves the current APIM Revision unchanged.
+      parameters:
+      - name: publication_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Unstarted or authorization-paused publication cancelled
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayPublication
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/model-management/publications/{publication_id}/retry:
+    post:
+      tags:
+      - Model Control Plane
+      operationId: retryGatewayPublication
+      summary: Retry a failed publication
+      description: Credential-bearing providers require a replacement key; managed-identity providers
+        do not accept one.
+      parameters:
+      - name: publication_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/GatewayPublicationRetry
+      responses:
+        '200':
+          description: Publication requeued
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayPublication
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/model-management/publications/{publication_id}/authorization/resume:
+    post:
+      tags:
+      - Model Control Plane
+      operationId: resumeGatewayPublicationAuthorization
+      summary: Re-run candidate verification after provider authorization
+      parameters:
+      - name: publication_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Existing candidate returned to verification
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayPublication
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/model-management/gateways/{gateway_profile_id}/credentials/rotate:
+    post:
+      tags:
+      - Model Control Plane
+      operationId: rotateGatewayCredential
+      summary: Publish a release-scoped replacement provider key
+      parameters:
+      - name: gateway_profile_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/GatewayCredentialRotation
+      responses:
+        '202':
+          description: Credential rotation publication queued
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayPublication
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/model-management/gateways/{gateway_profile_id}/reconcile:
+    post:
+      tags:
+      - Model Control Plane
+      operationId: reconcileGatewayRoutes
+      summary: Rebuild the current model set on a new APIM revision
+      description: Copies the effective release without adding, deleting, renaming, or reassigning models.
+      parameters:
+      - name: gateway_profile_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '202':
+          description: Route reconciliation publication queued
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayPublicationAccepted
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse

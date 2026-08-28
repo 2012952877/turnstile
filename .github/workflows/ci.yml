@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.9.18"
+          enable-cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install Python dependencies
+        run: uv sync --frozen
+      - name: Install frontend dependencies
+        run: npm --prefix frontend ci
+      - name: Lint Python
+        run: uv run ruff check backend scripts tests functions/telemetry/function_app.py functions/control_plane/function_app.py
+      - name: Type-check Python
+        run: uv run mypy backend scripts tests
+      - name: Test
+        run: uv run pytest -q
+      - name: Build frontend
+        run: npm --prefix frontend run build
+      - name: Validate OpenAPI
+        run: npx --yes @redocly/cli@2.38.0 lint contracts/openapi.yaml
+      - name: Validate Bicep
+        run: az bicep build --file infra/main.bicep
+      - name: Validate APIM XML
+        run: python -c "from xml.etree import ElementTree; ElementTree.parse('infra/policies/foundry-finops-policy.xml')"

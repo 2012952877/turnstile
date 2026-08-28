@@ -1,0 +1,575 @@
+openapi: 3.1.0
+info:
+  title: Token Observability API
+  version: 0.1.0
+  description: 'Phase 1 INFORM contract for the Token Observability dashboard and usage
+
+    processor. Query responses contain token counts and metadata only. Prompt
+
+    and completion content are intentionally absent from every schema.
+
+    '
+servers:
+- url: http://localhost:8000
+  description: Local development
+security:
+- sessionCookie: []
+tags:
+- name: Authentication
+  description: Password and Microsoft sign-in backed by an HTTP-only session cookie.
+- name: Overview
+- name: Trends
+- name: Runs
+- name: Audit
+- name: Optimization
+- name: Budgets
+  description: Monthly soft Token allocation, utilization, forecast, and audit history.
+- name: Application Access
+  description: APIM consumer inventory, attribution, Ledger-backed quotas, and Owner-managed lifecycle metadata.
+- name: GitHub Copilot
+  description: 'Organization Copilot subscription, usage metrics, AI-credit billing, explicit
+
+    application-user identity mapping, and reviewed personal budget requests.
+
+    '
+- name: Anomaly Rules
+  description: Authenticated rule visibility with Owner-managed configuration.
+- name: Assistant
+  description: 'Natural-language analysis over the same repository the dashboard reads, and the
+
+    pinned reports it produces. Charts are authored by tools, never by the model.
+
+    '
+- name: Model Control Plane
+  description: Owner-only desired-state publication to isolated APIM revisions.
+- name: Model Router
+  description: User-scoped model routing drafts, validation, version publication, and lifecycle.
+paths:
+  /api/v1/application-access/applications:
+    $ref: ./openapi/paths/application-access.yaml#/paths/~1api~1v1~1application-access~1applications
+  /api/v1/application-access/applications/{application_id}:
+    $ref: ./openapi/paths/application-access.yaml#/paths/~1api~1v1~1application-access~1applications~1{application_id}
+  /api/v1/application-access/applications/{application_id}/avatar:
+    $ref: ./openapi/paths/application-access.yaml#/paths/~1api~1v1~1application-access~1applications~1{application_id}~1avatar
+  /api/v1/application-access/applications/{application_id}/budget:
+    $ref: ./openapi/paths/application-access.yaml#/paths/~1api~1v1~1application-access~1applications~1{application_id}~1budget
+  /api/v1/application-access/applications/{application_id}/model-access:
+    $ref: ./openapi/paths/application-access.yaml#/paths/~1api~1v1~1application-access~1applications~1{application_id}~1model-access
+  /api/v1/application-access/gateways/{gateway_profile_id}/sync:
+    $ref: ./openapi/paths/application-access.yaml#/paths/~1api~1v1~1application-access~1gateways~1{gateway_profile_id}~1sync
+  /api/v1/application-access/gateways/{gateway_profile_id}/subscriptions:
+    $ref: ./openapi/paths/application-access.yaml#/paths/~1api~1v1~1application-access~1gateways~1{gateway_profile_id}~1subscriptions
+  /api/v1/copilot/status:
+    $ref: ./openapi/paths/github-copilot.yaml#/paths/~1api~1v1~1copilot~1status
+  /api/v1/copilot/oauth/config:
+    $ref: ./openapi/paths/github-copilot.yaml#/paths/~1api~1v1~1copilot~1oauth~1config
+  /api/v1/copilot/oauth/login:
+    $ref: ./openapi/paths/github-copilot.yaml#/paths/~1api~1v1~1copilot~1oauth~1login
+  /api/v1/copilot/oauth/callback:
+    $ref: ./openapi/paths/github-copilot.yaml#/paths/~1api~1v1~1copilot~1oauth~1callback
+  /api/v1/copilot/connections:
+    $ref: ./openapi/paths/github-copilot.yaml#/paths/~1api~1v1~1copilot~1connections
+  /api/v1/copilot/dashboard:
+    $ref: ./openapi/paths/github-copilot.yaml#/paths/~1api~1v1~1copilot~1dashboard
+  /api/v1/copilot/governance:
+    $ref: ./openapi/paths/github-copilot.yaml#/paths/~1api~1v1~1copilot~1governance
+  /api/v1/copilot/usage-imports:
+    $ref: ./openapi/paths/github-copilot.yaml#/paths/~1api~1v1~1copilot~1usage-imports
+  /api/v1/copilot/imported-usage:
+    $ref: ./openapi/paths/github-copilot.yaml#/paths/~1api~1v1~1copilot~1imported-usage
+  /api/v1/copilot/cost-centers/options:
+    $ref: ./openapi/paths/github-copilot.yaml#/paths/~1api~1v1~1copilot~1cost-centers~1options
+  /api/v1/copilot/cost-center-requests:
+    $ref: ./openapi/paths/github-copilot.yaml#/paths/~1api~1v1~1copilot~1cost-center-requests
+  /api/v1/copilot/cost-center-requests/{request_id}/review:
+    $ref: ./openapi/paths/github-copilot.yaml#/paths/~1api~1v1~1copilot~1cost-center-requests~1{request_id}~1review
+  /api/v1/copilot/identities:
+    $ref: ./openapi/paths/github-copilot.yaml#/paths/~1api~1v1~1copilot~1identities
+  /api/v1/copilot/identities/{app_user_id}:
+    $ref: ./openapi/paths/github-copilot.yaml#/paths/~1api~1v1~1copilot~1identities~1{app_user_id}
+  /api/v1/copilot/budget-requests:
+    $ref: ./openapi/paths/github-copilot.yaml#/paths/~1api~1v1~1copilot~1budget-requests
+  /api/v1/copilot/budget-requests/{request_id}/review:
+    $ref: ./openapi/paths/github-copilot.yaml#/paths/~1api~1v1~1copilot~1budget-requests~1{request_id}~1review
+  /api/v1/copilot/assistant/ask:
+    $ref: ./openapi/paths/github-copilot.yaml#/paths/~1api~1v1~1copilot~1assistant~1ask
+  /api/v1/copilot/assistant/conversations:
+    $ref: ./openapi/paths/github-copilot.yaml#/paths/~1api~1v1~1copilot~1assistant~1conversations
+  /api/v1/copilot/assistant/conversations/{conversation_id}:
+    $ref: ./openapi/paths/github-copilot.yaml#/paths/~1api~1v1~1copilot~1assistant~1conversations~1{conversation_id}
+  /api/v1/copilot/assistant/conversations/{conversation_id}/title:
+    $ref: ./openapi/paths/github-copilot.yaml#/paths/~1api~1v1~1copilot~1assistant~1conversations~1{conversation_id}~1title
+  /api/v1/model-management/connections:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1connections
+  /api/v1/model-management/connections/{runtime_id}:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1connections~1{runtime_id}
+  /api/v1/model-management/models/{item_id}:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1models~1{item_id}
+  /api/v1/model-management/models/{item_id}/backend-pool:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1models~1{item_id}~1backend-pool
+  /api/v1/model-management/publications:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1publications
+  /api/v1/model-management/releases:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1releases
+  /api/v1/model-management/releases/{release_id}:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1releases~1{release_id}
+  /api/v1/model-management/releases/{release_id}/diff:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1releases~1{release_id}~1diff
+  /api/v1/model-management/releases/{release_id}/integrity:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1releases~1{release_id}~1integrity
+  /api/v1/model-management/releases/{release_id}/protection:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1releases~1{release_id}~1protection
+  /api/v1/model-management/releases/{release_id}/integrity-checks:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1releases~1{release_id}~1integrity-checks
+  /api/v1/model-management/releases/{release_id}/rollback-preview:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1releases~1{release_id}~1rollback-preview
+  /api/v1/model-management/releases/{release_id}/rollback:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1releases~1{release_id}~1rollback
+  /api/v1/model-management/release-operations/{operation_id}:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1release-operations~1{operation_id}
+  /api/v1/model-management/gateways/{gateway_profile_id}/gc-plans:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1gateways~1{gateway_profile_id}~1gc-plans
+  /api/v1/model-management/publications/{publication_id}:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1publications~1{publication_id}
+  /api/v1/model-management/publications/{publication_id}/retry:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1publications~1{publication_id}~1retry
+  /api/v1/model-management/publications/{publication_id}/authorization/resume:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1publications~1{publication_id}~1authorization~1resume
+  /api/v1/model-management/gateways/{gateway_profile_id}/credentials/rotate:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1gateways~1{gateway_profile_id}~1credentials~1rotate
+  /api/v1/model-management/gateways/{gateway_profile_id}/reconcile:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1gateways~1{gateway_profile_id}~1reconcile
+  /api/v1/auth/login:
+    $ref: ./openapi/paths/authentication.yaml#/paths/~1api~1v1~1auth~1login
+  /api/v1/auth/entra:
+    $ref: ./openapi/paths/authentication.yaml#/paths/~1api~1v1~1auth~1entra
+  /api/v1/auth/me:
+    $ref: ./openapi/paths/authentication.yaml#/paths/~1api~1v1~1auth~1me
+  /api/v1/auth/logout:
+    $ref: ./openapi/paths/authentication.yaml#/paths/~1api~1v1~1auth~1logout
+  /api/v1/anomaly-rules:
+    $ref: ./openapi/paths/observability.yaml#/paths/~1api~1v1~1anomaly-rules
+  /api/v1/anomaly-rules/{rule_id}:
+    $ref: ./openapi/paths/observability.yaml#/paths/~1api~1v1~1anomaly-rules~1{rule_id}
+  /api/v1/assistant/ask:
+    $ref: ./openapi/paths/assistant.yaml#/paths/~1api~1v1~1assistant~1ask
+  /api/v1/assistant/conversations:
+    $ref: ./openapi/paths/assistant.yaml#/paths/~1api~1v1~1assistant~1conversations
+  /api/v1/assistant/conversations/{conversation_id}:
+    $ref: ./openapi/paths/assistant.yaml#/paths/~1api~1v1~1assistant~1conversations~1{conversation_id}
+  /api/v1/assistant/conversations/{conversation_id}/title:
+    $ref: ./openapi/paths/assistant.yaml#/paths/~1api~1v1~1assistant~1conversations~1{conversation_id}~1title
+  /api/v1/assistant/settings:
+    $ref: ./openapi/paths/assistant.yaml#/paths/~1api~1v1~1assistant~1settings
+  /api/v1/assistant/pinned-charts:
+    $ref: ./openapi/paths/assistant.yaml#/paths/~1api~1v1~1assistant~1pinned-charts
+  /api/v1/assistant/pinned-charts/{report_id}:
+    $ref: ./openapi/paths/assistant.yaml#/paths/~1api~1v1~1assistant~1pinned-charts~1{report_id}
+  /api/v1/assistant/pinned-charts/{report_id}/refresh:
+    $ref: ./openapi/paths/assistant.yaml#/paths/~1api~1v1~1assistant~1pinned-charts~1{report_id}~1refresh
+  /api/v1/assistant/pinned-charts/{report_id}/visibility:
+    $ref: ./openapi/paths/assistant.yaml#/paths/~1api~1v1~1assistant~1pinned-charts~1{report_id}~1visibility
+  /api/v1/assistant/pinned-charts/{report_id}/layout:
+    $ref: ./openapi/paths/assistant.yaml#/paths/~1api~1v1~1assistant~1pinned-charts~1{report_id}~1layout
+  /api/v1/assistant/pinned-charts/{report_id}/charts/order:
+    $ref: ./openapi/paths/assistant.yaml#/paths/~1api~1v1~1assistant~1pinned-charts~1{report_id}~1charts~1order
+  /api/v1/assistant/pinned-charts/{report_id}/charts/{chart_id}:
+    $ref: ./openapi/paths/assistant.yaml#/paths/~1api~1v1~1assistant~1pinned-charts~1{report_id}~1charts~1{chart_id}
+  /api/v1/budgets:
+    $ref: ./openapi/paths/budgets.yaml#/paths/~1api~1v1~1budgets
+  /api/v1/budgets/users:
+    $ref: ./openapi/paths/budgets.yaml#/paths/~1api~1v1~1budgets~1users
+  /api/v1/budgets/users/bulk:
+    $ref: ./openapi/paths/budgets.yaml#/paths/~1api~1v1~1budgets~1users~1bulk
+  /api/v1/budgets/{scope_type}/{scope_id}:
+    $ref: ./openapi/paths/budgets.yaml#/paths/~1api~1v1~1budgets~1{scope_type}~1{scope_id}
+  /api/v1/observability/overview:
+    $ref: ./openapi/paths/observability.yaml#/paths/~1api~1v1~1observability~1overview
+  /api/v1/observability/trends:
+    $ref: ./openapi/paths/observability.yaml#/paths/~1api~1v1~1observability~1trends
+  /api/v1/observability/runs:
+    $ref: ./openapi/paths/observability.yaml#/paths/~1api~1v1~1observability~1runs
+  /api/v1/observability/runs/{run_id}:
+    $ref: ./openapi/paths/observability.yaml#/paths/~1api~1v1~1observability~1runs~1{run_id}
+  /api/v1/observability/audit-findings:
+    $ref: ./openapi/paths/observability.yaml#/paths/~1api~1v1~1observability~1audit-findings
+  /api/v1/observability/audit-findings/{finding_id}:
+    $ref: ./openapi/paths/observability.yaml#/paths/~1api~1v1~1observability~1audit-findings~1{finding_id}
+  /api/v1/observability/optimization-events:
+    $ref: ./openapi/paths/observability.yaml#/paths/~1api~1v1~1observability~1optimization-events
+components:
+  securitySchemes:
+    sessionCookie:
+      $ref: ./openapi/components/common.yaml#/securitySchemes/sessionCookie
+  parameters:
+    From:
+      $ref: ./openapi/components/common.yaml#/parameters/From
+    To:
+      $ref: ./openapi/components/common.yaml#/parameters/To
+    Timezone:
+      $ref: ./openapi/components/common.yaml#/parameters/Timezone
+    Team:
+      $ref: ./openapi/components/common.yaml#/parameters/Team
+    Agent:
+      $ref: ./openapi/components/common.yaml#/parameters/Agent
+    Workflow:
+      $ref: ./openapi/components/common.yaml#/parameters/Workflow
+    Model:
+      $ref: ./openapi/components/common.yaml#/parameters/Model
+    Cursor:
+      $ref: ./openapi/components/common.yaml#/parameters/Cursor
+    Limit:
+      $ref: ./openapi/components/common.yaml#/parameters/Limit
+    RunId:
+      $ref: ./openapi/components/common.yaml#/parameters/RunId
+    FindingId:
+      $ref: ./openapi/components/common.yaml#/parameters/FindingId
+    AnomalyRuleId:
+      $ref: ./openapi/components/common.yaml#/parameters/AnomalyRuleId
+    BudgetPeriod:
+      $ref: ./openapi/components/common.yaml#/parameters/BudgetPeriod
+    BudgetScopeType:
+      $ref: ./openapi/components/common.yaml#/parameters/BudgetScopeType
+    BudgetScopeId:
+      $ref: ./openapi/components/common.yaml#/parameters/BudgetScopeId
+    PinnedReportId:
+      $ref: ./openapi/components/common.yaml#/parameters/PinnedReportId
+    ConversationId:
+      $ref: ./openapi/components/common.yaml#/parameters/ConversationId
+    PinnedChartId:
+      $ref: ./openapi/components/common.yaml#/parameters/PinnedChartId
+    AssistantTimezone:
+      $ref: ./openapi/components/common.yaml#/parameters/AssistantTimezone
+    AssistantLocale:
+      $ref: ./openapi/components/common.yaml#/parameters/AssistantLocale
+  responses:
+    ErrorResponse:
+      $ref: ./openapi/components/common.yaml#/responses/ErrorResponse
+  schemas:
+    GatewayApplicationUsage:
+      $ref: ./openapi/schemas/application-access.yaml#/schemas/GatewayApplicationUsage
+    GatewayApplicationUserUsage:
+      $ref: ./openapi/schemas/application-access.yaml#/schemas/GatewayApplicationUserUsage
+    GatewayApplicationBudget:
+      $ref: ./openapi/schemas/application-access.yaml#/schemas/GatewayApplicationBudget
+    GatewayApplicationBudgetUpdate:
+      $ref: ./openapi/schemas/application-access.yaml#/schemas/GatewayApplicationBudgetUpdate
+    GatewayApplicationModelAccessUpdate:
+      $ref: ./openapi/schemas/application-access.yaml#/schemas/GatewayApplicationModelAccessUpdate
+    GatewayApplicationSubscription:
+      $ref: ./openapi/schemas/application-access.yaml#/schemas/GatewayApplicationSubscription
+    GatewayApplicationSubscriptionKeySecret:
+      $ref: ./openapi/schemas/application-access.yaml#/schemas/GatewayApplicationSubscriptionKeySecret
+    GatewayApplicationSubscriptionKeyRotation:
+      $ref: ./openapi/schemas/application-access.yaml#/schemas/GatewayApplicationSubscriptionKeyRotation
+    GatewayApplicationAuditEvent:
+      $ref: ./openapi/schemas/application-access.yaml#/schemas/GatewayApplicationAuditEvent
+    GatewayApplicationAvatarUpdate:
+      $ref: ./openapi/schemas/application-access.yaml#/schemas/GatewayApplicationAvatarUpdate
+    GatewayApplicationAvatar:
+      $ref: ./openapi/schemas/application-access.yaml#/schemas/GatewayApplicationAvatar
+    GatewayApplicationSummary:
+      $ref: ./openapi/schemas/application-access.yaml#/schemas/GatewayApplicationSummary
+    GatewayApplicationDetail:
+      $ref: ./openapi/schemas/application-access.yaml#/schemas/GatewayApplicationDetail
+    GatewayApplicationList:
+      $ref: ./openapi/schemas/application-access.yaml#/schemas/GatewayApplicationList
+    GatewayApplicationSubscriptionCreate:
+      $ref: ./openapi/schemas/application-access.yaml#/schemas/GatewayApplicationSubscriptionCreate
+    GatewayApplicationSubscriptionProvisionAccepted:
+      $ref: ./openapi/schemas/application-access.yaml#/schemas/GatewayApplicationSubscriptionProvisionAccepted
+    CopilotConnectionSummary:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotConnectionSummary
+    CopilotConnectionWrite:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotConnectionWrite
+    CopilotStatus:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotStatus
+    CopilotOAuthConfigWrite:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotOAuthConfigWrite
+    CopilotOAuthConfigSummary:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotOAuthConfigSummary
+    CopilotIdentityWrite:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotIdentityWrite
+    CopilotIdentityMapping:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotIdentityMapping
+    CopilotUsageTotals:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotUsageTotals
+    CopilotDailyUsage:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotDailyUsage
+    CopilotBreakdownItem:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotBreakdownItem
+    CopilotAiCreditItem:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotAiCreditItem
+    CopilotMemberUsage:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotMemberUsage
+    CopilotSubscription:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotSubscription
+    CopilotDashboard:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotDashboard
+    CopilotGovernanceMember:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotGovernanceMember
+    CopilotTeamSummary:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotTeamSummary
+    CopilotCostCenterResource:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotCostCenterResource
+    CopilotCostCenterSummary:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotCostCenterSummary
+    CopilotBudgetSummary:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotBudgetSummary
+    CopilotGovernance:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotGovernance
+    CopilotUsageImportKind:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotUsageImportKind
+    CopilotUsageImportSummary:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotUsageImportSummary
+    CopilotImportedUsageBreakdown:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotImportedUsageBreakdown
+    CopilotImportedUsageDaily:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotImportedUsageDaily
+    CopilotImportedUsageUser:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotImportedUsageUser
+    CopilotImportedUsage:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotImportedUsage
+    CopilotCostCenterOption:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotCostCenterOption
+    CopilotCostCenterRequestCreate:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotCostCenterRequestCreate
+    CopilotCostCenterRequestReview:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotCostCenterRequestReview
+    CopilotCostCenterRequest:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotCostCenterRequest
+    CopilotCostCenterRequestList:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotCostCenterRequestList
+    CopilotBudgetRequestCreate:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotBudgetRequestCreate
+    CopilotBudgetRequestReview:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotBudgetRequestReview
+    CopilotBudgetRequest:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotBudgetRequest
+    CopilotBudgetRequestList:
+      $ref: ./openapi/schemas/github-copilot.yaml#/schemas/CopilotBudgetRequestList
+    ModelConnectionCreate:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/ModelConnectionCreate
+    ModelConnectionUpdate:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/ModelConnectionUpdate
+    ModelRegistry:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/ModelRegistry
+    GatewayPublicationCreate:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayPublicationCreate
+    GatewayPublicationRetry:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayPublicationRetry
+    GatewayCredentialRotation:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayCredentialRotation
+    GatewayBackendPoolMemberWrite:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayBackendPoolMemberWrite
+    GatewayBackendFailureStatusCodeRange:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayBackendFailureStatusCodeRange
+    GatewayRateLimitCircuitBreaker:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayRateLimitCircuitBreaker
+    GatewayRateLimitResilience:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayRateLimitResilience
+    GatewayBackendPoolWrite:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayBackendPoolWrite
+    GatewayBackendPoolMember:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayBackendPoolMember
+    GatewayBackendPoolConfig:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayBackendPoolConfig
+    GatewayProviderTarget:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayProviderTarget
+    GatewayRuntimeTarget:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayRuntimeTarget
+    GatewayModelTarget:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayModelTarget
+    BrandKey:
+      $ref: ./openapi/schemas/common.yaml#/schemas/BrandKey
+    GatewayPublication:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayPublication
+    GatewayReleaseChangeSet:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayReleaseChangeSet
+    GatewayReleaseDependencies:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayReleaseDependencies
+    GatewayReleaseAuditEvent:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayReleaseAuditEvent
+    GatewayReleaseRetentionPolicy:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayReleaseRetentionPolicy
+    GatewayReleaseProtectionWrite:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayReleaseProtectionWrite
+    GatewayReleaseProtection:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayReleaseProtection
+    GatewayReleaseProtectionAuditEvent:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayReleaseProtectionAuditEvent
+    GatewayReleaseSummary:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayReleaseSummary
+    GatewayReleaseList:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayReleaseList
+    GatewayReleaseDiff:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayReleaseDiff
+    GatewayReleaseIntegrity:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayReleaseIntegrity
+    GatewayReleaseRollbackPreview:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayReleaseRollbackPreview
+    GatewayReleaseRollbackRequest:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayReleaseRollbackRequest
+    GatewayReleaseOperationAuditEvent:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayReleaseOperationAuditEvent
+    GatewayReleaseGcCandidate:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayReleaseGcCandidate
+    GatewayReleaseGcPlan:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayReleaseGcPlan
+    GatewayReleaseOperation:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayReleaseOperation
+    GatewayReleaseOperationAccepted:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayReleaseOperationAccepted
+    GatewayReleaseDetail:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayReleaseDetail
+    GatewayAuthorizationRequirement:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayAuthorizationRequirement
+    GatewayPublicationAccepted:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayPublicationAccepted
+    PasswordLogin:
+      $ref: ./openapi/schemas/authentication.yaml#/schemas/PasswordLogin
+    EntraLogin:
+      $ref: ./openapi/schemas/authentication.yaml#/schemas/EntraLogin
+    AuthProfile:
+      $ref: ./openapi/schemas/authentication.yaml#/schemas/AuthProfile
+    TimeInterval:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/TimeInterval
+    TrendDimension:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/TrendDimension
+    AuditStatus:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/AuditStatus
+    AuditSeverity:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/AuditSeverity
+    AnomalyRuleMetric:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/AnomalyRuleMetric
+    AnomalyThresholdMode:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/AnomalyThresholdMode
+    AnomalyScopeType:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/AnomalyScopeType
+    AnomalyRuleWrite:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/AnomalyRuleWrite
+    AnomalyRule:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/AnomalyRule
+    AnomalyRuleListResponse:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/AnomalyRuleListResponse
+    BudgetScopeType:
+      $ref: ./openapi/schemas/common.yaml#/schemas/BudgetScopeType
+    BudgetStatus:
+      $ref: ./openapi/schemas/budgets.yaml#/schemas/BudgetStatus
+    PeopleBudgetFilter:
+      $ref: ./openapi/schemas/budgets.yaml#/schemas/PeopleBudgetFilter
+    TokenBudgetWrite:
+      $ref: ./openapi/schemas/budgets.yaml#/schemas/TokenBudgetWrite
+    TokenBudgetItem:
+      $ref: ./openapi/schemas/budgets.yaml#/schemas/TokenBudgetItem
+    TokenBudgetAuditEvent:
+      $ref: ./openapi/schemas/budgets.yaml#/schemas/TokenBudgetAuditEvent
+    UserModelAccessAuditEvent:
+      $ref: ./openapi/schemas/budgets.yaml#/schemas/UserModelAccessAuditEvent
+    DepartmentEnforcement:
+      $ref: ./openapi/schemas/budgets.yaml#/schemas/DepartmentEnforcement
+    DepartmentEnforcementAuditEvent:
+      $ref: ./openapi/schemas/budgets.yaml#/schemas/DepartmentEnforcementAuditEvent
+    TokenBudgetRiskItem:
+      $ref: ./openapi/schemas/budgets.yaml#/schemas/TokenBudgetRiskItem
+    TokenBudgetResponse:
+      $ref: ./openapi/schemas/budgets.yaml#/schemas/TokenBudgetResponse
+    TokenBudgetPeopleResponse:
+      $ref: ./openapi/schemas/budgets.yaml#/schemas/TokenBudgetPeopleResponse
+    TokenBudgetBulkWrite:
+      $ref: ./openapi/schemas/budgets.yaml#/schemas/TokenBudgetBulkWrite
+    TokenBudgetBulkResult:
+      $ref: ./openapi/schemas/budgets.yaml#/schemas/TokenBudgetBulkResult
+    MetricTotals:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/MetricTotals
+    PeriodMetric:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/PeriodMetric
+    WorkflowMetric:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/WorkflowMetric
+    OverviewResponse:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/OverviewResponse
+    TrendPoint:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/TrendPoint
+    TrendResponse:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/TrendResponse
+    RunSummary:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/RunSummary
+    RunTurn:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/RunTurn
+    RunDetail:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/RunDetail
+    PageInfo:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/PageInfo
+    RunListResponse:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/RunListResponse
+    AuditFinding:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/AuditFinding
+    AuditFindingUpdate:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/AuditFindingUpdate
+    AuditFindingListResponse:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/AuditFindingListResponse
+    OptimizationComparison:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/OptimizationComparison
+    OptimizationEventCreate:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/OptimizationEventCreate
+    OptimizationEvent:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/OptimizationEvent
+    OptimizationEventListResponse:
+      $ref: ./openapi/schemas/observability.yaml#/schemas/OptimizationEventListResponse
+    UsageEvent:
+      $ref: ./openapi/schemas/events.yaml#/schemas/UsageEvent
+    AssistantTurn:
+      $ref: ./openapi/schemas/common.yaml#/schemas/AssistantTurn
+    AssistantAskRequest:
+      $ref: ./openapi/schemas/common.yaml#/schemas/AssistantAskRequest
+    AssistantStep:
+      $ref: ./openapi/schemas/common.yaml#/schemas/AssistantStep
+    AssistantReply:
+      $ref: ./openapi/schemas/common.yaml#/schemas/AssistantReply
+    ChartSeries:
+      $ref: ./openapi/schemas/common.yaml#/schemas/ChartSeries
+    ChartQuery:
+      $ref: ./openapi/schemas/common.yaml#/schemas/ChartQuery
+    ChartSpec:
+      $ref: ./openapi/schemas/common.yaml#/schemas/ChartSpec
+    PinnedChartWrite:
+      $ref: ./openapi/schemas/assistant.yaml#/schemas/PinnedChartWrite
+    PinnedChartRename:
+      $ref: ./openapi/schemas/assistant.yaml#/schemas/PinnedChartRename
+    PinnedReportVisibilityWrite:
+      $ref: ./openapi/schemas/assistant.yaml#/schemas/PinnedReportVisibilityWrite
+    PinnedChartOrder:
+      $ref: ./openapi/schemas/assistant.yaml#/schemas/PinnedChartOrder
+    PinnedReportLayout:
+      $ref: ./openapi/schemas/assistant.yaml#/schemas/PinnedReportLayout
+    PinnedChart:
+      $ref: ./openapi/schemas/assistant.yaml#/schemas/PinnedChart
+    PinnedReport:
+      $ref: ./openapi/schemas/assistant.yaml#/schemas/PinnedReport
+    PinnedReportList:
+      $ref: ./openapi/schemas/assistant.yaml#/schemas/PinnedReportList
+    ConversationSummary:
+      $ref: ./openapi/schemas/common.yaml#/schemas/ConversationSummary
+    ConversationExchange:
+      $ref: ./openapi/schemas/common.yaml#/schemas/ConversationExchange
+    Conversation:
+      $ref: ./openapi/schemas/common.yaml#/schemas/Conversation
+    ConversationList:
+      $ref: ./openapi/schemas/common.yaml#/schemas/ConversationList
+    ConversationRename:
+      $ref: ./openapi/schemas/common.yaml#/schemas/ConversationRename
+    ConversationTitleRequest:
+      $ref: ./openapi/schemas/common.yaml#/schemas/ConversationTitleRequest
+    AssistantSettingsWrite:
+      $ref: ./openapi/schemas/assistant.yaml#/schemas/AssistantSettingsWrite
+    AssistantSettings:
+      $ref: ./openapi/schemas/assistant.yaml#/schemas/AssistantSettings
+    AssistantModelChoice:
+      $ref: ./openapi/schemas/assistant.yaml#/schemas/AssistantModelChoice
+    Error:
+      $ref: ./openapi/schemas/common.yaml#/schemas/Error
+x-event-contracts:
+  usage-event:
+    transport: Azure Event Hubs
+    schema:
+      $ref: '#/components/schemas/UsageEvent'

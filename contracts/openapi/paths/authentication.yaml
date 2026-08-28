@@ -1,0 +1,80 @@
+paths:
+  /api/v1/auth/login:
+    post:
+      tags:
+      - Authentication
+      operationId: loginWithPassword
+      summary: Start a password session
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/PasswordLogin
+      responses:
+        '200':
+          description: Signed-in profile and session cookie
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/AuthProfile
+        '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/auth/entra:
+    post:
+      tags:
+      - Authentication
+      operationId: loginWithEntra
+      summary: Exchange a verified Microsoft ID token for a session
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/EntraLogin
+      responses:
+        '200':
+          description: Signed-in profile and session cookie
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/AuthProfile
+        '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/auth/me:
+    get:
+      tags:
+      - Authentication
+      operationId: getCurrentProfile
+      summary: Read the current session profile
+      responses:
+        '200':
+          description: Current signed-in profile
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/AuthProfile
+        '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/auth/logout:
+    post:
+      tags:
+      - Authentication
+      operationId: logout
+      summary: Revoke the current session when present
+      security: []
+      responses:
+        '204':
+          description: Session revoked and cookie cleared
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse

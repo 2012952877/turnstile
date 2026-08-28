@@ -1,0 +1,1310 @@
+schemas:
+  ModelConnectionCreate:
+    type: object
+    additionalProperties: false
+    required:
+    - gateway_profile_id
+    - provider
+    oneOf:
+    - required:
+      - foundry_project_endpoint
+      - auth_mode
+    - required:
+      - bedrock_runtime_url
+    properties:
+      gateway_profile_id:
+        type: string
+        format: uuid
+      provider:
+        $ref: ../../openapi.yaml#/components/schemas/GatewayProviderTarget
+      auth_mode:
+        type: string
+        enum:
+        - managed_identity
+        - api_key
+      foundry_project_endpoint:
+        type: string
+        format: uri
+        description: Required Foundry Project identity for both authentication modes.
+      foundry_inference_endpoint:
+        type: string
+        format: uri
+        description: Required only for API-key mode; must use the same Foundry account.
+      bedrock_runtime_url:
+        type: string
+        format: uri
+        description: Regional Bedrock Runtime origin. No model or key is registered here.
+  ModelConnectionUpdate:
+    type: object
+    additionalProperties: false
+    required:
+    - name
+    - enabled
+    - is_default
+    properties:
+      name:
+        type: string
+        minLength: 1
+        maxLength: 160
+      enabled:
+        type: boolean
+      is_default:
+        type: boolean
+  ModelRegistry:
+    type: object
+    required:
+    - providers
+    - gateways
+    - runtimes
+    - models
+    properties:
+      providers:
+        type: array
+        items:
+          type: object
+      gateways:
+        type: array
+        items:
+          type: object
+      runtimes:
+        type: array
+        items:
+          type: object
+      models:
+        type: array
+        items:
+          type: object
+  GatewayPublicationCreate:
+    type: object
+    additionalProperties: false
+    required:
+    - gateway_profile_id
+    - provider
+    - runtime
+    - model
+    properties:
+      gateway_profile_id:
+        type: string
+        format: uuid
+      provider:
+        $ref: ../../openapi.yaml#/components/schemas/GatewayProviderTarget
+      runtime:
+        $ref: ../../openapi.yaml#/components/schemas/GatewayRuntimeTarget
+      model:
+        $ref: ../../openapi.yaml#/components/schemas/GatewayModelTarget
+  GatewayPublicationRetry:
+    type: object
+    additionalProperties: false
+    properties:
+      api_key:
+        type:
+        - string
+        - 'null'
+        format: password
+        writeOnly: true
+  GatewayCredentialRotation:
+    type: object
+    additionalProperties: false
+    required:
+    - model_key
+    - api_key
+    properties:
+      model_key:
+        type: string
+        minLength: 1
+        maxLength: 255
+        pattern: ^[a-zA-Z0-9._:-]+$
+      api_key:
+        type: string
+        format: password
+        writeOnly: true
+  GatewayBackendPoolMemberWrite:
+    type: object
+    additionalProperties: false
+    required:
+    - runtime_id
+    - priority
+    - weight
+    properties:
+      runtime_id:
+        type: string
+        format: uuid
+      priority:
+        type: integer
+        minimum: 0
+        maximum: 100
+      weight:
+        type: integer
+        minimum: 0
+        maximum: 100
+  GatewayBackendFailureStatusCodeRange:
+    type: object
+    additionalProperties: false
+    required:
+    - minimum
+    - maximum
+    properties:
+      minimum:
+        type: integer
+        minimum: 200
+        maximum: 599
+      maximum:
+        type: integer
+        minimum: 200
+        maximum: 599
+  GatewayRateLimitCircuitBreaker:
+    type: object
+    additionalProperties: false
+    required:
+    - failure_count
+    - interval_seconds
+    - trip_duration_seconds
+    - accept_retry_after
+    properties:
+      failure_count:
+        type: integer
+        const: 1
+      interval_seconds:
+        type: integer
+        const: 60
+      trip_duration_seconds:
+        type: integer
+        const: 60
+      accept_retry_after:
+        type: boolean
+        const: true
+      status_code_ranges:
+        type: array
+        default:
+        - minimum: 429
+          maximum: 429
+        - minimum: 408
+          maximum: 408
+        - minimum: 500
+          maximum: 599
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/GatewayBackendFailureStatusCodeRange
+      error_reasons:
+        type: array
+        default:
+        - BackendConnectionFailure
+        - Timeout
+        items:
+          type: string
+          enum:
+          - BackendConnectionFailure
+          - Timeout
+  GatewayRateLimitResilience:
+    type: object
+    additionalProperties: false
+    required:
+    - max_attempts_per_request
+    - retry_interval_seconds
+    - first_fast_retry
+    - circuit_breaker
+    properties:
+      max_attempts_per_request:
+        type: integer
+        const: 2
+      retry_interval_seconds:
+        type: integer
+        const: 1
+      first_fast_retry:
+        type: boolean
+        const: true
+      backend_timeout_seconds:
+        type: integer
+        const: 120
+        default: 120
+      circuit_breaker:
+        $ref: ../../openapi.yaml#/components/schemas/GatewayRateLimitCircuitBreaker
+  GatewayBackendPoolWrite:
+    type: object
+    additionalProperties: false
+    required:
+    - members
+    - rate_limit
+    properties:
+      members:
+        type: array
+        minItems: 2
+        maxItems: 30
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/GatewayBackendPoolMemberWrite
+      rate_limit:
+        $ref: ../../openapi.yaml#/components/schemas/GatewayRateLimitResilience
+  GatewayBackendPoolMember:
+    type: object
+    additionalProperties: false
+    required:
+    - runtime_id
+    - runtime_name
+    - backend_url
+    - auth_strategy
+    - priority
+    - weight
+    properties:
+      runtime_id:
+        type: string
+        format: uuid
+      runtime_name:
+        type: string
+        minLength: 1
+        maxLength: 160
+      backend_url:
+        type: string
+        format: uri
+      auth_strategy:
+        type: string
+        enum:
+        - none
+        - managed_identity
+        - named_value_bearer
+        - named_value_api_key
+      named_value_name:
+        type:
+        - string
+        - 'null'
+      priority:
+        type: integer
+        minimum: 0
+        maximum: 100
+      weight:
+        type: integer
+        minimum: 0
+        maximum: 100
+  GatewayBackendPoolConfig:
+    type: object
+    additionalProperties: false
+    required:
+    - members
+    - rate_limit
+    properties:
+      schema_version:
+        type: integer
+        const: 1
+        default: 1
+      members:
+        type: array
+        minItems: 2
+        maxItems: 30
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/GatewayBackendPoolMember
+      rate_limit:
+        $ref: ../../openapi.yaml#/components/schemas/GatewayRateLimitResilience
+  GatewayProviderTarget:
+    type: object
+    additionalProperties: false
+    oneOf:
+    - required:
+      - existing_id
+    - required:
+      - template
+    properties:
+      existing_id:
+        type: string
+        format: uuid
+      template:
+        type: string
+        enum:
+        - amazon_bedrock
+        - microsoft_foundry
+  GatewayRuntimeTarget:
+    type: object
+    additionalProperties: false
+    oneOf:
+    - required:
+      - existing_id
+      not:
+        anyOf:
+        - required:
+          - bedrock_runtime_url
+        - required:
+          - foundry_project_endpoint
+        - required:
+          - foundry_inference_endpoint
+    - required:
+      - bedrock_runtime_url
+      - api_key
+      not:
+        anyOf:
+        - required:
+          - existing_id
+        - required:
+          - foundry_project_endpoint
+        - required:
+          - foundry_inference_endpoint
+    - required:
+      - foundry_project_endpoint
+      not:
+        anyOf:
+        - required:
+          - existing_id
+        - required:
+          - bedrock_runtime_url
+        - required:
+          - foundry_inference_endpoint
+        - required:
+          - api_key
+    - required:
+      - foundry_project_endpoint
+      - foundry_inference_endpoint
+      - api_key
+      not:
+        anyOf:
+        - required:
+          - existing_id
+        - required:
+          - bedrock_runtime_url
+    properties:
+      existing_id:
+        type: string
+        format: uuid
+      bedrock_runtime_url:
+        type: string
+        format: uri
+        description: Regional bedrock-runtime origin without a model path.
+      foundry_project_endpoint:
+        type: string
+        format: uri
+        description: Foundry Project data-plane endpoint ending in /api/projects/{project}.
+      foundry_inference_endpoint:
+        type: string
+        format: uri
+        description: Matching Foundry inference endpoint ending in /openai/v1; requires api_key.
+      api_key:
+        type: string
+        format: password
+        writeOnly: true
+        description: One-time Bedrock or Foundry provider key. It may accompany a new runtime or the first
+          model on a registered API-key connection; it is encrypted on receipt and removed after APIM
+          secret provisioning.
+  GatewayModelTarget:
+    type: object
+    additionalProperties: false
+    properties:
+      deployment_name:
+        type: string
+        minLength: 1
+        maxLength: 500
+        description: Existing Foundry deployment; Turnstile derives registry identity.
+      model_key:
+        type: string
+        minLength: 1
+        maxLength: 255
+        pattern: ^[a-zA-Z0-9._:-]+$
+      display_name:
+        type: string
+        minLength: 1
+        maxLength: 255
+      upstream_model_id:
+        type: string
+        minLength: 1
+        maxLength: 500
+      context_window:
+        type:
+        - integer
+        - 'null'
+        minimum: 1
+      input_cost_per_million:
+        type:
+        - number
+        - 'null'
+        minimum: 0
+      output_cost_per_million:
+        type:
+        - number
+        - 'null'
+        minimum: 0
+      cached_cost_per_million:
+        type:
+        - number
+        - 'null'
+        minimum: 0
+      cache_write_cost_per_million:
+        type:
+        - number
+        - 'null'
+        minimum: 0
+  GatewayPublication:
+    type: object
+    additionalProperties: false
+    required:
+    - id
+    - gateway_profile_id
+    - generation
+    - publication_kind
+    - model_key
+    - display_name
+    - status
+    - authorization
+    - retry_requires_credential
+    - attempt_count
+    - created_by
+    - created_at
+    - updated_at
+    properties:
+      id:
+        type: string
+        format: uuid
+      gateway_profile_id:
+        type: string
+        format: uuid
+      generation:
+        type: integer
+        minimum: 1
+      publication_kind:
+        type: string
+        enum:
+        - model_add
+        - model_remove
+        - credential_rotation
+        - route_reconcile
+      model_key:
+        type: string
+      display_name:
+        type: string
+      status:
+        type: string
+        enum:
+        - queued
+        - validating
+        - provisioning
+        - building_revision
+        - verifying
+        - awaiting_authorization
+        - promoting
+        - active
+        - failed
+        - superseded
+        - rolling_back
+        - rolled_back
+      error_code:
+        type:
+        - string
+        - 'null'
+      error_message:
+        type:
+        - string
+        - 'null'
+      authorization:
+        oneOf:
+        - $ref: ../../openapi.yaml#/components/schemas/GatewayAuthorizationRequirement
+        - type: 'null'
+      retry_requires_credential:
+        type: boolean
+      attempt_count:
+        type: integer
+        minimum: 0
+      created_by:
+        type: string
+      created_at:
+        type: string
+        format: date-time
+      started_at:
+        type:
+        - string
+        - 'null'
+        format: date-time
+      completed_at:
+        type:
+        - string
+        - 'null'
+        format: date-time
+      updated_at:
+        type: string
+        format: date-time
+  GatewayReleaseChangeSet:
+    type: object
+    additionalProperties: false
+    required:
+    - added_models
+    - removed_models
+    - changed_models
+    - added_backend_pools
+    - removed_backend_pools
+    - changed_backend_pools
+    properties:
+      added_models:
+        type: array
+        items:
+          type: string
+      removed_models:
+        type: array
+        items:
+          type: string
+      changed_models:
+        type: array
+        items:
+          type: string
+      added_backend_pools:
+        type: array
+        items:
+          type: string
+      removed_backend_pools:
+        type: array
+        items:
+          type: string
+      changed_backend_pools:
+        type: array
+        items:
+          type: string
+  GatewayReleaseDependencies:
+    type: object
+    additionalProperties: false
+    required:
+    - apim_revision
+    - parent_policy_sha256
+    - compiled_policy_sha256
+    - backends
+    - backend_pools
+    - named_values
+    - recorded_complete
+    - live_status
+    - live_checked_at
+    - issues
+    properties:
+      apim_revision:
+        type:
+        - string
+        - 'null'
+      parent_policy_sha256:
+        type:
+        - string
+        - 'null'
+      compiled_policy_sha256:
+        type:
+        - string
+        - 'null'
+      backends:
+        type: array
+        items:
+          type: string
+      backend_pools:
+        type: array
+        items:
+          type: string
+      named_values:
+        type: array
+        items:
+          type: string
+      recorded_complete:
+        type: boolean
+      live_status:
+        type: string
+        enum:
+        - not_checked
+        - healthy
+        - missing
+        - mismatched
+      live_checked_at:
+        type:
+        - string
+        - 'null'
+        format: date-time
+      issues:
+        type: array
+        items:
+          type: string
+  GatewayReleaseAuditEvent:
+    type: object
+    additionalProperties: false
+    required:
+    - id
+    - publication_id
+    - from_status
+    - to_status
+    - actor
+    - detail
+    - created_at
+    properties:
+      id:
+        type: string
+        format: uuid
+      publication_id:
+        type: string
+        format: uuid
+      from_status:
+        type:
+        - string
+        - 'null'
+        enum:
+        - queued
+        - validating
+        - provisioning
+        - building_revision
+        - verifying
+        - awaiting_authorization
+        - promoting
+        - active
+        - failed
+        - superseded
+        - rolling_back
+        - rolled_back
+        - null
+      to_status:
+        type: string
+        enum:
+        - queued
+        - validating
+        - provisioning
+        - building_revision
+        - verifying
+        - awaiting_authorization
+        - promoting
+        - active
+        - failed
+        - superseded
+        - rolling_back
+        - rolled_back
+      actor:
+        type: string
+      detail:
+        type: object
+        additionalProperties: true
+      created_at:
+        type: string
+        format: date-time
+  GatewayReleaseRetentionPolicy:
+    type: object
+    additionalProperties: false
+    required:
+    - retained_count
+    - retained_days
+    - failed_retained_days
+    - protected_labels
+    properties:
+      retained_count:
+        type: integer
+        minimum: 1
+        maximum: 1000
+      retained_days:
+        type: integer
+        minimum: 1
+        maximum: 3650
+      failed_retained_days:
+        type: integer
+        minimum: 1
+        maximum: 3650
+      protected_labels:
+        type: array
+        items:
+          type: string
+  GatewayReleaseProtectionWrite:
+    type: object
+    additionalProperties: false
+    properties:
+      pinned:
+        type: boolean
+        default: true
+      protected_label:
+        type:
+        - string
+        - 'null'
+        minLength: 1
+        maxLength: 80
+      retain_until:
+        type:
+        - string
+        - 'null'
+        format: date-time
+  GatewayReleaseProtection:
+    type: object
+    additionalProperties: false
+    required:
+    - publication_id
+    - pinned
+    - protected_label
+    - retain_until
+    - updated_by
+    - updated_at
+    properties:
+      publication_id:
+        type: string
+        format: uuid
+      pinned:
+        type: boolean
+      protected_label:
+        type:
+        - string
+        - 'null'
+      retain_until:
+        type:
+        - string
+        - 'null'
+        format: date-time
+      updated_by:
+        type: string
+      updated_at:
+        type: string
+        format: date-time
+  GatewayReleaseProtectionAuditEvent:
+    type: object
+    additionalProperties: false
+    required:
+    - id
+    - publication_id
+    - pinned
+    - protected_label
+    - retain_until
+    - actor
+    - created_at
+    properties:
+      id:
+        type: string
+        format: uuid
+      publication_id:
+        type: string
+        format: uuid
+      pinned:
+        type: boolean
+      protected_label:
+        type:
+        - string
+        - 'null'
+      retain_until:
+        type:
+        - string
+        - 'null'
+        format: date-time
+      actor:
+        type: string
+      created_at:
+        type: string
+        format: date-time
+  GatewayReleaseSummary:
+    type: object
+    additionalProperties: false
+    required:
+    - id
+    - gateway_profile_id
+    - gateway_name
+    - generation
+    - role
+    - publication_kind
+    - model_key
+    - display_name
+    - status
+    - apim_revision
+    - policy_sha256
+    - desired_spec_sha256
+    - change_set
+    - dependency_count
+    - recorded_dependencies_complete
+    - live_integrity_status
+    - rollback_eligible
+    - rollback_blockers
+    - pinned
+    - protected_label
+    - retain_until
+    - retention_eligible
+    - retention_reasons
+    - created_by
+    - created_at
+    - completed_at
+    properties:
+      id:
+        type: string
+        format: uuid
+      gateway_profile_id:
+        type: string
+        format: uuid
+      gateway_name:
+        type: string
+      generation:
+        type: integer
+        minimum: 1
+      role:
+        type: string
+        enum:
+        - current
+        - immediate_rollback
+        - pinned
+        - superseded
+        - failed
+        - expired
+        - in_progress
+        - rolled_back
+      publication_kind:
+        type: string
+        enum:
+        - model_add
+        - model_remove
+        - credential_rotation
+        - route_reconcile
+      model_key:
+        type: string
+      display_name:
+        type: string
+      status:
+        type: string
+        enum:
+        - queued
+        - validating
+        - provisioning
+        - building_revision
+        - verifying
+        - awaiting_authorization
+        - promoting
+        - active
+        - failed
+        - superseded
+        - rolling_back
+        - rolled_back
+      apim_revision:
+        type:
+        - string
+        - 'null'
+      policy_sha256:
+        type:
+        - string
+        - 'null'
+      desired_spec_sha256:
+        type: string
+      change_set:
+        $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseChangeSet
+      dependency_count:
+        type: integer
+        minimum: 0
+      recorded_dependencies_complete:
+        type: boolean
+      live_integrity_status:
+        type: string
+        enum:
+        - not_checked
+        - healthy
+        - missing
+        - mismatched
+      rollback_eligible:
+        type: boolean
+      rollback_blockers:
+        type: array
+        items:
+          type: string
+      pinned:
+        type: boolean
+      protected_label:
+        type:
+        - string
+        - 'null'
+      retain_until:
+        type:
+        - string
+        - 'null'
+        format: date-time
+      retention_eligible:
+        type: boolean
+      retention_reasons:
+        type: array
+        items:
+          type: string
+      created_by:
+        type: string
+      created_at:
+        type: string
+        format: date-time
+      completed_at:
+        type:
+        - string
+        - 'null'
+        format: date-time
+  GatewayReleaseList:
+    type: object
+    additionalProperties: false
+    required:
+    - items
+    - retention_policy
+    - operations_enabled
+    - operations_disabled_reason
+    properties:
+      items:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseSummary
+      retention_policy:
+        oneOf:
+        - $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseRetentionPolicy
+        - type: 'null'
+      operations_enabled:
+        type: boolean
+      operations_disabled_reason:
+        type:
+        - string
+        - 'null'
+  GatewayReleaseDiff:
+    type: object
+    additionalProperties: false
+    required:
+    - release_id
+    - against_release_id
+    - changes
+    properties:
+      release_id:
+        type: string
+        format: uuid
+      against_release_id:
+        type:
+        - string
+        - 'null'
+        format: uuid
+      changes:
+        $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseChangeSet
+  GatewayReleaseIntegrity:
+    type: object
+    additionalProperties: false
+    required:
+    - release_id
+    - dependencies
+    - rollback_eligible
+    - rollback_blockers
+    properties:
+      release_id:
+        type: string
+        format: uuid
+      dependencies:
+        $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseDependencies
+      rollback_eligible:
+        type: boolean
+      rollback_blockers:
+        type: array
+        items:
+          type: string
+  GatewayReleaseRollbackPreview:
+    type: object
+    additionalProperties: false
+    required:
+    - target_release_id
+    - current_release_id
+    - changes
+    - dependencies
+    - rollback_eligible
+    - rollback_blockers
+    - confirmation_sha256
+    properties:
+      target_release_id:
+        type: string
+        format: uuid
+      current_release_id:
+        type: string
+        format: uuid
+      changes:
+        $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseChangeSet
+      dependencies:
+        $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseDependencies
+      rollback_eligible:
+        type: boolean
+      rollback_blockers:
+        type: array
+        items:
+          type: string
+      confirmation_sha256:
+        type: string
+        pattern: ^[0-9a-f]{64}$
+  GatewayReleaseRollbackRequest:
+    type: object
+    additionalProperties: false
+    required:
+    - confirmation_sha256
+    properties:
+      confirmation_sha256:
+        type: string
+        pattern: ^[0-9a-f]{64}$
+  GatewayReleaseOperationAuditEvent:
+    type: object
+    additionalProperties: false
+    required:
+    - id
+    - operation_id
+    - from_status
+    - to_status
+    - actor
+    - detail
+    - created_at
+    properties:
+      id:
+        type: string
+        format: uuid
+      operation_id:
+        type: string
+        format: uuid
+      from_status:
+        type:
+        - string
+        - 'null'
+        enum:
+        - queued
+        - validating_dependencies
+        - preflight_probing
+        - promoting
+        - verifying_readback
+        - post_promotion_probing
+        - restoring
+        - succeeded
+        - failed
+        - restored
+        - null
+      to_status:
+        type: string
+        enum:
+        - queued
+        - validating_dependencies
+        - preflight_probing
+        - promoting
+        - verifying_readback
+        - post_promotion_probing
+        - restoring
+        - succeeded
+        - failed
+        - restored
+      actor:
+        type: string
+      detail:
+        type: object
+        additionalProperties: true
+      created_at:
+        type: string
+        format: date-time
+  GatewayReleaseGcCandidate:
+    type: object
+    additionalProperties: false
+    required:
+    - resource_type
+    - resource_id
+    - reasons
+    properties:
+      resource_type:
+        type: string
+      resource_id:
+        type: string
+      reasons:
+        type: array
+        items:
+          type: string
+  GatewayReleaseGcPlan:
+    type: object
+    additionalProperties: false
+    required:
+    - id
+    - operation_id
+    - gateway_profile_id
+    - retained_release_ids
+    - current_non_release_references
+    - candidates
+    - reference_graph_sha256
+    - created_by
+    - created_at
+    properties:
+      id:
+        type: string
+        format: uuid
+      operation_id:
+        type: string
+        format: uuid
+      gateway_profile_id:
+        type: string
+        format: uuid
+      retained_release_ids:
+        type: array
+        items:
+          type: string
+          format: uuid
+      current_non_release_references:
+        type: object
+        additionalProperties: true
+      candidates:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseGcCandidate
+      reference_graph_sha256:
+        type: string
+        pattern: ^[0-9a-f]{64}$
+      created_by:
+        type: string
+      created_at:
+        type: string
+        format: date-time
+  GatewayReleaseOperation:
+    type: object
+    additionalProperties: false
+    required:
+    - id
+    - gateway_profile_id
+    - operation_kind
+    - target_release_id
+    - prior_release_id
+    - status
+    - semantic_preview
+    - checkpoint
+    - error_code
+    - error_message
+    - attempt_count
+    - created_by
+    - created_at
+    - started_at
+    - completed_at
+    - updated_at
+    - worker_available
+    - worker_unavailable_reason
+    - audit
+    - gc_plan
+    properties:
+      id:
+        type: string
+        format: uuid
+      gateway_profile_id:
+        type: string
+        format: uuid
+      operation_kind:
+        type: string
+        enum:
+        - rollback
+        - integrity_check
+        - gc_plan
+        - application_sync
+        - application_provision
+      target_release_id:
+        type:
+        - string
+        - 'null'
+        format: uuid
+      prior_release_id:
+        type:
+        - string
+        - 'null'
+        format: uuid
+      status:
+        type: string
+        enum:
+        - queued
+        - validating_dependencies
+        - preflight_probing
+        - promoting
+        - verifying_readback
+        - post_promotion_probing
+        - restoring
+        - succeeded
+        - failed
+        - restored
+      semantic_preview:
+        type: object
+        additionalProperties: true
+      checkpoint:
+        type: object
+        additionalProperties: true
+      error_code:
+        type:
+        - string
+        - 'null'
+      error_message:
+        type:
+        - string
+        - 'null'
+      attempt_count:
+        type: integer
+        minimum: 0
+      created_by:
+        type: string
+      created_at:
+        type: string
+        format: date-time
+      started_at:
+        type:
+        - string
+        - 'null'
+        format: date-time
+      completed_at:
+        type:
+        - string
+        - 'null'
+        format: date-time
+      updated_at:
+        type: string
+        format: date-time
+      worker_available:
+        type: boolean
+      worker_unavailable_reason:
+        type:
+        - string
+        - 'null'
+      audit:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseOperationAuditEvent
+      gc_plan:
+        oneOf:
+        - $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseGcPlan
+        - type: 'null'
+  GatewayReleaseOperationAccepted:
+    type: object
+    additionalProperties: false
+    required:
+    - operation
+    - status_url
+    properties:
+      operation:
+        $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseOperation
+      status_url:
+        type: string
+  GatewayReleaseDetail:
+    allOf:
+    - $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseSummary
+    - type: object
+      required:
+      - base_release_id
+      - diff_from_base
+      - dependencies
+      - audit
+      - protection_audit
+      properties:
+        base_release_id:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        diff_from_base:
+          $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseDiff
+        dependencies:
+          $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseDependencies
+        audit:
+          type: array
+          items:
+            $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseAuditEvent
+        protection_audit:
+          type: array
+          items:
+            $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseProtectionAuditEvent
+  GatewayAuthorizationRequirement:
+    type: object
+    additionalProperties: false
+    required:
+    - kind
+    - principal_id
+    - resource_endpoint
+    - role_id
+    - role_name
+    properties:
+      kind:
+        type: string
+        const: azure_rbac
+      principal_id:
+        type: string
+        format: uuid
+      resource_endpoint:
+        type: string
+        format: uri
+      role_id:
+        type: string
+        format: uuid
+      role_name:
+        type: string
+  GatewayPublicationAccepted:
+    type: object
+    additionalProperties: false
+    required:
+    - publication
+    - status_url
+    properties:
+      publication:
+        $ref: ../../openapi.yaml#/components/schemas/GatewayPublication
+      status_url:
+        type: string

@@ -1,0 +1,404 @@
+paths:
+  /api/v1/application-access/applications:
+    get:
+      tags:
+      - Application Access
+      operationId: listGatewayApplications
+      summary: List APIM-backed applications and current governance state
+      description: 'Returns adopted subscription metadata, exact attributed usage, the
+
+        current Ledger-backed monthly budget, and model-access posture. Subscription
+
+        primary and secondary keys are never included in inventory or detail responses.
+
+        '
+      responses:
+        '200':
+          description: Application inventory for the current monthly period
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayApplicationList
+        '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/application-access/applications/{application_id}:
+    get:
+      tags:
+      - Application Access
+      operationId: getGatewayApplication
+      summary: Get one application's subscriptions, usage, and audit history
+      parameters:
+      - name: application_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Application detail
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayApplicationDetail
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/application-access/applications/{application_id}/usage-activity:
+    get:
+      tags:
+      - Application Access
+      operationId: getGatewayApplicationUsageActivity
+      summary: Get one application's attributed usage over time
+      description: Returns server-aggregated APIM usage joined through immutable Application attribution. Unattributed requests and requests attributed to other Applications are excluded.
+      parameters:
+      - name: application_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: ../../openapi.yaml#/components/parameters/From
+      - $ref: ../../openapi.yaml#/components/parameters/To
+      - $ref: ../../openapi.yaml#/components/parameters/Timezone
+      - name: interval
+        in: query
+        required: true
+        schema:
+          type: string
+          enum:
+          - day
+          - week
+      responses:
+        '200':
+          description: Application-scoped attributed usage buckets
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/TrendResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/application-access/applications/{application_id}/subscriptions/{application_subscription_id}/keys/{key_kind}/reveal:
+    post:
+      tags:
+      - Application Access
+      operationId: revealGatewayApplicationSubscriptionKey
+      summary: Reveal one APIM subscription key for immediate copy
+      description: Owner-only. Reads one key from APIM on demand. The response is non-cacheable and the key is never persisted by Turnstile or included in later reads.
+      parameters:
+      - name: application_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: application_subscription_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: key_kind
+        in: path
+        required: true
+        schema:
+          type: string
+          enum:
+          - primary
+          - secondary
+      responses:
+        '200':
+          description: Requested APIM subscription key
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayApplicationSubscriptionKeySecret
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '503':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/application-access/applications/{application_id}/subscriptions/{application_subscription_id}/keys/{key_kind}/rotate:
+    post:
+      tags:
+      - Application Access
+      operationId: rotateGatewayApplicationSubscriptionKey
+      summary: Rotate one APIM subscription key
+      description: Owner-only. Immediately invalidates the selected key and leaves the other key unchanged. A caller can use the reveal action separately to copy the replacement without making rotation success depend on a second ARM call.
+      parameters:
+      - name: application_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: application_subscription_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: key_kind
+        in: path
+        required: true
+        schema:
+          type: string
+          enum:
+          - primary
+          - secondary
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/GatewayApplicationSubscriptionKeyRotation
+      responses:
+        '204':
+          description: Selected APIM subscription key was rotated
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '422':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '503':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/application-access/applications/{application_id}/avatar:
+    get:
+      tags:
+      - Application Access
+      operationId: getGatewayApplicationAvatar
+      summary: Read an application's custom avatar
+      parameters:
+      - name: application_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Versioned avatar image bytes
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+    put:
+      tags:
+      - Application Access
+      operationId: updateGatewayApplicationAvatar
+      summary: Replace or remove an application's custom avatar
+      description: Owner-only. Accepts a bounded PNG, JPEG, or WebP data URL; null removes the avatar.
+      parameters:
+      - name: application_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/GatewayApplicationAvatarUpdate
+      responses:
+        '200':
+          description: Updated avatar metadata
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayApplicationAvatar
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/application-access/applications/{application_id}/budget:
+    put:
+      tags:
+      - Application Access
+      operationId: updateGatewayApplicationBudget
+      summary: Update an application's current-month quota
+      description: Owner-only. Replaces the current month's Token, TPM, enforcement, and warning settings atomically and records an audit event.
+      parameters:
+      - name: application_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/GatewayApplicationBudgetUpdate
+      responses:
+        '200':
+          description: Updated Application detail
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayApplicationDetail
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/application-access/applications/{application_id}/model-access:
+    put:
+      tags:
+      - Application Access
+      operationId: updateGatewayApplicationModelAccess
+      summary: Update an application's model-access policy
+      description: Owner-only. Selects unrestricted access or atomically replaces the restricted set with enabled Registry models and records an audit event.
+      parameters:
+      - name: application_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/GatewayApplicationModelAccessUpdate
+      responses:
+        '200':
+          description: Updated Application detail
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayApplicationDetail
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '422':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/application-access/gateways/{gateway_profile_id}/sync:
+    post:
+      tags:
+      - Application Access
+      operationId: syncGatewayApplications
+      summary: Queue a read-only APIM subscription inventory refresh
+      description: 'Owner-only. Queues a leased control-plane operation; the HTTP request
+
+        does not call ARM. The worker lists APIM subscriptions without invoking listSecrets,
+
+        adopts new applications idempotently, and marks missing scopes stale. It never
+
+        creates, suspends, rotates, or deletes an APIM subscription.
+
+        '
+      parameters:
+      - name: gateway_profile_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '202':
+          description: Application inventory sync queued
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseOperationAccepted
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '503':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/application-access/gateways/{gateway_profile_id}/subscriptions:
+    post:
+      tags:
+      - Application Access
+      operationId: provisionGatewayApplicationSubscription
+      summary: Create a governed APIM subscription
+      description: 'Owner-only. Generates a primary and secondary key, returns the primary
+
+        key exactly once, and queues APIM subscription creation on the control-plane worker.
+
+        Keys are encrypted in a short-lived operation sidecar and deleted when the operation
+
+        succeeds or fails. This operation does not call listSecrets.
+
+        '
+      parameters:
+      - name: gateway_profile_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/GatewayApplicationSubscriptionCreate
+      responses:
+        '202':
+          description: Subscription provisioning queued; primary key is returned once
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayApplicationSubscriptionProvisionAccepted
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '503':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse

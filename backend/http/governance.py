@@ -1,0 +1,61 @@
+from __future__ import annotations
+
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException
+
+from ..domain.models import AnomalyRule, AnomalyRuleListResponse, AnomalyRuleWrite
+from ..services.anomaly_service import AnomalyRuleConflictError, AnomalyRuleNotFoundError
+from .service_dependencies import AnomalyRuleServiceDependency
+from .session import OwnerSession, require_allowed_write_origin, require_authenticated_session
+
+router = APIRouter(
+    dependencies=[
+        Depends(require_authenticated_session),
+        Depends(require_allowed_write_origin),
+    ]
+)
+
+
+@router.get("/api/v1/anomaly-rules", response_model=AnomalyRuleListResponse)
+def get_anomaly_rules(service: AnomalyRuleServiceDependency) -> AnomalyRuleListResponse:
+    return service.list()
+
+
+@router.post("/api/v1/anomaly-rules", response_model=AnomalyRule, status_code=201)
+def create_anomaly_rule(
+    write: AnomalyRuleWrite,
+    service: AnomalyRuleServiceDependency,
+    identity: OwnerSession,
+) -> AnomalyRule:
+    try:
+        return service.create(write, identity.email)
+    except AnomalyRuleConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.put("/api/v1/anomaly-rules/{rule_id}", response_model=AnomalyRule)
+def update_anomaly_rule(
+    rule_id: UUID,
+    write: AnomalyRuleWrite,
+    service: AnomalyRuleServiceDependency,
+    identity: OwnerSession,
+) -> AnomalyRule:
+    try:
+        return service.update(rule_id, write, identity.email)
+    except AnomalyRuleConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except AnomalyRuleNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.delete("/api/v1/anomaly-rules/{rule_id}", status_code=204)
+def delete_anomaly_rule(
+    rule_id: UUID,
+    service: AnomalyRuleServiceDependency,
+    identity: OwnerSession,
+) -> None:
+    try:
+        service.remove(rule_id)
+    except AnomalyRuleNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error

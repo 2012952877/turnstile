@@ -1,0 +1,349 @@
+/* Exact SmartHive AppSidebar primitive mapping. */
+.sidebar-peer > aside {
+	box-sizing: border-box;
+	min-height: 0;
+	padding: 8px;
+	border: 0 solid var(--sidebar-border);
+	background: transparent;
+	color: var(--sidebar-foreground);
+	font-family: var(--font-sans);
+	font-size: 16px;
+	line-height: 24px;
+	font-weight: 400;
+}
+.sidebar-inner {
+	width: 100%;
+	height: 100%;
+	min-height: auto;
+	display: flex;
+	flex-direction: column;
+	border-radius: 0;
+	background: var(--sidebar);
+	box-shadow: none;
+	outline: 0;
+}
+.sidebar-header {
+	flex: 0 0 auto;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 12px 8px;
+}
+.sidebar-menu {
+	width: 100%;
+	min-width: 0;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 0;
+	list-style: none;
+}
+.sidebar-menu-item { position: relative; margin: 0; padding: 0; }
+.sidebar-menu-button {
+	width: 100%;
+	height: 32px;
+	min-height: 32px;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	overflow: hidden;
+	border: 0;
+	border-radius: 7px;
+	padding: 8px;
+	outline: 0;
+	background: transparent;
+	color: color-mix(in oklch, var(--sidebar-foreground) 70%, transparent);
+	font-size: 14px;
+	line-height: 20px;
+	font-weight: 400;
+	letter-spacing: 0;
+	text-align: left;
+	white-space: nowrap;
+	cursor: pointer;
+}
+.sidebar-menu-button > svg { width: 16px; height: 16px; flex: 0 0 16px; }
+.sidebar-menu-button > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+[data-locale="en"] .sidebar-content .sidebar-menu-button { font-size: 13px; }
+.sidebar-menu-button:hover { background: color-mix(in oklch, var(--sidebar-accent) 70%, transparent); color: var(--sidebar-accent-foreground); }
+.sidebar-menu-button.active { background: var(--sidebar-accent); color: var(--sidebar-accent-foreground); font-weight: 500; }
+.sidebar-menu-button:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--sidebar-ring); }
+/* SmartHive's SidebarMenuBadge: absolute right-1 / top-1.5 (default size), h-5, min-w-5,
+   rounded-md, px-1, text-xs, tabular-nums. The button reserves room for it the same way
+   SmartHive reserves room for a menu action, so a long report title truncates before it
+   reaches the count instead of sliding underneath it. */
+.sidebar-menu-item:has(.sidebar-menu-badge) .sidebar-menu-button,
+.sidebar-menu-item:has(.sidebar-menu-action) .sidebar-menu-button { padding-right: 32px; }
+.sidebar-menu-badge {
+	pointer-events: none;
+	position: absolute;
+	right: 4px;
+	top: 6px;
+	display: flex;
+	height: 20px;
+	min-width: 20px;
+	align-items: center;
+	justify-content: center;
+	border-radius: 6px;
+	padding: 0 4px;
+	color: color-mix(in oklch, var(--sidebar-foreground) 70%, transparent);
+	font-size: 12px;
+	font-weight: 500;
+	font-variant-numeric: tabular-nums;
+	user-select: none;
+	transition: opacity 120ms ease;
+}
+/* SmartHive's SidebarMenuAction with showOnHover: same right-1 / top-1.5 / 20px square
+   geometry as the badge, 16px icon, revealed by hover or by keyboard focus reaching the
+   item. The two share that slot, so the count yields while the action is up rather than
+   the two stacking on the same pixels. */
+.sidebar-menu-action {
+	position: absolute;
+	right: 4px;
+	/* Centred against the row rather than offset by a number that happens to halve the
+	   current 32px height: the previous hardcoded top silently sat 6px low the moment the
+	   box turned out to be 32px tall instead of 20px. */
+	top: 50%;
+	transform: translateY(-50%);
+	display: flex;
+	width: 20px;
+	height: 20px;
+	/* The legacy `nav button` rule carries min-height: 32px, and a min-height beats a
+	   height, so the square silently became 20x32 without any rule appearing to lose. */
+	min-height: 20px;
+	align-items: center;
+	justify-content: center;
+	border: 0;
+	border-radius: 6px;
+	padding: 0;
+	background: transparent;
+	color: color-mix(in oklch, var(--sidebar-foreground) 70%, transparent);
+	cursor: pointer;
+	opacity: 0;
+	transition: opacity 120ms ease;
+}
+.sidebar-menu-action > svg { width: 12px; height: 12px; }
+.sidebar-menu-item:hover .sidebar-menu-action,
+.sidebar-menu-item:focus-within .sidebar-menu-action { opacity: 1; }
+.sidebar-menu-item:hover .sidebar-menu-badge,
+.sidebar-menu-item:focus-within .sidebar-menu-badge { opacity: 0; }
+.sidebar-menu-action:hover { background: var(--sidebar-accent); color: var(--sidebar-accent-foreground); }
+.sidebar-menu-action:focus-visible { opacity: 1; outline: none; box-shadow: 0 0 0 2px var(--sidebar-ring); }
+.sidebar-menu-action:disabled { cursor: default; opacity: 0.5; }
+/* A touch screen has no hover, so the action would otherwise be permanently unreachable.
+   It takes the slot outright there and the count gives way for good. */
+@media (hover: none) {
+	.sidebar-menu-action { opacity: 1; }
+	.sidebar-menu-badge { opacity: 0; }
+}
+.sidebar-menu-button.active ~ .sidebar-menu-badge { color: var(--sidebar-accent-foreground); }
+.sidebar-header .workspace-switcher {
+	height: 32px;
+	min-height: 32px;
+	flex: 0 0 32px;
+	gap: 8px;
+	padding: 8px;
+	border: 0;
+	border-radius: 7px;
+	color: var(--sidebar-foreground);
+	font-size: 14px;
+	line-height: 20px;
+}
+.sidebar-header .workspace-source-switcher {
+	height: 32px;
+	min-height: 32px;
+	width: 48px;
+	min-width: 48px;
+	flex: 0 0 48px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 2px;
+	margin-left: auto;
+	padding: 6px;
+	border: 0;
+	border-radius: 7px;
+	background: transparent;
+	color: var(--sidebar-foreground);
+	font-size: 14px;
+	line-height: 20px;
+	text-align: left;
+	cursor: pointer;
+}
+.workspace-menu-item { display: flex; align-items: center; min-width: 0; }
+.workspace-source-logo { width: 20px; height: 20px; display: grid; place-items: center; flex: 0 0 20px; }
+.workspace-switcher-chevron { margin-left: 0; flex: 0 0 14px; color: var(--muted-foreground); }
+.workspace-source-switcher:hover { background: color-mix(in oklch, var(--sidebar-accent) 70%, transparent); }
+.workspace-source-switcher:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--sidebar-ring); }
+.workspace-source-menu { width: max-content; min-width: 0; }
+.workspace-source-menu [data-slot="dropdown-menu-item"] { padding-right: 8px; white-space: nowrap; }
+/* A plain centred 20px box. It used to be 21px tall with the tile absolutely positioned
+   1px down inside it -- scaffolding left over from an earlier mark that overflowed its
+   box. The odd height centred at a half pixel and the offset added another, so the tile
+   sat 0.5px below the label's optical centre: too small to point at, big enough to see. */
+.workspace-icon-slot { width: 20px; height: 20px; flex: 0 0 20px; display: grid; place-items: center; }
+/* The tile is the favicon at sidebar size, so the proportions are taken from it rather
+   than re-chosen: the 32px icon uses a 7px radius and insets the mark by 4 on each side,
+   which is 22% and 75%. Expressing both as ratios keeps them true if the slot is ever
+   resized. No border: the favicon has none, and a grey rule around a saturated tile
+   reads as a seam. */
+.workspace-icon-slot > span {
+	width: 20px;
+	height: 20px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border: 0;
+	border-radius: 22%;
+	background: var(--brand);
+	color: var(--brand-foreground);
+}
+.workspace-icon-slot > span > svg { width: 75%; height: 75%; }
+.workspace-switcher > b { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sidebar-foreground); font-size: 14px; line-height: 20px; font-weight: 500; }
+.sidebar-search-trigger { color: var(--muted-foreground); }
+.sidebar-search-trigger:hover { background: var(--sidebar-accent); }
+.sidebar-quick-action { color: var(--muted-foreground); }
+.sidebar-header .sidebar-menu-button kbd {
+	height: 20px;
+	margin-left: auto;
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	padding: 0 6px;
+	background: var(--muted);
+	color: var(--muted-foreground);
+	font-family: "Geist Mono", "Geist Mono Fallback", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-size: 10px;
+	line-height: 14.2857px;
+	font-weight: 500;
+}
+.sidebar-header .sidebar-menu-button kbd > span { font-size: 12px; line-height: 16px; }
+.sidebar-content {
+	min-height: 0;
+	flex: 1 1 auto;
+	display: flex;
+	flex-direction: column;
+	gap: 0;
+	overflow: auto;
+}
+.sidebar-content > nav { width: 100%; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0; }
+.sidebar-footer { flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px; padding: 8px; }
+/* The account fills the row and pushes help to the right; `min-width: 0` on the text is
+   what lets a long address ellipsis instead of widening the sidebar. */
+.sidebar-footer-actions { display: flex; align-items: center; gap: 4px; }
+.sidebar-account {
+	flex: 1 1 auto;
+	min-width: 0;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	height: 40px;
+	padding: 0 6px;
+	border: 0;
+	border-radius: 8px;
+	background: transparent;
+	color: var(--sidebar-foreground);
+	text-align: left;
+	cursor: pointer;
+	transition: background-color 100ms ease;
+}
+.sidebar-account:hover, .sidebar-account[data-popup-open] { background: var(--sidebar-accent); }
+.sidebar-avatar {
+	flex: 0 0 auto;
+	display: grid;
+	place-items: center;
+	width: 26px;
+	height: 26px;
+	border-radius: 50%;
+	background: var(--brand);
+	color: oklch(1 0 0);
+	font-size: 12px;
+	font-weight: 600;
+}
+/* Graph returns a square, but not always exactly 96x96 -- `cover` crops rather than
+   distorting a face to fit. */
+img.sidebar-avatar { object-fit: cover; background: var(--accent); }
+.sidebar-account-text { min-width: 0; display: grid; }
+.sidebar-account-text b { font-size: 12px; line-height: 16px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-account-text small { font-size: 11px; line-height: 14px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Collapsed to the rail there is no room for text; the avatar alone still says who. */
+.sidebar-peer[data-state="collapsed"] .sidebar-account-text { display: none; }
+.sidebar-help-menu { min-width: 160px; }
+.nav-group.sidebar-group {
+	position: relative;
+	width: 100%;
+	min-width: 0;
+	margin: 0;
+	padding: 8px;
+	display: flex;
+	flex-direction: column;
+	gap: normal;
+}
+.nav-label {
+	width: 100%;
+	height: 32px;
+	min-height: 32px;
+	flex: 0 0 32px;
+	display: flex;
+	align-items: center;
+	border-radius: 8px;
+	padding: 0 8px;
+	color: color-mix(in oklch, var(--sidebar-foreground) 70%, transparent);
+	font-size: 12px;
+	line-height: 16px;
+	font-weight: 500;
+	letter-spacing: 0;
+	text-transform: none;
+}
+.sidebar-group-content { width: 100%; font-size: 14px; line-height: 20px; }
+
+/* Collapsible pinned group, copied from SmartHive's `app-sidebar.tsx`: the group label is
+   the trigger rather than a separate control, so the row stays the same 32px as every
+   other group label instead of growing a button beside it. */
+.pinned-group-trigger {
+	appearance: none;
+	border: 0;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-size: 12px;
+	line-height: 16px;
+	font-weight: 500;
+	text-align: left;
+	cursor: pointer;
+	gap: 4px;
+}
+.pinned-group-trigger:hover {
+	background: color-mix(in oklch, var(--sidebar-accent) 70%, transparent);
+	color: var(--sidebar-accent-foreground);
+}
+.pinned-group-trigger:focus-visible { outline: 2px solid var(--sidebar-ring); outline-offset: -2px; }
+.pinned-group-caret { flex: 0 0 auto; transition: transform 200ms ease; }
+.pinned-group-trigger[aria-expanded="true"] .pinned-group-caret { transform: rotate(90deg); }
+/* Hidden until the group is hovered: the count is a reassurance when a collapsed group
+   hides its rows, not a number worth competing with the report titles. */
+.pinned-group-count {
+	margin-left: auto;
+	font-size: 10px;
+	line-height: 14px;
+	color: var(--muted-foreground);
+	opacity: 0;
+	transition: opacity 150ms ease;
+}
+.pinned-group:hover .pinned-group-count,
+.pinned-group-trigger:focus-visible .pinned-group-count { opacity: 1; }
+.sidebar-nav-menu { gap: 5px; }
+.sidebar-nav-menu .sidebar-menu-button em {
+	margin-left: auto;
+	color: inherit;
+	font-size: 12px;
+	line-height: 16px;
+	font-weight: 500;
+	font-style: normal;
+}
+@media (max-width: 767px) {
+	.sidebar-peer > aside { padding: 0; }
+	.sidebar-inner { border-radius: 0; box-shadow: none; outline: 0; }
+}

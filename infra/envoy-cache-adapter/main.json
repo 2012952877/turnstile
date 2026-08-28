@@ -1,0 +1,360 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.31.92.45157",
+      "templateHash": "15182446954092626965"
+    }
+  },
+  "parameters": {
+    "resourceGroupName": {
+      "type": "string"
+    },
+    "apimResourceGroupName": {
+      "type": "string",
+      "defaultValue": "[parameters('resourceGroupName')]"
+    },
+    "location": {
+      "type": "string"
+    },
+    "appServicePlanName": {
+      "type": "string"
+    },
+    "webAppName": {
+      "type": "string"
+    },
+    "acrName": {
+      "type": "string"
+    },
+    "imageRepository": {
+      "type": "string",
+      "defaultValue": "turnstile/envoy-cache-adapter"
+    },
+    "imageTag": {
+      "type": "string"
+    },
+    "eventHubNamespaceName": {
+      "type": "string"
+    },
+    "eventHubName": {
+      "type": "string",
+      "defaultValue": "token-usage"
+    },
+    "apimName": {
+      "type": "string"
+    },
+    "adapterSharedKey": {
+      "type": "securestring"
+    }
+  },
+  "variables": {
+    "acrLoginServer": "[format('{0}.azurecr.io', parameters('acrName'))]",
+    "image": "[format('{0}/{1}:{2}', variables('acrLoginServer'), parameters('imageRepository'), parameters('imageTag'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2022-09-01",
+      "name": "envoy-cache-adapter-app",
+      "resourceGroup": "[parameters('resourceGroupName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "appServicePlanName": {
+            "value": "[parameters('appServicePlanName')]"
+          },
+          "webAppName": {
+            "value": "[parameters('webAppName')]"
+          },
+          "image": {
+            "value": "[variables('image')]"
+          },
+          "acrLoginServer": {
+            "value": "[variables('acrLoginServer')]"
+          },
+          "eventHubNamespaceName": {
+            "value": "[parameters('eventHubNamespaceName')]"
+          },
+          "eventHubName": {
+            "value": "[parameters('eventHubName')]"
+          },
+          "adapterSharedKey": {
+            "value": "[parameters('adapterSharedKey')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.31.92.45157",
+              "templateHash": "3682172452101423133"
+            }
+          },
+          "parameters": {
+            "location": {
+              "type": "string"
+            },
+            "appServicePlanName": {
+              "type": "string"
+            },
+            "webAppName": {
+              "type": "string"
+            },
+            "image": {
+              "type": "string"
+            },
+            "acrLoginServer": {
+              "type": "string"
+            },
+            "eventHubNamespaceName": {
+              "type": "string"
+            },
+            "eventHubName": {
+              "type": "string"
+            },
+            "adapterSharedKey": {
+              "type": "securestring"
+            }
+          },
+          "variables": {
+            "eventHubsDataSenderRoleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '2b629674-e913-4c01-ae53-ef4638d8f975')]"
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Web/serverfarms",
+              "apiVersion": "2024-11-01",
+              "name": "[parameters('appServicePlanName')]",
+              "location": "[parameters('location')]",
+              "kind": "linux",
+              "sku": {
+                "name": "B1",
+                "tier": "Basic",
+                "size": "B1",
+                "capacity": 1
+              },
+              "properties": {
+                "reserved": true
+              }
+            },
+            {
+              "type": "Microsoft.Web/sites",
+              "apiVersion": "2024-11-01",
+              "name": "[parameters('webAppName')]",
+              "location": "[parameters('location')]",
+              "kind": "app,linux,container",
+              "identity": {
+                "type": "SystemAssigned"
+              },
+              "properties": {
+                "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', parameters('appServicePlanName'))]",
+                "httpsOnly": true,
+                "publicNetworkAccess": "Enabled",
+                "siteConfig": {
+                  "linuxFxVersion": "[format('DOCKER|{0}', parameters('image'))]",
+                  "acrUseManagedIdentityCreds": true,
+                  "alwaysOn": true,
+                  "ftpsState": "Disabled",
+                  "minTlsVersion": "1.2",
+                  "http20Enabled": true,
+                  "healthCheckPath": "/health",
+                  "appSettings": [
+                    {
+                      "name": "WEBSITES_PORT",
+                      "value": "8080"
+                    },
+                    {
+                      "name": "DOCKER_REGISTRY_SERVER_URL",
+                      "value": "[format('https://{0}', parameters('acrLoginServer'))]"
+                    },
+                    {
+                      "name": "EVENT_HUB_FQDN",
+                      "value": "[format('{0}.servicebus.windows.net', parameters('eventHubNamespaceName'))]"
+                    },
+                    {
+                      "name": "EVENT_HUB_NAME",
+                      "value": "[parameters('eventHubName')]"
+                    },
+                    {
+                      "name": "ADAPTER_SHARED_KEY",
+                      "value": "[parameters('adapterSharedKey')]"
+                    }
+                  ]
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Web/serverfarms', parameters('appServicePlanName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[format('Microsoft.EventHub/namespaces/{0}/eventhubs/{1}', parameters('eventHubNamespaceName'), parameters('eventHubName'))]",
+              "name": "[guid(resourceId('Microsoft.EventHub/namespaces/eventhubs', parameters('eventHubNamespaceName'), parameters('eventHubName')), resourceId('Microsoft.Web/sites', parameters('webAppName')), 'envoy-cache-adapter-event-hub-sender')]",
+              "properties": {
+                "principalId": "[reference(resourceId('Microsoft.Web/sites', parameters('webAppName')), '2024-11-01', 'full').identity.principalId]",
+                "principalType": "ServicePrincipal",
+                "roleDefinitionId": "[variables('eventHubsDataSenderRoleDefinitionId')]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Web/sites', parameters('webAppName'))]"
+              ]
+            }
+          ],
+          "outputs": {
+            "webAppUrl": {
+              "type": "string",
+              "value": "[format('https://{0}', reference(resourceId('Microsoft.Web/sites', parameters('webAppName')), '2024-11-01').defaultHostName)]"
+            },
+            "principalId": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.Web/sites', parameters('webAppName')), '2024-11-01', 'full').identity.principalId]"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2022-09-01",
+      "name": "envoy-cache-adapter-acr-role",
+      "resourceGroup": "[parameters('apimResourceGroupName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "acrName": {
+            "value": "[parameters('acrName')]"
+          },
+          "principalId": {
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('resourceGroupName')), 'Microsoft.Resources/deployments', 'envoy-cache-adapter-app'), '2022-09-01').outputs.principalId.value]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.31.92.45157",
+              "templateHash": "5154748805532644181"
+            }
+          },
+          "parameters": {
+            "acrName": {
+              "type": "string"
+            },
+            "principalId": {
+              "type": "string"
+            }
+          },
+          "variables": {
+            "acrPullRoleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')]"
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[format('Microsoft.ContainerRegistry/registries/{0}', parameters('acrName'))]",
+              "name": "[guid(resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), parameters('principalId'), 'envoy-cache-adapter-acr-pull')]",
+              "properties": {
+                "principalId": "[parameters('principalId')]",
+                "principalType": "ServicePrincipal",
+                "roleDefinitionId": "[variables('acrPullRoleDefinitionId')]"
+              }
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('resourceGroupName')), 'Microsoft.Resources/deployments', 'envoy-cache-adapter-app')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2022-09-01",
+      "name": "envoy-cache-adapter-apim",
+      "resourceGroup": "[parameters('apimResourceGroupName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "apimName": {
+            "value": "[parameters('apimName')]"
+          },
+          "adapterSharedKey": {
+            "value": "[parameters('adapterSharedKey')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.31.92.45157",
+              "templateHash": "6011445998464402491"
+            }
+          },
+          "parameters": {
+            "apimName": {
+              "type": "string"
+            },
+            "adapterSharedKey": {
+              "type": "securestring"
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.ApiManagement/service/namedValues",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}', parameters('apimName'), 'turnstile-envoy-adapter-key')]",
+              "properties": {
+                "displayName": "turnstile-envoy-adapter-key",
+                "secret": true,
+                "value": "[parameters('adapterSharedKey')]"
+              }
+            }
+          ],
+          "outputs": {
+            "namedValueName": {
+              "type": "string",
+              "value": "turnstile-envoy-adapter-key"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "webAppUrl": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('resourceGroupName')), 'Microsoft.Resources/deployments', 'envoy-cache-adapter-app'), '2022-09-01').outputs.webAppUrl.value]"
+    },
+    "webAppPrincipalId": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('resourceGroupName')), 'Microsoft.Resources/deployments', 'envoy-cache-adapter-app'), '2022-09-01').outputs.principalId.value]"
+    },
+    "adapterKeyNamedValueName": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('apimResourceGroupName')), 'Microsoft.Resources/deployments', 'envoy-cache-adapter-apim'), '2022-09-01').outputs.namedValueName.value]"
+    },
+    "image": {
+      "type": "string",
+      "value": "[variables('image')]"
+    }
+  }
+}

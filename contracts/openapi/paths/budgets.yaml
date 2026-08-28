@@ -1,0 +1,172 @@
+paths:
+  /api/v1/budgets:
+    get:
+      tags:
+      - Budgets
+      operationId: getTokenBudgets
+      summary: Get monthly organization, department, and user Token budgets
+      description: Returns assigned limits, actual usage, remaining allowance, forecast, status, and audit
+        history to any authenticated application user.
+      parameters:
+      - $ref: ../../openapi.yaml#/components/parameters/BudgetPeriod
+      - name: include_users
+        in: query
+        description: Include every user in the hierarchy. Defaults to false; large directories should
+          use the paginated people endpoint.
+        schema:
+          type: boolean
+          default: false
+      responses:
+        '200':
+          description: Monthly hierarchical budget state
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/TokenBudgetResponse
+        '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/budgets/users:
+    get:
+      tags:
+      - Budgets
+      operationId: getPeopleBudgets
+      summary: Search and page people budgets within one department
+      parameters:
+      - $ref: ../../openapi.yaml#/components/parameters/BudgetPeriod
+      - name: department_id
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+      - name: query
+        in: query
+        schema:
+          type:
+          - string
+          - 'null'
+          maxLength: 200
+      - name: status
+        in: query
+        schema:
+          $ref: ../../openapi.yaml#/components/schemas/PeopleBudgetFilter
+      - name: offset
+        in: query
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 50
+      responses:
+        '200':
+          description: Bounded page of people budgets and department allocation totals
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/TokenBudgetPeopleResponse
+        '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/budgets/users/bulk:
+    post:
+      tags:
+      - Budgets
+      operationId: bulkSavePeopleBudgets
+      summary: Atomically allocate budgets to selected or all matching people
+      parameters:
+      - $ref: ../../openapi.yaml#/components/parameters/BudgetPeriod
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/TokenBudgetBulkWrite
+      responses:
+        '200':
+          description: Bulk allocation summary
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/TokenBudgetBulkResult
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/budgets/{scope_type}/{scope_id}:
+    put:
+      tags:
+      - Budgets
+      operationId: saveTokenBudget
+      summary: Assign or update one monthly Token budget
+      description: Direct child allocations may not exceed the parent budget, and a parent may not be
+        reduced below its existing child allocations. Owner access only.
+      parameters:
+      - $ref: ../../openapi.yaml#/components/parameters/BudgetScopeType
+      - $ref: ../../openapi.yaml#/components/parameters/BudgetScopeId
+      - $ref: ../../openapi.yaml#/components/parameters/BudgetPeriod
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/TokenBudgetWrite
+      responses:
+        '200':
+          description: Updated monthly budget state
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/TokenBudgetResponse
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          description: The allocation violates a parent or child budget constraint
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/Error
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+    delete:
+      tags:
+      - Budgets
+      operationId: deleteTokenBudget
+      summary: Remove one monthly Token budget
+      description: A parent budget cannot be removed while direct child budgets remain assigned. Owner
+        access only.
+      parameters:
+      - $ref: ../../openapi.yaml#/components/parameters/BudgetScopeType
+      - $ref: ../../openapi.yaml#/components/parameters/BudgetScopeId
+      - $ref: ../../openapi.yaml#/components/parameters/BudgetPeriod
+      responses:
+        '200':
+          description: Updated monthly budget state
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/TokenBudgetResponse
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse

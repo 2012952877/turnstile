@@ -1,0 +1,647 @@
+schemas:
+  TimeInterval:
+    type: string
+    enum:
+    - hour
+    - day
+    - week
+  TrendDimension:
+    type: string
+    enum:
+    - organization
+    - department
+    - project
+    - agent
+    - user
+    - model
+    - runtime
+    - workflow
+    - team
+  AuditStatus:
+    type: string
+    enum:
+    - new
+    - acknowledged
+    - resolved
+    - ignored
+  AuditSeverity:
+    type: string
+    enum:
+    - info
+    - warning
+    - critical
+  AnomalyRuleMetric:
+    type: string
+    enum:
+    - error_rate_percent
+    - request_latency_ms
+    - request_cost_usd
+    - agent_request_count
+  AnomalyThresholdMode:
+    type: string
+    enum:
+    - absolute
+    - percentile
+  AnomalyScopeType:
+    type: string
+    enum:
+    - global
+    - organization
+    - department
+    - project
+    - agent
+    - model
+    - user
+  AnomalyRuleWrite:
+    type: object
+    additionalProperties: false
+    required:
+    - name
+    - description
+    - metric
+    - threshold_mode
+    - threshold_value
+    - minimum_sample_size
+    - severity
+    - scope_type
+    - scope_id
+    - enabled
+    properties:
+      name:
+        type: string
+        minLength: 1
+        maxLength: 120
+      description:
+        type: string
+        maxLength: 500
+        default: ''
+      metric:
+        $ref: ../../openapi.yaml#/components/schemas/AnomalyRuleMetric
+      threshold_mode:
+        $ref: ../../openapi.yaml#/components/schemas/AnomalyThresholdMode
+      threshold_value:
+        type: number
+        exclusiveMinimum: 0
+      minimum_sample_size:
+        type: integer
+        minimum: 1
+        maximum: 100000
+        default: 1
+      severity:
+        type: string
+        enum:
+        - warning
+        - critical
+      scope_type:
+        $ref: ../../openapi.yaml#/components/schemas/AnomalyScopeType
+      scope_id:
+        type:
+        - string
+        - 'null'
+        maxLength: 255
+      enabled:
+        type: boolean
+        default: true
+  AnomalyRule:
+    allOf:
+    - $ref: ../../openapi.yaml#/components/schemas/AnomalyRuleWrite
+    - type: object
+      required:
+      - id
+      - created_at
+      - updated_at
+      - updated_by
+      properties:
+        id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        updated_by:
+          type: string
+  AnomalyRuleListResponse:
+    type: object
+    additionalProperties: false
+    required:
+    - items
+    properties:
+      items:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/AnomalyRule
+  MetricTotals:
+    type: object
+    additionalProperties: false
+    required:
+    - et
+    - total_tokens
+    - input_tokens
+    - cached_tokens
+    - output_tokens
+    - calls
+    properties:
+      et:
+        type: number
+        format: double
+        minimum: 0
+      total_tokens:
+        type: integer
+        format: int64
+        minimum: 0
+      input_tokens:
+        type: integer
+        format: int64
+        minimum: 0
+      cached_tokens:
+        type: integer
+        format: int64
+        minimum: 0
+      cache_read_tokens:
+        type: integer
+        format: int64
+        minimum: 0
+        default: 0
+        description: Measured cache-read bucket; unlike cached_tokens, it excludes cache writes.
+      cache_write_tokens:
+        type: integer
+        format: int64
+        minimum: 0
+        default: 0
+        description: Measured cache-write bucket; it is the write-only subset of cached_tokens.
+      output_tokens:
+        type: integer
+        format: int64
+        minimum: 0
+      calls:
+        type: integer
+        format: int64
+        minimum: 0
+      estimated_cost:
+        type: number
+        format: double
+        minimum: 0
+        default: 0
+      p95_latency_ms:
+        type: number
+        format: double
+        minimum: 0
+        default: 0
+      failed_calls:
+        type: integer
+        format: int64
+        minimum: 0
+        default: 0
+  PeriodMetric:
+    type: object
+    additionalProperties: false
+    required:
+    - from
+    - to
+    - totals
+    - comparison_percent
+    properties:
+      from:
+        type: string
+        format: date-time
+      to:
+        type: string
+        format: date-time
+      totals:
+        $ref: ../../openapi.yaml#/components/schemas/MetricTotals
+      comparison_percent:
+        type:
+        - number
+        - 'null'
+        format: double
+        description: Change versus the immediately preceding equal calendar period.
+  WorkflowMetric:
+    type: object
+    additionalProperties: false
+    required:
+    - workflow
+    - totals
+    - share_percent
+    properties:
+      workflow:
+        type: string
+      totals:
+        $ref: ../../openapi.yaml#/components/schemas/MetricTotals
+      share_percent:
+        type: number
+        format: double
+        minimum: 0
+        maximum: 100
+  OverviewResponse:
+    type: object
+    additionalProperties: false
+    required:
+    - as_of
+    - timezone
+    - today
+    - month
+    - top_workflows
+    - unattributed_percent
+    properties:
+      as_of:
+        type: string
+        format: date-time
+      timezone:
+        type: string
+      today:
+        $ref: ../../openapi.yaml#/components/schemas/PeriodMetric
+      month:
+        $ref: ../../openapi.yaml#/components/schemas/PeriodMetric
+      top_workflows:
+        type: array
+        maxItems: 10
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/WorkflowMetric
+      unattributed_percent:
+        type: number
+        format: double
+        minimum: 0
+        maximum: 100
+      estimated_percent:
+        type: number
+        format: double
+        minimum: 0
+        maximum: 100
+  TrendPoint:
+    type: object
+    additionalProperties: false
+    required:
+    - bucket_start
+    - key
+    - label
+    - totals
+    properties:
+      bucket_start:
+        type: string
+        format: date-time
+      key:
+        type: string
+      label:
+        type: string
+      totals:
+        $ref: ../../openapi.yaml#/components/schemas/MetricTotals
+  TrendResponse:
+    type: object
+    additionalProperties: false
+    required:
+    - from
+    - to
+    - timezone
+    - interval
+    - group_by
+    - points
+    properties:
+      from:
+        type: string
+        format: date-time
+      to:
+        type: string
+        format: date-time
+      timezone:
+        type: string
+      interval:
+        $ref: ../../openapi.yaml#/components/schemas/TimeInterval
+      group_by:
+        $ref: ../../openapi.yaml#/components/schemas/TrendDimension
+      points:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/TrendPoint
+  RunSummary:
+    type: object
+    additionalProperties: false
+    required:
+    - run_id
+    - started_at
+    - ended_at
+    - team
+    - user
+    - agent
+    - workflow
+    - provider
+    - models
+    - turn_count
+    - totals
+    - latency_ms
+    - estimated
+    properties:
+      run_id:
+        type: string
+      started_at:
+        type: string
+        format: date-time
+      ended_at:
+        type: string
+        format: date-time
+      team:
+        type: string
+      user:
+        type: string
+      agent:
+        type: string
+      workflow:
+        type: string
+      provider:
+        type: string
+      models:
+        type: array
+        items:
+          type: string
+      turn_count:
+        type: integer
+        minimum: 1
+      totals:
+        $ref: ../../openapi.yaml#/components/schemas/MetricTotals
+      latency_ms:
+        type: integer
+        format: int64
+        minimum: 0
+      estimated:
+        type: boolean
+  RunTurn:
+    type: object
+    additionalProperties: false
+    required:
+    - usage_id
+    - turn_index
+    - ts
+    - model
+    - input_tokens
+    - cached_tokens
+    - output_tokens
+    - et
+    - et_coeff_m
+    - latency_ms
+    - status
+    - estimated
+    - ingest_source
+    properties:
+      usage_id:
+        type: string
+      turn_index:
+        type: integer
+        minimum: 1
+      ts:
+        type: string
+        format: date-time
+      model:
+        type: string
+      input_tokens:
+        type: integer
+        format: int64
+        minimum: 0
+      cached_tokens:
+        type: integer
+        format: int64
+        minimum: 0
+      output_tokens:
+        type: integer
+        format: int64
+        minimum: 0
+      et:
+        type: number
+        format: double
+        minimum: 0
+      et_coeff_m:
+        type: number
+        format: double
+        exclusiveMinimum: 0
+      latency_ms:
+        type: integer
+        format: int64
+        minimum: 0
+      status:
+        type: string
+      estimated:
+        type: boolean
+      ingest_source:
+        type: string
+        enum:
+        - eventhub
+        - backfill
+        - gateway
+        - policy
+  RunDetail:
+    allOf:
+    - $ref: ../../openapi.yaml#/components/schemas/RunSummary
+    - type: object
+      required:
+      - turns
+      properties:
+        turns:
+          type: array
+          items:
+            $ref: ../../openapi.yaml#/components/schemas/RunTurn
+  PageInfo:
+    type: object
+    additionalProperties: false
+    required:
+    - next_cursor
+    properties:
+      next_cursor:
+        type:
+        - string
+        - 'null'
+  RunListResponse:
+    type: object
+    additionalProperties: false
+    required:
+    - items
+    - page
+    properties:
+      items:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/RunSummary
+      page:
+        $ref: ../../openapi.yaml#/components/schemas/PageInfo
+  AuditFinding:
+    type: object
+    additionalProperties: false
+    required:
+    - id
+    - created_at
+    - updated_at
+    - rule_id
+    - severity
+    - workflow
+    - run_id
+    - evidence
+    - status
+    properties:
+      id:
+        type: string
+        format: uuid
+      created_at:
+        type: string
+        format: date-time
+      updated_at:
+        type: string
+        format: date-time
+      rule_id:
+        type: string
+      severity:
+        $ref: ../../openapi.yaml#/components/schemas/AuditSeverity
+      workflow:
+        type: string
+      run_id:
+        type:
+        - string
+        - 'null'
+      evidence:
+        type: object
+        additionalProperties: true
+        description: Numeric and categorical evidence only; never prompt content.
+      status:
+        $ref: ../../openapi.yaml#/components/schemas/AuditStatus
+      assignee:
+        type:
+        - string
+        - 'null'
+      suggestion:
+        type:
+        - string
+        - 'null'
+      resolution_note:
+        type:
+        - string
+        - 'null'
+  AuditFindingUpdate:
+    type: object
+    additionalProperties: false
+    required:
+    - status
+    properties:
+      status:
+        $ref: ../../openapi.yaml#/components/schemas/AuditStatus
+      assignee:
+        type:
+        - string
+        - 'null'
+      resolution_note:
+        type:
+        - string
+        - 'null'
+        maxLength: 2000
+  AuditFindingListResponse:
+    type: object
+    additionalProperties: false
+    required:
+    - items
+    - page
+    properties:
+      items:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/AuditFinding
+      page:
+        $ref: ../../openapi.yaml#/components/schemas/PageInfo
+  OptimizationComparison:
+    type: object
+    additionalProperties: false
+    required:
+    - window_days
+    - before
+    - after
+    - et_change_percent
+    - token_change_percent
+    properties:
+      window_days:
+        type: integer
+        minimum: 1
+        maximum: 90
+      before:
+        $ref: ../../openapi.yaml#/components/schemas/MetricTotals
+      after:
+        $ref: ../../openapi.yaml#/components/schemas/MetricTotals
+      et_change_percent:
+        type:
+        - number
+        - 'null'
+        format: double
+      token_change_percent:
+        type:
+        - number
+        - 'null'
+        format: double
+  OptimizationEventCreate:
+    type: object
+    additionalProperties: false
+    required:
+    - workflow
+    - occurred_at
+    - label
+    - comparison_window_days
+    properties:
+      workflow:
+        type: string
+        minLength: 1
+        maxLength: 255
+      occurred_at:
+        type: string
+        format: date-time
+      label:
+        type: string
+        minLength: 1
+        maxLength: 255
+      notes:
+        type:
+        - string
+        - 'null'
+        maxLength: 2000
+      comparison_window_days:
+        type: integer
+        minimum: 1
+        maximum: 90
+        default: 7
+  OptimizationEvent:
+    type: object
+    additionalProperties: false
+    required:
+    - id
+    - created_at
+    - workflow
+    - occurred_at
+    - label
+    - comparison
+    properties:
+      id:
+        type: string
+        format: uuid
+      created_at:
+        type: string
+        format: date-time
+      workflow:
+        type: string
+      occurred_at:
+        type: string
+        format: date-time
+      label:
+        type: string
+      notes:
+        type:
+        - string
+        - 'null'
+      comparison:
+        $ref: ../../openapi.yaml#/components/schemas/OptimizationComparison
+  OptimizationEventListResponse:
+    type: object
+    additionalProperties: false
+    required:
+    - items
+    - page
+    properties:
+      items:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/OptimizationEvent
+      page:
+        $ref: ../../openapi.yaml#/components/schemas/PageInfo

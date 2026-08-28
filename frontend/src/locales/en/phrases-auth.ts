@@ -1,0 +1,23 @@
+export const ENGLISH_AUTH_PHRASES: Record<string, string> = {
+// Sign-in
+  "登录 Turnstile": "Sign in to Turnstile",
+  "Token 用量与成本治理": "Token usage and cost governance",
+  "邮箱地址": "Email address",
+  "请输入密码": "Enter your password",
+  "显示密码": "Show password",
+  "隐藏密码": "Hide password",
+  "正在登录…": "Signing in…",
+  "正在跳转…": "Redirecting…",
+  "使用 Microsoft 账户登录": "Sign in with Microsoft",
+  "适用于你的工作或学校账户。": "For your work or school account.",
+  "邮箱或密码不正确，请重新输入。": "That email or password is not right. Please try again.",
+  "Microsoft 登录未能完成，请重试。": "Microsoft sign-in did not complete. Please try again.",
+  "登录失败，请重试。": "Sign-in failed. Please try again.",
+  "退出登录": "Sign out",
+  "Microsoft 登录失败，请重试。": "Microsoft sign-in failed. Please try again.",
+  "该账户不属于此组织。": "That account is not part of this organization.",
+  "密码": "Password",
+  "登录": "Sign in",
+  "或": "or",
+   "天": "days",
+}

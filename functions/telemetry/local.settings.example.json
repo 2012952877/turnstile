@@ -1,0 +1,12 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "EVENT_HUB_CONNECTION": "",
+    "EVENT_HUB_NAME": "token-usage",
+    "DATA_BACKEND": "postgresql",
+    "DATABASE_URL": "",
+    "MODEL_COEFFICIENTS_JSON": "{\"aoai/gpt-4.1-mini\":0.35,\"default\":1.0}"
+  }
+}

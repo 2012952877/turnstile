@@ -1,0 +1,23 @@
+<policies>
+  <inbound>
+    <set-variable name="dynamicRequestedModel" value="@{
+      try
+      {
+        var body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+        return ((string)body[&quot;model&quot;] ?? &quot;&quot;).Trim().ToLowerInvariant();
+      }
+      catch (Exception) { return &quot;&quot;; }
+    }" />
+    <set-variable name="dynamicRequestedStream" value="@(false)" />
+    <set-variable name="selectedModelKnown" value="@(false)" />
+    <base />
+    <return-response>
+      <set-status code="400" reason="Bad Request" />
+      <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+      <set-body>{"type":"error","error":{"type":"invalid_request_error","message":"The requested model is not published by this gateway revision"}}</set-body>
+    </return-response>
+  </inbound>
+  <backend><base /></backend>
+  <outbound><base /></outbound>
+  <on-error><base /></on-error>
+</policies>

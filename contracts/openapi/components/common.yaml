@@ -1,0 +1,161 @@
+parameters:
+  From:
+    name: from
+    in: query
+    required: true
+    description: Inclusive UTC lower bound.
+    schema:
+      type: string
+      format: date-time
+  To:
+    name: to
+    in: query
+    required: true
+    description: Exclusive UTC upper bound.
+    schema:
+      type: string
+      format: date-time
+  Timezone:
+    name: timezone
+    in: query
+    description: IANA timezone used for calendar buckets.
+    schema:
+      type: string
+      default: UTC
+      examples:
+      - Asia/Shanghai
+  Team:
+    name: team
+    in: query
+    schema:
+      type: string
+  Agent:
+    name: agent
+    in: query
+    schema:
+      type: string
+  Workflow:
+    name: workflow
+    in: query
+    schema:
+      type: string
+  Model:
+    name: model
+    in: query
+    schema:
+      type: string
+  Cursor:
+    name: cursor
+    in: query
+    schema:
+      type: string
+  Limit:
+    name: limit
+    in: query
+    schema:
+      type: integer
+      minimum: 1
+      maximum: 200
+      default: 50
+  RunId:
+    name: run_id
+    in: path
+    required: true
+    schema:
+      type: string
+      minLength: 1
+  FindingId:
+    name: finding_id
+    in: path
+    required: true
+    schema:
+      type: string
+      format: uuid
+  AnomalyRuleId:
+    name: rule_id
+    in: path
+    required: true
+    schema:
+      type: string
+      format: uuid
+  BudgetPeriod:
+    name: period
+    in: query
+    required: true
+    description: Natural calendar month in YYYY-MM form.
+    schema:
+      type: string
+      pattern: ^\d{4}-(0[1-9]|1[0-2])$
+      examples:
+      - 2026-07
+  BudgetScopeType:
+    name: scope_type
+    in: path
+    required: true
+    schema:
+      $ref: ../../openapi.yaml#/components/schemas/BudgetScopeType
+  BudgetScopeId:
+    name: scope_id
+    in: path
+    required: true
+    schema:
+      type: string
+      minLength: 1
+  PinnedReportId:
+    name: report_id
+    in: path
+    required: true
+    schema:
+      type: string
+      format: uuid
+  ConversationId:
+    name: conversation_id
+    in: path
+    required: true
+    schema:
+      type: string
+      format: uuid
+  ProposalId:
+    name: proposal_id
+    in: path
+    required: true
+    schema:
+      type: string
+      format: uuid
+  PinnedChartId:
+    name: chart_id
+    in: path
+    required: true
+    schema:
+      type: string
+      format: uuid
+  AssistantTimezone:
+    name: timezone
+    in: query
+    description: IANA timezone used to resolve the stored query's calendar range.
+    schema:
+      type: string
+      default: UTC
+      examples:
+      - Asia/Shanghai
+  AssistantLocale:
+    name: locale
+    in: query
+    description: Language for chart labels and axis titles.
+    schema:
+      type: string
+      default: en
+      examples:
+      - zh-CN
+responses:
+  ErrorResponse:
+    description: Request failed
+    content:
+      application/json:
+        schema:
+          $ref: ../../openapi.yaml#/components/schemas/Error
+securitySchemes:
+  sessionCookie:
+    type: apiKey
+    in: cookie
+    name: finops_session

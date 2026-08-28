@@ -1,0 +1,63 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "resourcePrefix": {
+      "value": "turnstile"
+    },
+    "resourceGroupName": {
+      "value": "turnstile-platform"
+    },
+    "location": {
+      "value": "eastus2"
+    },
+    "postgresLocation": {
+      "value": "eastus2"
+    },
+    "apimPublisherEmail": {
+      "value": "platform-operations@example.com"
+    },
+    "apimPublisherName": {
+      "value": "Turnstile"
+    },
+    "apimSkuName": {
+      "value": "Developer"
+    },
+    "entraClientId": {
+      "value": ""
+    },
+    "entraAllowedEmailDomains": {
+      "value": []
+    },
+    "employeeOrgId": {
+      "value": "organization-default"
+    },
+    "employeeOrgName": {
+      "value": "Default Organization"
+    },
+    "employeeDepartmentMap": {
+      "value": {}
+    },
+    "employeeClientMap": {
+      "value": {}
+    },
+    "employeeSurfaceMap": {
+      "value": []
+    },
+    "subscriptionAgentMap": {
+      "value": {}
+    },
+    "provisionControlPlane": {
+      "value": false
+    },
+    "controlPlaneEnabled": {
+      "value": false
+    },
+    "gatewayReleaseWorkerEnabled": {
+      "value": false
+    },
+    "gatewayApplicationKeyManagementEnabled": {
+      "value": false
+    }
+  }
+}

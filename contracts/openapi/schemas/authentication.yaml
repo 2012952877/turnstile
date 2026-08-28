@@ -1,0 +1,60 @@
+schemas:
+  PasswordLogin:
+    type: object
+    additionalProperties: false
+    required:
+    - email
+    - password
+    properties:
+      email:
+        type: string
+        minLength: 3
+        maxLength: 320
+      password:
+        type: string
+        minLength: 1
+        maxLength: 256
+        writeOnly: true
+  EntraLogin:
+    type: object
+    additionalProperties: false
+    required:
+    - id_token
+    properties:
+      id_token:
+        type: string
+        minLength: 1
+        writeOnly: true
+  AuthProfile:
+    type: object
+    additionalProperties: false
+    required:
+    - id
+    - email
+    - name
+    - role
+    - method
+    - session_expires_at
+    properties:
+      id:
+        type: string
+        format: uuid
+      email:
+        type: string
+      name:
+        type:
+        - string
+        - 'null'
+      role:
+        type: string
+        enum:
+        - owner
+        - member
+      method:
+        type: string
+        enum:
+        - password
+        - entra
+      session_expires_at:
+        type: string
+        format: date-time

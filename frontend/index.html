@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#ffffff" />
+    <link rel="icon" type="image/svg+xml" href="/turnstile.svg" />
+    <title>Turnstile · Token 可观测性</title>
+    <script>
+      (() => {
+        const value = document.cookie.split("; ").find((item) => item.startsWith("finops_theme="))?.split("=")[1];
+        const preference = ["light", "dark", "system"].includes(value) ? value : "system";
+        const dark = preference === "dark" || (preference === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+        const localeValue = document.cookie.split("; ").find((item) => item.startsWith("finops_locale="))?.split("=")[1];
+        const locale = ["zh-CN", "zh-TW", "ko", "ja"].includes(localeValue) ? localeValue : "en";
+        document.documentElement.classList.toggle("dark", dark);
+        document.documentElement.dataset.themePreference = preference;
+        document.documentElement.dataset.locale = locale;
+        document.documentElement.lang = locale;
+        document.documentElement.style.colorScheme = dark ? "dark" : "light";
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

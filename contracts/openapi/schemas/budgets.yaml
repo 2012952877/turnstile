@@ -1,0 +1,558 @@
+schemas:
+  BudgetStatus:
+    type: string
+    enum:
+    - unallocated
+    - healthy
+    - warning
+    - exceeded
+  PeopleBudgetFilter:
+    type: string
+    enum:
+    - all
+    - assigned
+    - unallocated
+    - healthy
+    - warning
+    - exceeded
+    default: all
+  TokenBudgetWrite:
+    type: object
+    additionalProperties: false
+    required:
+    - token_limit
+    - warning_threshold_percent
+    properties:
+      token_limit:
+        type: integer
+        format: int64
+        minimum: 1
+      warning_threshold_percent:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 80
+  TokenBudgetItem:
+    type: object
+    additionalProperties: false
+    required:
+    - scope_type
+    - scope_id
+    - scope_name
+    - parent_scope_id
+    - token_limit
+    - warning_threshold_percent
+    - used_tokens
+    - remaining_tokens
+    - usage_percent
+    - forecast_tokens
+    - forecast_percent
+    - status
+    - updated_at
+    - updated_by
+    - model_policy_configured
+    - allowed_model_ids
+    properties:
+      scope_type:
+        $ref: ../../openapi.yaml#/components/schemas/BudgetScopeType
+      scope_id:
+        type: string
+      scope_name:
+        type: string
+      parent_scope_id:
+        type:
+        - string
+        - 'null'
+      token_limit:
+        type:
+        - integer
+        - 'null'
+        format: int64
+        minimum: 1
+      warning_threshold_percent:
+        type: integer
+        minimum: 1
+        maximum: 100
+      used_tokens:
+        type: integer
+        format: int64
+        minimum: 0
+      remaining_tokens:
+        type:
+        - integer
+        - 'null'
+        format: int64
+      usage_percent:
+        type:
+        - number
+        - 'null'
+        format: double
+        minimum: 0
+      forecast_tokens:
+        type: integer
+        format: int64
+        minimum: 0
+      forecast_percent:
+        type:
+        - number
+        - 'null'
+        format: double
+        minimum: 0
+      status:
+        $ref: ../../openapi.yaml#/components/schemas/BudgetStatus
+      updated_at:
+        type:
+        - string
+        - 'null'
+        format: date-time
+      updated_by:
+        type:
+        - string
+        - 'null'
+      model_policy_configured:
+        type: boolean
+        description: Whether an administrator explicitly configured a durable model-access policy for
+          this user.
+      allowed_model_ids:
+        type: array
+        description: Allowed managed-model IDs. An empty array with model_policy_configured=true explicitly
+          denies all models.
+        maxItems: 100
+        items:
+          type: string
+          format: uuid
+  TokenBudgetAuditEvent:
+    type: object
+    additionalProperties: false
+    required:
+    - event_type
+    - id
+    - period_start
+    - scope_type
+    - scope_id
+    - scope_name
+    - action
+    - previous_token_limit
+    - new_token_limit
+    - previous_warning_threshold_percent
+    - new_warning_threshold_percent
+    - changed_at
+    - changed_by
+    properties:
+      event_type:
+        type: string
+        const: budget
+      id:
+        type: string
+        format: uuid
+      period_start:
+        type: string
+        format: date
+      scope_type:
+        $ref: ../../openapi.yaml#/components/schemas/BudgetScopeType
+      scope_id:
+        type: string
+      scope_name:
+        type: string
+      action:
+        type: string
+        enum:
+        - assigned
+        - updated
+        - removed
+      previous_token_limit:
+        type:
+        - integer
+        - 'null'
+        format: int64
+        minimum: 1
+      new_token_limit:
+        type:
+        - integer
+        - 'null'
+        format: int64
+        minimum: 1
+      previous_warning_threshold_percent:
+        type:
+        - integer
+        - 'null'
+        minimum: 1
+        maximum: 100
+      new_warning_threshold_percent:
+        type:
+        - integer
+        - 'null'
+        minimum: 1
+        maximum: 100
+      changed_at:
+        type: string
+        format: date-time
+      changed_by:
+        type: string
+  UserModelAccessAuditEvent:
+    type: object
+    additionalProperties: false
+    required:
+    - event_type
+    - id
+    - user_id
+    - user_name
+    - previous_model_ids
+    - new_model_ids
+    - previous_model_names
+    - new_model_names
+    - changed_at
+    - changed_by
+    properties:
+      event_type:
+        type: string
+        const: model_access
+      id:
+        type: string
+        format: uuid
+      user_id:
+        type: string
+      user_name:
+        type: string
+      previous_model_ids:
+        type: array
+        maxItems: 100
+        items:
+          type: string
+          format: uuid
+      new_model_ids:
+        type: array
+        maxItems: 100
+        items:
+          type: string
+          format: uuid
+      previous_model_names:
+        type: array
+        maxItems: 100
+        items:
+          type: string
+      new_model_names:
+        type: array
+        maxItems: 100
+        items:
+          type: string
+      changed_at:
+        type: string
+        format: date-time
+      changed_by:
+        type: string
+  DepartmentEnforcement:
+    type: object
+    additionalProperties: false
+    required:
+    - department_id
+    - department_name
+    - mode
+    - updated_at
+    - updated_by
+    properties:
+      department_id:
+        type: string
+      department_name:
+        type: string
+      mode:
+        type: string
+        enum:
+        - block
+        - audit
+      updated_at:
+        type:
+        - string
+        - 'null'
+        format: date-time
+      updated_by:
+        type:
+        - string
+        - 'null'
+  DepartmentEnforcementAuditEvent:
+    type: object
+    additionalProperties: false
+    required:
+    - event_type
+    - id
+    - department_id
+    - department_name
+    - previous_mode
+    - new_mode
+    - changed_at
+    - changed_by
+    properties:
+      event_type:
+        type: string
+        const: enforcement
+      id:
+        type: string
+        format: uuid
+      department_id:
+        type: string
+      department_name:
+        type: string
+      previous_mode:
+        type:
+        - string
+        - 'null'
+        enum:
+        - block
+        - audit
+        - null
+      new_mode:
+        type: string
+        enum:
+        - block
+        - audit
+      changed_at:
+        type: string
+        format: date-time
+      changed_by:
+        type: string
+  TokenBudgetRiskItem:
+    type: object
+    additionalProperties: false
+    required:
+    - scope_type
+    - scope_id
+    - scope_name
+    - status
+    - usage_percent
+    - forecast_percent
+    properties:
+      scope_type:
+        $ref: ../../openapi.yaml#/components/schemas/BudgetScopeType
+      scope_id:
+        type: string
+      scope_name:
+        type: string
+      status:
+        type: string
+        enum:
+        - warning
+        - exceeded
+      usage_percent:
+        type: number
+        minimum: 0
+      forecast_percent:
+        type: number
+        minimum: 0
+  TokenBudgetResponse:
+    type: object
+    additionalProperties: false
+    required:
+    - period
+    - period_start
+    - period_end
+    - generated_at
+    - items
+    - risk_count
+    - risk_items
+    - history
+    - enforcement
+    properties:
+      period:
+        type: string
+        pattern: ^\d{4}-(0[1-9]|1[0-2])$
+      period_start:
+        type: string
+        format: date
+      period_end:
+        type: string
+        format: date
+      generated_at:
+        type: string
+        format: date-time
+      items:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/TokenBudgetItem
+      risk_count:
+        type: integer
+        minimum: 0
+      risk_items:
+        type: array
+        maxItems: 25
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/TokenBudgetRiskItem
+      history:
+        type: array
+        maxItems: 50
+        items:
+          oneOf:
+          - $ref: ../../openapi.yaml#/components/schemas/TokenBudgetAuditEvent
+          - $ref: ../../openapi.yaml#/components/schemas/UserModelAccessAuditEvent
+          - $ref: ../../openapi.yaml#/components/schemas/DepartmentEnforcementAuditEvent
+          discriminator:
+            propertyName: event_type
+            mapping:
+              budget: ../../openapi.yaml#/components/schemas/TokenBudgetAuditEvent
+              model_access: ../../openapi.yaml#/components/schemas/UserModelAccessAuditEvent
+              enforcement: ../../openapi.yaml#/components/schemas/DepartmentEnforcementAuditEvent
+      enforcement:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/DepartmentEnforcement
+  TokenBudgetPeopleResponse:
+    type: object
+    additionalProperties: false
+    required:
+    - period
+    - department_id
+    - department_name
+    - department_token_limit
+    - department_allocated_tokens
+    - department_available_tokens
+    - total
+    - offset
+    - limit
+    - assigned_count
+    - unallocated_count
+    - risk_count
+    - model_configured_count
+    - items
+    properties:
+      period:
+        type: string
+        pattern: ^\d{4}-(0[1-9]|1[0-2])$
+      department_id:
+        type: string
+      department_name:
+        type: string
+      department_token_limit:
+        type:
+        - integer
+        - 'null'
+        format: int64
+        minimum: 1
+      department_allocated_tokens:
+        type: integer
+        format: int64
+        minimum: 0
+      department_available_tokens:
+        type:
+        - integer
+        - 'null'
+        format: int64
+      total:
+        type: integer
+        minimum: 0
+      offset:
+        type: integer
+        minimum: 0
+      limit:
+        type: integer
+        minimum: 1
+        maximum: 200
+      assigned_count:
+        type: integer
+        minimum: 0
+      unallocated_count:
+        type: integer
+        minimum: 0
+      risk_count:
+        type: integer
+        minimum: 0
+      model_configured_count:
+        type: integer
+        minimum: 0
+      items:
+        type: array
+        maxItems: 200
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/TokenBudgetItem
+  TokenBudgetBulkWrite:
+    type: object
+    additionalProperties: false
+    required:
+    - department_id
+    - selection
+    - user_ids
+    - status
+    - allocation_mode
+    - warning_threshold_percent
+    properties:
+      department_id:
+        type: string
+        minLength: 1
+      selection:
+        type: string
+        enum:
+        - ids
+        - all_matching
+        default: ids
+      user_ids:
+        type: array
+        maxItems: 500
+        items:
+          type: string
+      query:
+        type:
+        - string
+        - 'null'
+        maxLength: 200
+      status:
+        $ref: ../../openapi.yaml#/components/schemas/PeopleBudgetFilter
+      allocation_mode:
+        type: string
+        enum:
+        - fixed
+        - equal_remaining
+        - preserve
+        default: fixed
+        description: preserve leaves monthly Token budgets unchanged and requires model_ids.
+      token_limit:
+        type:
+        - integer
+        - 'null'
+        format: int64
+        minimum: 1
+      warning_threshold_percent:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 80
+      model_ids:
+        type:
+        - array
+        - 'null'
+        description: Omit to preserve model access. An empty array explicitly denies all models.
+        maxItems: 100
+        items:
+          type: string
+          format: uuid
+  TokenBudgetBulkResult:
+    type: object
+    additionalProperties: false
+    required:
+    - period
+    - department_id
+    - updated_count
+    - token_limit_per_user
+    - total_allocated
+    - model_policy_updated_count
+    properties:
+      period:
+        type: string
+        pattern: ^\d{4}-(0[1-9]|1[0-2])$
+      department_id:
+        type: string
+      updated_count:
+        type: integer
+        minimum: 1
+      token_limit_per_user:
+        type:
+        - integer
+        - 'null'
+        format: int64
+        minimum: 1
+      total_allocated:
+        type:
+        - integer
+        - 'null'
+        format: int64
+        minimum: 1
+      model_policy_updated_count:
+        type: integer
+        minimum: 0

@@ -1,0 +1,136 @@
+schemas:
+  UsageEvent:
+    type: object
+    additionalProperties: false
+    description: Event Hub message emitted by APIM. Contains no prompt or completion text.
+    required:
+    - id
+    - ts
+    - team
+    - user
+    - agent
+    - workflow
+    - run_id
+    - turn_index
+    - provider
+    - model
+    - latency_ms
+    - status
+    - ingest_source
+    properties:
+      id:
+        type: string
+        minLength: 1
+      ts:
+        type: string
+        format: date-time
+      team:
+        type: string
+        default: unattributed
+      organization:
+        type: string
+        default: unattributed
+      department:
+        type: string
+        default: unattributed
+      project:
+        type: string
+        default: unattributed
+      user:
+        type: string
+        default: unattributed
+      agent:
+        type: string
+        default: unattributed
+      workflow:
+        type: string
+        default: unattributed
+      run_id:
+        type: string
+        default: unattributed
+      turn_index:
+        type: integer
+        minimum: 1
+      provider:
+        type: string
+        enum:
+        - aoai
+        - anthropic
+        - copilot
+        - codex
+      model:
+        type: string
+      runtime:
+        type: string
+        default: unattributed
+      gateway_profile_id:
+        type:
+        - string
+        - 'null'
+        format: uuid
+      apim_subscription_id:
+        type:
+        - string
+        - 'null'
+        description: APIM subscription resource name, emitted by policy rather than a caller header.
+      application_actor_type:
+        type:
+        - string
+        - 'null'
+        enum:
+        - person
+        - service
+        - null
+      application_actor_id:
+        type:
+        - string
+        - 'null'
+      application_admission:
+        type:
+        - string
+        - 'null'
+        description: Reserved for Ledger-backed Application admission; null until evaluated.
+      input_tokens:
+        type:
+        - integer
+        - 'null'
+        format: int64
+        minimum: 0
+      cached_tokens:
+        type:
+        - integer
+        - 'null'
+        format: int64
+        minimum: 0
+      output_tokens:
+        type:
+        - integer
+        - 'null'
+        format: int64
+        minimum: 0
+      tokens_consumed:
+        type:
+        - integer
+        - 'null'
+        format: int64
+        minimum: 0
+        description: Optional aggregate estimate exposed by APIM llm-token-limit for streaming calls.
+      latency_ms:
+        type: integer
+        format: int64
+        minimum: 0
+      status:
+        type: string
+      estimated:
+        type: boolean
+        default: false
+      ingest_source:
+        type: string
+        enum:
+        - eventhub
+        - backfill
+      ingest_error:
+        type:
+        - string
+        - 'null'
+        description: Metadata-only reason when exact usage could not be extracted.

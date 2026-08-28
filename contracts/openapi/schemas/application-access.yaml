@@ -1,0 +1,562 @@
+schemas:
+  GatewayApplicationUsage:
+    type: object
+    additionalProperties: false
+    properties:
+      request_count:
+        type: integer
+        minimum: 0
+        default: 0
+      denied_request_count:
+        type: integer
+        minimum: 0
+        default: 0
+      input_tokens:
+        type: integer
+        minimum: 0
+        default: 0
+      cached_tokens:
+        type: integer
+        minimum: 0
+        default: 0
+      cache_write_tokens:
+        type: integer
+        minimum: 0
+        default: 0
+      output_tokens:
+        type: integer
+        minimum: 0
+        default: 0
+      total_tokens:
+        type: integer
+        minimum: 0
+        default: 0
+      estimated_cost:
+        type: number
+        minimum: 0
+        default: 0
+      last_request_at:
+        type:
+        - string
+        - 'null'
+        format: date-time
+  GatewayApplicationUserUsage:
+    type: object
+    additionalProperties: false
+    required:
+    - user_id
+    - display_name
+    - actor_type
+    - person_id
+    - request_count
+    - denied_request_count
+    - total_tokens
+    - estimated_cost
+    - last_request_at
+    properties:
+      user_id:
+        type: string
+      display_name:
+        type: string
+      actor_type:
+        type: string
+        enum:
+        - person
+        - service
+        - system
+      person_id:
+        type:
+        - string
+        - 'null'
+      request_count:
+        type: integer
+        minimum: 0
+      denied_request_count:
+        type: integer
+        minimum: 0
+      total_tokens:
+        type: integer
+        minimum: 0
+      estimated_cost:
+        type: number
+        minimum: 0
+      last_request_at:
+        type: string
+        format: date-time
+  GatewayApplicationBudget:
+    type: object
+    additionalProperties: false
+    required:
+    - period_start
+    - token_limit
+    - tokens_per_minute
+    - enforce
+    - warning_threshold_percent
+    - used_tokens
+    - remaining_tokens
+    - usage_percent
+    - updated_by
+    - updated_at
+    properties:
+      period_start:
+        type: string
+        format: date
+      token_limit:
+        type: integer
+        minimum: 1
+      tokens_per_minute:
+        type: integer
+        minimum: 1
+      enforce:
+        type: boolean
+      warning_threshold_percent:
+        type: integer
+        minimum: 1
+        maximum: 100
+      used_tokens:
+        type: integer
+        minimum: 0
+      remaining_tokens:
+        type: integer
+        minimum: 0
+      usage_percent:
+        type: number
+        minimum: 0
+      updated_by:
+        type: string
+      updated_at:
+        type: string
+        format: date-time
+  GatewayApplicationBudgetUpdate:
+    type: object
+    additionalProperties: false
+    required:
+    - token_limit
+    - tokens_per_minute
+    - enforce
+    - warning_threshold_percent
+    properties:
+      token_limit:
+        type: integer
+        minimum: 1
+      tokens_per_minute:
+        type: integer
+        minimum: 1
+      enforce:
+        type: boolean
+      warning_threshold_percent:
+        type: integer
+        minimum: 1
+        maximum: 100
+  GatewayApplicationModelAccessUpdate:
+    type: object
+    additionalProperties: false
+    required:
+    - mode
+    - model_ids
+    properties:
+      mode:
+        type: string
+        enum:
+        - unrestricted
+        - restricted
+      model_ids:
+        type: array
+        uniqueItems: true
+        items:
+          type: string
+          format: uuid
+  GatewayApplicationSubscription:
+    type: object
+    additionalProperties: false
+    required:
+    - id
+    - application_id
+    - gateway_profile_id
+    - apim_subscription_id
+    - display_name
+    - scope_type
+    - scope_id
+    - state
+    - scope_exists
+    - source
+    - discovered_at
+    - last_synced_at
+    properties:
+      id:
+        type: string
+        format: uuid
+      application_id:
+        type: string
+        format: uuid
+      gateway_profile_id:
+        type: string
+        format: uuid
+      apim_subscription_id:
+        type: string
+      display_name:
+        type: string
+      scope_type:
+        type: string
+        enum:
+        - product
+        - api
+        - service
+      scope_id:
+        type: string
+      state:
+        type: string
+        enum:
+        - active
+        - suspended
+        - cancelled
+      scope_exists:
+        type: boolean
+      source:
+        type: string
+        enum:
+        - bicep
+        - discovered
+        - managed
+      discovered_at:
+        type: string
+        format: date-time
+      last_synced_at:
+        type: string
+        format: date-time
+  GatewayApplicationSubscriptionKeySecret:
+    type: object
+    additionalProperties: false
+    required:
+    - key_kind
+    - value
+    properties:
+      key_kind:
+        type: string
+        enum:
+        - primary
+        - secondary
+      value:
+        type: string
+        minLength: 1
+        maxLength: 256
+        x-secret: true
+  GatewayApplicationSubscriptionKeyRotation:
+    type: object
+    additionalProperties: false
+    required:
+    - confirmation
+    properties:
+      confirmation:
+        type: string
+        minLength: 1
+        maxLength: 256
+  GatewayApplicationAuditEvent:
+    type: object
+    additionalProperties: false
+    required:
+    - id
+    - application_id
+    - operation
+    - before_state
+    - after_state
+    - actor
+    - created_at
+    properties:
+      id:
+        type: string
+        format: uuid
+      application_id:
+        type: string
+        format: uuid
+      operation:
+        type: string
+        enum:
+        - created
+        - adopted
+        - updated
+        - budget_updated
+        - models_updated
+        - subscription_synced
+        - suspended
+        - resumed
+        - retired
+      before_state:
+        type:
+        - object
+        - 'null'
+        additionalProperties: true
+      after_state:
+        type:
+        - object
+        - 'null'
+        additionalProperties: true
+      actor:
+        type: string
+      created_at:
+        type: string
+        format: date-time
+  GatewayApplicationAvatarUpdate:
+    type: object
+    additionalProperties: false
+    required:
+    - avatar_data_url
+    properties:
+      avatar_data_url:
+        type:
+        - string
+        - 'null'
+        maxLength: 90000
+        description: Base64 PNG, JPEG, or WebP data URL; null removes the avatar.
+  GatewayApplicationAvatar:
+    type: object
+    additionalProperties: false
+    required:
+    - avatar_url
+    - updated_at
+    properties:
+      avatar_url:
+        type:
+        - string
+        - 'null'
+      updated_at:
+        type:
+        - string
+        - 'null'
+        format: date-time
+  GatewayApplicationSummary:
+    type: object
+    additionalProperties: false
+    required:
+    - id
+    - gateway_profile_id
+    - slug
+    - display_name
+    - description
+    - owner_id
+    - department_id
+    - application_type
+    - status
+    - system_managed
+    - avatar_url
+    - governance_write_available
+    - subscription_count
+    - active_subscription_count
+    - stale_subscription_count
+    - model_policy_configured
+    - budget
+    - usage
+    - created_by
+    - created_at
+    - updated_by
+    - updated_at
+    properties:
+      id:
+        type: string
+        format: uuid
+      gateway_profile_id:
+        type: string
+        format: uuid
+      slug:
+        type: string
+      display_name:
+        type: string
+      description:
+        type:
+        - string
+        - 'null'
+      owner_id:
+        type:
+        - string
+        - 'null'
+      department_id:
+        type:
+        - string
+        - 'null'
+      application_type:
+        type: string
+        enum:
+        - service
+        - agent
+        - delegated_user
+        - system
+      status:
+        type: string
+        enum:
+        - active
+        - suspended
+        - retired
+      system_managed:
+        type: boolean
+      avatar_url:
+        type:
+        - string
+        - 'null'
+      governance_write_available:
+        type: boolean
+      subscription_count:
+        type: integer
+        minimum: 0
+      active_subscription_count:
+        type: integer
+        minimum: 0
+      stale_subscription_count:
+        type: integer
+        minimum: 0
+      model_policy_configured:
+        type: boolean
+      allowed_model_ids:
+        type: array
+        items:
+          type: string
+          format: uuid
+        default: []
+      budget:
+        oneOf:
+        - $ref: ../../openapi.yaml#/components/schemas/GatewayApplicationBudget
+        - type: 'null'
+      usage:
+        $ref: ../../openapi.yaml#/components/schemas/GatewayApplicationUsage
+      created_by:
+        type: string
+      created_at:
+        type: string
+        format: date-time
+      updated_by:
+        type: string
+      updated_at:
+        type: string
+        format: date-time
+  GatewayApplicationDetail:
+    allOf:
+    - $ref: ../../openapi.yaml#/components/schemas/GatewayApplicationSummary
+    - type: object
+      additionalProperties: false
+      required:
+      - subscriptions
+      - users
+      - user_count
+      - audit
+      - key_management_available
+      - key_management_unavailable_reason
+      properties:
+        subscriptions:
+          type: array
+          items:
+            $ref: ../../openapi.yaml#/components/schemas/GatewayApplicationSubscription
+        users:
+          type: array
+          items:
+            $ref: ../../openapi.yaml#/components/schemas/GatewayApplicationUserUsage
+        user_count:
+          type: integer
+          minimum: 0
+        audit:
+          type: array
+          items:
+            $ref: ../../openapi.yaml#/components/schemas/GatewayApplicationAuditEvent
+        key_management_available:
+          type: boolean
+        key_management_unavailable_reason:
+          type:
+          - string
+          - 'null'
+  GatewayApplicationList:
+    type: object
+    additionalProperties: false
+    required:
+    - items
+    - period_start
+    - total
+    - active
+    - suspended
+    - retired
+    - stale_subscriptions
+    - sync_available
+    - provisioning_available
+    - key_management_available
+    properties:
+      items:
+        type: array
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/GatewayApplicationSummary
+      period_start:
+        type: string
+        format: date
+      total:
+        type: integer
+        minimum: 0
+      active:
+        type: integer
+        minimum: 0
+      suspended:
+        type: integer
+        minimum: 0
+      retired:
+        type: integer
+        minimum: 0
+      stale_subscriptions:
+        type: integer
+        minimum: 0
+      sync_available:
+        type: boolean
+      sync_unavailable_reason:
+        type:
+        - string
+        - 'null'
+        default: null
+      provisioning_available:
+        type: boolean
+      provisioning_unavailable_reason:
+        type:
+        - string
+        - 'null'
+        default: null
+      key_management_available:
+        type: boolean
+      key_management_unavailable_reason:
+        type:
+        - string
+        - 'null'
+        default: null
+  GatewayApplicationSubscriptionCreate:
+    type: object
+    additionalProperties: false
+    required:
+    - subscription_id
+    - display_name
+    properties:
+      subscription_id:
+        type: string
+        minLength: 1
+        maxLength: 127
+        pattern: ^[a-z0-9][a-z0-9-]{0,126}$
+      display_name:
+        type: string
+        minLength: 1
+        maxLength: 100
+      description:
+        type:
+        - string
+        - 'null'
+        maxLength: 1000
+        default: null
+      application_type:
+        type: string
+        enum:
+        - service
+        - agent
+        default: service
+  GatewayApplicationSubscriptionProvisionAccepted:
+    allOf:
+    - $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseOperationAccepted
+    - type: object
+      additionalProperties: false
+      required:
+      - primary_key
+      properties:
+        primary_key:
+          type: string
+          minLength: 1
+          maxLength: 256
+          x-secret: true

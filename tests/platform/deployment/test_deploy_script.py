@@ -242,11 +242,17 @@ def test_observer_parameters_reuse_saved_resource_names(tmp_path: Path) -> None:
         existing_observer={
             "acrName": "acrexisting",
             "webAppName": "observer-existing",
+            "observerAppServicePlanName": "plan-observer-existing",
         },
     )
 
     assert document["parameters"]["acrName"]["value"] == "acrexisting"
     assert document["parameters"]["webAppName"]["value"] == "observer-existing"
+    assert (
+        document["parameters"]["appServicePlanName"]["value"]
+        == "plan-observer-existing"
+    )
+    assert document["parameters"]["provisionAcr"]["value"] is False
 
 
 def test_deterministic_zip_has_stable_bytes_and_order(tmp_path: Path) -> None:

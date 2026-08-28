@@ -6,6 +6,7 @@ param location string
 param appServicePlanName string
 param webAppName string
 param acrName string
+param provisionAcr bool = true
 param imageRepository string = 'turnstile/envoy-cache-adapter'
 param imageTag string
 param eventHubNamespaceName string
@@ -26,7 +27,7 @@ resource apimResourceGroup 'Microsoft.Resources/resourceGroups@2024-03-01' exist
   name: apimResourceGroupName
 }
 
-module registry 'br/public:avm/res/container-registry/registry:0.13.0' = {
+module registry 'br/public:avm/res/container-registry/registry:0.13.0' = if (provisionAcr) {
   name: 'envoy-cache-adapter-registry'
   scope: apimResourceGroup
   params: {
@@ -75,6 +76,7 @@ module apimIntegration 'apim.bicep' = {
 
 output webAppUrl string = app.outputs.webAppUrl
 output webAppName string = webAppName
+output observerAppServicePlanName string = appServicePlanName
 output webAppPrincipalId string = app.outputs.principalId
 output adapterKeyNamedValueName string = apimIntegration.outputs.namedValueName
 output acrName string = acrName

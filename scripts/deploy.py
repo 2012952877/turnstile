@@ -642,6 +642,11 @@ def observer_parameters(
     else:
         acr_name = _output_string(existing_observer, "acrName")
         web_app_name = _output_string(existing_observer, "webAppName")
+    observer_plan_name = (
+        _output_string(existing_observer, "observerAppServicePlanName")
+        if existing_observer is not None
+        else _output_string(platform_outputs, "appServicePlanName")
+    )
     return _arm_parameter_document(
         {
             "resourceGroupName": _output_string(platform_outputs, "resourceGroupName"),
@@ -649,9 +654,10 @@ def observer_parameters(
                 platform_outputs, "resourceGroupName"
             ),
             "location": inputs.location,
-            "appServicePlanName": _output_string(platform_outputs, "appServicePlanName"),
+            "appServicePlanName": observer_plan_name,
             "webAppName": web_app_name,
             "acrName": acr_name,
+            "provisionAcr": existing_observer is None,
             "imageTag": version,
             "eventHubNamespaceName": _output_string(
                 platform_outputs, "eventHubNamespaceName"

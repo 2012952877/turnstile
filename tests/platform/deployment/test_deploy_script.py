@@ -23,6 +23,7 @@ from scripts.deploy import (
     observer_names,
     observer_parameters,
     owner_credentials_password,
+    pip_linux_dependency_command,
     runtime_release_parameters,
     temporary_parameter_file,
     what_if,
@@ -283,6 +284,19 @@ def test_linux_dependency_command_uses_pinned_target_platform(tmp_path: Path) ->
     assert "3.11" in command
     assert "--compile-bytecode" not in command
     assert "--no-compile" not in command
+
+
+def test_pip_fallback_uses_pinned_target_platform(tmp_path: Path) -> None:
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    (staged / "requirements.txt").write_text("fastapi==0.139.2\n", encoding="utf-8")
+
+    command = pip_linux_dependency_command(staged, "/usr/bin/python3")
+
+    assert command[:4] == ["/usr/bin/python3", "-m", "pip", "install"]
+    assert "manylinux2014_x86_64" in command
+    assert "3.11" in command
+    assert "--only-binary=:all:" in command
 
 
 def test_frontend_asset_reads_the_hashed_entrypoint(tmp_path: Path) -> None:

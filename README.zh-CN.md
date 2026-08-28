@@ -13,6 +13,7 @@
 <p align="center"><strong>通过一个自托管控制平面统一治理 AI 访问、支出与运营。</strong></p>
 
 <p align="center">
+   <img alt="Turnstile v1.0 版本" src="https://img.shields.io/badge/release-v1.0-2f6fdd.svg">
    <a href="LICENSE"><img alt="MIT 许可证" src="https://img.shields.io/badge/license-MIT-2f6fdd.svg"></a>
    <a href="#前置条件"><img alt="Python 3.11 或更高版本" src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&amp;logoColor=white"></a>
    <a href="#前置条件"><img alt="Node.js 20.19.x 或 22.12 及更高版本" src="https://img.shields.io/badge/Node.js-20.19.x%20%7C%2022.12%2B-339933?logo=node.js&amp;logoColor=white"></a>
@@ -28,6 +29,9 @@
 </p>
 
 Turnstile 是一个用于治理 AI 模型访问的自托管控制平面。它整合了 Azure API Management 网关、Token 与成本遥测、预算、应用访问、模型接入、发布控制和运维 Web 控制台。
+
+> [!NOTE]
+> **Turnstile v1.0** 是当前公开版本。项目正在快速迭代，API、配置项和部署流程可能会随着项目成熟而变化。升级生产部署前，请仔细审阅相关变更。
 
 > [!IMPORTANT]
 > 本仓库包含的基础设施模板只部署 Turnstile 平台，不会创建 Azure AI Foundry 项目、部署提供商模型，也不会预置客户连接和模型。平台运行后，运维人员需要连接自己的 Foundry 或其他兼容提供商资源。

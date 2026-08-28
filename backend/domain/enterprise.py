@@ -6,6 +6,34 @@ from typing import Any
 from .models import EnterpriseEntity, EnterpriseEntityCatalog
 
 ORGANIZATION_ID = "org-contoso-global"
+DEFAULT_APPLICATION_USER_DEPARTMENT_ID = "department-platform"
+
+
+def merge_application_owners(
+    catalog: EnterpriseEntityCatalog, users: Iterable[Mapping[str, Any]]
+) -> EnterpriseEntityCatalog:
+    """Add Owner accounts before they generate gateway traffic."""
+    existing = {item.id for item in catalog.users}
+    discovered: list[EnterpriseEntity] = []
+    for row in users:
+        if row.get("role") != "owner":
+            continue
+        user_id = str(row.get("email") or "").strip().lower()
+        if "@" not in user_id or user_id in existing:
+            continue
+        existing.add(user_id)
+        discovered.append(
+            EnterpriseEntity(
+                id=user_id,
+                name=str(row.get("display_name") or user_id).strip() or user_id,
+                parent_id=DEFAULT_APPLICATION_USER_DEPARTMENT_ID,
+            )
+        )
+    if not discovered:
+        return catalog
+    return catalog.model_copy(
+        update={"users": [*catalog.users, *sorted(discovered, key=lambda item: item.id)]}
+    )
 
 
 def merge_observed_users(

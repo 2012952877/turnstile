@@ -466,6 +466,7 @@ resource functionApp 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'SCM_DO_BUILD_DURING_DEPLOYMENT', value: 'false' }
         { name: 'ENABLE_ORYX_BUILD', value: 'false' }
         { name: 'WEBSITE_RUN_FROM_PACKAGE', value: '1' }
+        { name: 'WEBSITES_CONTAINER_START_TIME_LIMIT', value: '1800' }
         { name: 'EVENT_HUB_NAME', value: eventHubName }
         { name: 'EVENT_HUB_CONNECTION__fullyQualifiedNamespace', value: '${eventHubNamespace.name}.servicebus.windows.net' }
         { name: 'EVENT_HUB_CONNECTION__credential', value: 'managedidentity' }

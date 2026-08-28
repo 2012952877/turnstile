@@ -103,6 +103,7 @@ resource functionApp 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'SCM_DO_BUILD_DURING_DEPLOYMENT', value: 'false' }
         { name: 'ENABLE_ORYX_BUILD', value: 'false' }
         { name: 'WEBSITE_RUN_FROM_PACKAGE', value: '1' }
+        { name: 'WEBSITES_CONTAINER_START_TIME_LIMIT', value: '1800' }
         { name: 'DATABASE_URL', value: '@Microsoft.KeyVault(SecretUri=${databaseUrlSecretUri})' }
         { name: 'CREDENTIAL_ENCRYPTION_KEY', value: '@Microsoft.KeyVault(SecretUri=${credentialEncryptionKeySecretUri})' }
         { name: 'DATA_BACKEND', value: 'postgresql' }

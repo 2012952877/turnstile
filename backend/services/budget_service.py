@@ -5,7 +5,11 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime, time
 from typing import Any, cast
 
-from ..domain.enterprise import enterprise_catalog, merge_observed_users
+from ..domain.enterprise import (
+    enterprise_catalog,
+    merge_application_owners,
+    merge_observed_users,
+)
 from ..domain.models import (
     BudgetScopeType,
     DepartmentEnforcementWrite,
@@ -84,7 +88,10 @@ class TokenBudgetService:
     def _entities(self) -> dict[BudgetScopeType, list[EnterpriseEntity]]:
         # Merged, not seeded: a person who has actually used the gateway must be
         # allocatable, otherwise governance only covers identities with no traffic.
-        catalog = merge_observed_users(enterprise_catalog(), self._repository.observed_users())
+        catalog = merge_application_owners(
+            merge_observed_users(enterprise_catalog(), self._repository.observed_users()),
+            self._repository.application_owners(),
+        )
         return {
             "organization": catalog.organizations,
             "department": catalog.departments,

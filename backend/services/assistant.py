@@ -40,7 +40,11 @@ from ..domain.assistant_models import (
     PinnedReport,
     PinnedReportLayout,
 )
-from ..domain.enterprise import enterprise_catalog, merge_observed_users
+from ..domain.enterprise import (
+    enterprise_catalog,
+    merge_application_owners,
+    merge_observed_users,
+)
 from ..domain.models import EnterpriseEntityCatalog
 from ..domain.runtime_models import (
     ChatMessage,
@@ -155,7 +159,10 @@ class AssistantService:
     # -- catalog ---------------------------------------------------------------
 
     def _catalog(self) -> EnterpriseEntityCatalog:
-        return merge_observed_users(enterprise_catalog(), self._repository.observed_users())
+        return merge_application_owners(
+            merge_observed_users(enterprise_catalog(), self._repository.observed_users()),
+            self._repository.application_owners(),
+        )
 
     def _catalog_payload(self) -> dict[str, Any]:
         catalog = self._catalog()

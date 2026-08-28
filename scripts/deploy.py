@@ -41,6 +41,7 @@ SECRET_PARAMETER_NAMES = {
 STATE_SECRET_NAMES = SECRET_PARAMETER_NAMES | {"observerAdapterSharedKey"}
 EXPECTED_FUNCTIONS = {
     "telemetryFunctionName": {
+        "telemetry_health",
         "process_usage_events",
         "reconcile_stream_usage",
         "sync_budget_ledger",
@@ -903,6 +904,13 @@ def verify_function_indexing(
             )
 
 
+def verify_telemetry_function_health(outputs: Mapping[str, Any]) -> None:
+    function_name = _output_string(outputs, "telemetryFunctionName")
+    health_url = f"https://{function_name}.azurewebsites.net/api"
+    wait_for_health(health_url, timeout_seconds=1800)
+    print(f"Telemetry Function host verified: {function_name}")
+
+
 def _confirm_deployment(assume_yes: bool) -> None:
     if assume_yes:
         return
@@ -1086,6 +1094,7 @@ def execute(args: argparse.Namespace, runner: CommandRunner) -> None:
         raise DeploymentError("Initial Owner password is required for verification")
     verify_owner_login(api_url, inputs.owner_email, secrets_.owner_password)
     verify_function_indexing(runner, inputs, final_outputs)
+    verify_telemetry_function_health(final_outputs)
     _write_outputs(inputs, {**final_outputs, **observer_outputs})
     print("Turnstile deployment completed.")
     print(f"Open: {api_url}")

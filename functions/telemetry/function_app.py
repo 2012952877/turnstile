@@ -26,6 +26,15 @@ app = func.FunctionApp()
 logger = logging.getLogger(__name__)
 
 
+@app.route(route="health", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def telemetry_health(_request: func.HttpRequest) -> func.HttpResponse:
+    return func.HttpResponse(
+        json.dumps({"status": "ok"}),
+        status_code=200,
+        mimetype="application/json",
+    )
+
+
 def _processor() -> UsageProcessor:
     settings = get_settings()
     repository = create_repository(settings)

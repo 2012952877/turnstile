@@ -89,6 +89,14 @@ def test_api_python_path_contains_package_root_and_prebuilt_dependencies() -> No
     )
 
 
+def test_functions_allow_vnet_cold_start_to_complete() -> None:
+    startup_limit = (
+        "{ name: 'WEBSITES_CONTAINER_START_TIME_LIMIT', value: '1800' }"
+    )
+    assert startup_limit in DATA_PLANE
+    assert startup_limit in CONTROL_PLANE
+
+
 def test_api_and_apim_share_the_same_gateway_path() -> None:
     assert "var gatewayApiRelativePath = 'turnstile/llm'" in MAIN
     assert (

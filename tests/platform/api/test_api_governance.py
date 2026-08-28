@@ -67,6 +67,61 @@ def test_machine_identities_never_become_people() -> None:
     assert "system-runtime-health-check" not in ids
     assert "real.person@contoso.com" in ids
 
+def test_application_owner_is_budgetable_before_gateway_traffic() -> None:
+    repository = InMemoryRepository()
+    repository.application_owner_rows.extend(
+        [
+            {
+                "email": "owner@contoso.com",
+                "display_name": "Initial Owner",
+                "role": "owner",
+            },
+            {
+                "email": "member@contoso.com",
+                "display_name": "Unattributed Member",
+                "role": "member",
+            },
+        ]
+    )
+    app.dependency_overrides[get_repository] = lambda: repository
+    period = datetime.now(UTC).strftime("%Y-%m")
+    headers = {"X-Hive-Role": "owner"}
+    try:
+        entities = client.get("/api/v1/enterprise/entities", headers=headers).json()
+        owner = next(
+            user for user in entities["users"] if user["id"] == "owner@contoso.com"
+        )
+        assert owner == {
+            "id": "owner@contoso.com",
+            "name": "Initial Owner",
+            "parent_id": "department-platform",
+        }
+        assert all(user["id"] != "member@contoso.com" for user in entities["users"])
+
+        model_id = str(
+            next(model["id"] for model in repository.models if model["enabled"])
+        )
+        assigned = client.post(
+            "/api/v1/budgets/users/bulk",
+            params={"period": period},
+            headers=headers,
+            json={
+                "department_id": "department-platform",
+                "selection": "ids",
+                "user_ids": ["owner@contoso.com"],
+                "status": "all",
+                "allocation_mode": "preserve",
+                "model_ids": [model_id],
+            },
+        )
+        assert assigned.status_code == 200
+        assert [
+            str(value)
+            for value in repository.user_model_policies["owner@contoso.com"]["model_ids"]
+        ] == [model_id]
+    finally:
+        app.dependency_overrides.clear()
+
 def test_people_who_used_the_gateway_become_budgetable() -> None:
     repository = InMemoryRepository()
     app.dependency_overrides[get_repository] = lambda: repository

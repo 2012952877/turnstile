@@ -66,7 +66,7 @@ Generated packages and deployment state remain under `.turnstile/deployments`. T
 
 ## Initial Owner
 
-The deployment command reads the password interactively and never sends plaintext to ARM. It deploys only the scrypt hash. API startup applies the schema and atomically creates the Owner only when `app_user` is empty; restarts and reruns do not reset the account.
+The deployment command reads the password interactively and never sends plaintext to ARM. It deploys only the scrypt hash. API startup applies the schema and atomically creates the Owner only when `app_user` is empty; restarts and reruns do not reset the account. Enabled Owner accounts are immediately listed in People under the default AI Platform department so the bootstrap Owner can assign model access before generating gateway traffic. Member department placement still comes from attributed gateway usage.
 
 To rotate a password later, run the existing account command from an authorized application execution context:
 
@@ -78,7 +78,7 @@ python -m backend.accounts <owner-email> --role owner
 
 The deployment output includes the APIM managed-identity principal ID. Turnstile does not grant it access to customer resources and does not create a Foundry project.
 
-Use the authenticated web console to add the existing Foundry Project Endpoint and model deployment. If the candidate probe lacks access, the publication pauses and displays the exact principal, resource endpoint, and `Cognitive Services User` role. An Azure user authorized on that Foundry account grants the role, then resumes the publication in the same dialog.
+Use the authenticated web console to add the existing Foundry Project Endpoint and model deployment. The user does not enter model capabilities: Turnstile derives them from the provider protocol, including `chat`, `tools`, and `streaming` for OpenAI-family Foundry deployments. If the candidate probe lacks access, the publication pauses and displays the exact principal, resource endpoint, and `Cognitive Services User` role. An Azure user authorized on that Foundry account grants the role, then resumes the publication in the same dialog. Model access remains explicit; assign the new model to the intended people before using Invocation Test.
 
 Creating connections or models through direct API calls does not count as frontend E2E evidence.
 

@@ -1002,6 +1002,16 @@ class PostgreSqlOpsDbProxy(
             ).fetchall()
         return cast(Sequence[dict[str, Any]], rows)
 
+    def application_owners(self) -> Sequence[dict[str, Any]]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                """SELECT email, display_name, role
+                   FROM app_user
+                   WHERE enabled AND role = 'owner'
+                   ORDER BY email"""
+            ).fetchall()
+        return cast(Sequence[dict[str, Any]], rows)
+
     def list_usage_anomalies(
         self, from_: datetime, to: datetime, filters: UsageFilters, limit: int
     ) -> Sequence[dict[str, Any]]:

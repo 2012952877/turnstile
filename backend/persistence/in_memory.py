@@ -114,6 +114,7 @@ class InMemoryRepository(
         self.pinned_reports: list[dict[str, Any]] = []
         self.pinned_charts: list[dict[str, Any]] = []
         self.conversations: list[dict[str, Any]] = []
+        self.application_owner_rows: list[dict[str, Any]] = []
         # Mirrors the single seeded row migration 027 creates.
         self.assistant_setting: dict[str, Any] = {
             "model_id": None,
@@ -835,6 +836,9 @@ class InMemoryRepository(
                 "department_id": record.department_id,
             }
         return list(latest.values())
+
+    def application_owners(self) -> list[dict[str, Any]]:
+        return list(self.application_owner_rows)
 
     def list_usage_anomalies(
         self, from_: datetime, to: datetime, filters: UsageFilters, limit: int

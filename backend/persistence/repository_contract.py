@@ -112,6 +112,9 @@ class QueryRepository(ABC):
     def observed_users(self) -> Sequence[dict[str, Any]]: ...
 
     @abstractmethod
+    def application_owners(self) -> Sequence[dict[str, Any]]: ...
+
+    @abstractmethod
     def list_usage_anomalies(
         self, from_: datetime, to: datetime, filters: UsageFilters, limit: int
     ) -> Sequence[dict[str, Any]]: ...

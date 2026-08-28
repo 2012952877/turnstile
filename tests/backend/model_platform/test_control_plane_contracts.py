@@ -129,10 +129,12 @@ def test_foundry_project_connection_derives_a_managed_identity_binding() -> None
     repository.providers = [
         item for item in repository.providers if item["id"] not in foundry_provider_ids
     ]
+    request = foundry_publication()
+    assert not hasattr(request.model, "capabilities")
     publication = GatewayControlPlaneService(
         repository,
         apim_principal_id="39deeba0-9799-4806-96c4-2f65eb0f22d1",
-    ).publish(foundry_publication(), "owner@example.com")
+    ).publish(request, "owner@example.com")
     binding = publication.desired_spec.bindings[-1]
 
     assert str(binding.backend_url).rstrip("/") == (

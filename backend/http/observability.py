@@ -6,7 +6,11 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from ..domain.enterprise import enterprise_catalog, merge_observed_users
+from ..domain.enterprise import (
+    enterprise_catalog,
+    merge_application_owners,
+    merge_observed_users,
+)
 from ..domain.models import (
     AuditFinding,
     AuditFindingListResponse,
@@ -72,7 +76,10 @@ UsageFilterSet = Annotated[UsageFilters, Depends(usage_filters)]
 
 @router.get("/api/v1/enterprise/entities", response_model=EnterpriseEntityCatalog)
 def get_enterprise_entities(repository: Repository) -> EnterpriseEntityCatalog:
-    return merge_observed_users(enterprise_catalog(), repository.observed_users())
+    return merge_application_owners(
+        merge_observed_users(enterprise_catalog(), repository.observed_users()),
+        repository.application_owners(),
+    )
 
 
 @router.get(

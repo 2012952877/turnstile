@@ -292,8 +292,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signInWithEntra = useCallback(async () => {
     if (!ENTRA_CLIENT_ID) {
-      setEntraError("Microsoft sign-in is not configured for this deployment.")
-      return
+      const message = "Microsoft sign-in is not configured for this deployment."
+      setEntraError(message)
+      throw new Error(message)
     }
     await initialiseMsal()
     // A full-page redirect, matching GBBAIP. Not `loginPopup`: a popup is blocked by

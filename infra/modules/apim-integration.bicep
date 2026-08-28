@@ -27,6 +27,7 @@ type EnabledUsageObserver = {
 }
 
 param apimName string
+param apiPath string
 param eventHubNamespaceResourceId string
 param eventHubNamespaceName string
 param eventHubName string
@@ -198,6 +199,16 @@ resource metricsLogger 'Microsoft.ApiManagement/service/loggers@2024-05-01' = {
   }
 }
 
+resource azureMonitorLogger 'Microsoft.ApiManagement/service/loggers@2024-05-01' = {
+  parent: apim
+  name: 'azuremonitor'
+  properties: {
+    loggerType: 'azureMonitor'
+    description: 'Turnstile gateway request and LLM diagnostics.'
+    isBuffered: true
+  }
+}
+
 resource llmDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
   scope: apim
   name: 'finops-llm-token-logs'
@@ -243,9 +254,9 @@ resource api 'Microsoft.ApiManagement/service/apis@2024-05-01' = {
   name: 'turnstile-llm'
   properties: {
     apiType: 'http'
-    displayName: 'Model FinOps AI Gateway'
+    displayName: 'Turnstile AI Gateway'
     description: 'Provider-neutral APIM model access, token controls, and metadata-only usage collection.'
-    path: 'finops/llm'
+    path: apiPath
     protocols: [
       'https'
     ]
@@ -261,7 +272,7 @@ resource product 'Microsoft.ApiManagement/service/products@2024-05-01' = {
   parent: apim
   name: 'finops-ai-consumers'
   properties: {
-    displayName: 'Model FinOps AI'
+    displayName: 'Turnstile AI'
     description: 'Product-scoped access to governed model provider integrations.'
     approvalRequired: false
     subscriptionRequired: true
@@ -500,7 +511,7 @@ resource apiAzureMonitorDiagnostic 'Microsoft.ApiManagement/service/apis/diagnos
   parent: api
   name: 'azuremonitor'
   properties: {
-    loggerId: '${apim.id}/loggers/azuremonitor'
+    loggerId: azureMonitorLogger.id
     alwaysLog: 'allErrors'
     sampling: {
       samplingType: 'fixed'
@@ -608,7 +619,7 @@ resource subscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01'
   parent: apim
   name: 'turnstile-dashboard'
   properties: {
-    displayName: 'Model FinOps Dashboard'
+    displayName: 'Turnstile Dashboard'
     scope: product.id
     state: 'active'
     allowTracing: false
@@ -624,7 +635,7 @@ resource probeSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-0
   parent: apim
   name: 'turnstile-publisher-probe'
   properties: {
-    displayName: 'Model FinOps Publisher Probe'
+    displayName: 'Turnstile Publisher Probe'
     scope: product.id
     state: 'active'
     allowTracing: false

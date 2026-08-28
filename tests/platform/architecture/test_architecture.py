@@ -38,8 +38,8 @@ ROOT_MODULES = {"config", "security"}
 # change; `accounts` is run by an operator over a shell and is free to move, but it is an
 # entry point by the same definition -- it wires config to persistence and is invoked with
 # `python -m` rather than imported by anything.
-ENTRY_POINTS = {"api", "migrate", "accounts"}
-DEPLOYMENT_ENTRY_POINTS = {"api", "migrate"}
+ENTRY_POINTS = {"api", "bootstrap", "migrate", "accounts"}
+DEPLOYMENT_ENTRY_POINTS = {"api", "bootstrap", "migrate"}
 
 LAYERS = set(ALLOWED)
 
@@ -105,7 +105,7 @@ def test_backend_runtime_never_imports_repository_tests() -> None:
 
 
 def test_the_deployment_entry_points_keep_their_import_paths() -> None:
-    """`appCommandLine` runs these two by dotted path.
+    """`appCommandLine` runs these modules by dotted path.
 
     Moving either one into a layer would need an App Service configuration change, so the
     coupling is asserted here rather than discovered when a deployment fails to start.

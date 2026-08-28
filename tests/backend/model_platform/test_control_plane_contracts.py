@@ -144,6 +144,7 @@ def test_foundry_project_connection_derives_a_managed_identity_binding() -> None
     assert binding.model.upstream_model_id == "gpt-5-mini-deployment"
     assert binding.model.display_name == "gpt-5-mini-deployment · Microsoft Foundry"
     assert binding.model.model_key.startswith("gpt-5-mini-deployment-foundry-")
+    assert binding.model.capabilities == ["chat", "tools", "streaming"]
     authorization = binding.runtime_config["authorization"]
     assert isinstance(authorization, dict)
     assert authorization["principal_id"] == (
@@ -195,6 +196,13 @@ def test_existing_foundry_claude_uses_anthropic_messages_binding() -> None:
     compiled = ApimPolicyCompiler().compile(publication)
 
     assert binding.api_format is ApiFormat.ANTHROPIC_MESSAGES
+    assert binding.model.capabilities == [
+        "chat",
+        "tools",
+        "vision",
+        "reasoning",
+        "streaming",
+    ]
     assert str(binding.backend_url).rstrip("/") == (
         "https://example-foundry-resource.services.ai.azure.com"
     )
@@ -1171,4 +1179,5 @@ def test_reusing_a_foundry_project_needs_only_a_deployment_name() -> None:
     assert binding.model.upstream_model_id == "gpt-5.4"
     assert binding.model.display_name == "gpt-5.4 · Microsoft Foundry"
     assert binding.model.model_key.startswith("gpt-5.4-foundry-")
+    assert binding.model.capabilities == ["chat", "tools", "streaming"]
     assert binding.backend_path == "/openai/v1/chat/completions"

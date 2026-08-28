@@ -118,6 +118,22 @@ class AuthStore:
                 connection.execute("DELETE FROM user_session WHERE user_id = %s", (row["id"],))
         return dict(row) if row else {}
 
+    def create_initial_owner(self, email: str, password_hash: str) -> dict[str, Any] | None:
+        """Create the first account only while the user table is empty."""
+        with self._connection() as connection, connection.transaction():
+            connection.execute("LOCK TABLE app_user IN SHARE ROW EXCLUSIVE MODE")
+            if connection.execute("SELECT EXISTS (SELECT 1 FROM app_user)").fetchone()[
+                "exists"
+            ]:
+                return None
+            row = connection.execute(
+                """INSERT INTO app_user (email, password_hash, role)
+                   VALUES (%s, %s, 'owner')
+                   RETURNING id, email, display_name, password_hash, role, enabled""",
+                (email.strip().lower(), password_hash),
+            ).fetchone()
+        return dict(row) if row else None
+
     def touch_last_login(self, user_id: UUID) -> None:
         with self._connection() as connection:
             connection.execute(

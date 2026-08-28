@@ -1,6 +1,6 @@
 # Contributing
 
-Turnstile is currently maintained as a private project.
+Turnstile is an open-source project released under the MIT License. Contributions are welcome through focused, reviewed pull requests.
 
 ## Development workflow
 

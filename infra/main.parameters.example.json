@@ -20,6 +20,9 @@
     "apimPublisherName": {
       "value": "Turnstile"
     },
+    "bootstrapOwnerEmail": {
+      "value": "admin@example.com"
+    },
     "apimSkuName": {
       "value": "Developer"
     },

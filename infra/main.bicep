@@ -53,6 +53,24 @@ param apimSkuName string = 'Developer'
 @minValue(1)
 param apimCapacity int = 1
 
+@description('Create the APIM service. Set false only when adopting the deterministic APIM service in an existing Turnstile environment.')
+param provisionApimService bool = true
+
+@description('Create the PostgreSQL server, database, and Azure-services firewall rule. Set false only when adopting the deterministic database in an existing Turnstile environment.')
+param provisionPostgres bool = true
+
+@description('Deploy the bootstrap API, operations, and policies. Disable after the first model publication so infrastructure reruns cannot overwrite a live gateway revision.')
+param deployApimBootstrap bool = true
+
+@description('Name of an existing APIM service when provisionApimService is false.')
+param existingApimName string = ''
+
+@description('Principal ID of an existing APIM system-assigned identity when provisionApimService is false.')
+param existingApimPrincipalId string = ''
+
+@description('Gateway origin of an existing APIM service when provisionApimService is false.')
+param existingApimGatewayUrl string = ''
+
 @secure()
 @minLength(16)
 param postgresAdministratorPassword string
@@ -79,13 +97,13 @@ param apimRegressionModelKey string = ''
 param preserveLegacyProviderRouting bool = false
 
 @description('Entra tenant that issues employee tokens for interactive clients such as Claude Desktop.')
-param employeeTenantId string = ''
+param employeeTenantId string = subscription().tenantId
 
 @description('Public client application ID used by employee desktop clients.')
-param employeeClientId string = ''
+param employeeClientId string = entraClientId
 
 @description('Application ID of the model API that employee tokens are issued for.')
-param employeeAudience string = ''
+param employeeAudience string = entraClientId
 
 @description('Per-minute burst ceiling for each validated employee. The monthly allowance is enforced from the Table Storage ledger, not from an APIM counter.')
 @minValue(1)
@@ -118,6 +136,13 @@ param entraClientId string = ''
 @description('Exact email domains allowed to sign in through Microsoft Entra.')
 param entraAllowedEmailDomains array = []
 
+@description('Email address for the first password Owner created only when the user table is empty.')
+param bootstrapOwnerEmail string
+
+@description('Locally generated scrypt hash for the first Owner password. Plaintext is never deployed.')
+@secure()
+param bootstrapOwnerPasswordHash string
+
 @description('Provision the isolated APIM publication Function with publishing disabled until explicitly enabled.')
 param provisionControlPlane bool = false
 
@@ -149,6 +174,7 @@ param postgresAdministratorLogin string = 'turnstileadmin'
 param postgresSkuName string = 'Standard_B1ms'
 param postgresTier string = 'Burstable'
 param suffix string = uniqueString(subscription().id, resourceGroupName)
+var gatewayApiRelativePath = 'turnstile/llm'
 
 resource platformResourceGroup 'Microsoft.Resources/resourceGroups@2024-11-01' = {
   name: resourceGroupName
@@ -159,7 +185,7 @@ resource platformResourceGroup 'Microsoft.Resources/resourceGroups@2024-11-01' =
   }
 }
 
-module apim 'modules/apim-service.bicep' = {
+module apim 'modules/apim-service.bicep' = if (provisionApimService) {
   name: 'turnstile-apim'
   scope: platformResourceGroup
   params: {
@@ -171,6 +197,11 @@ module apim 'modules/apim-service.bicep' = {
     capacity: apimCapacity
   }
 }
+
+var effectiveApimName = provisionApimService ? apim!.outputs.name : existingApimName
+var effectiveApimPrincipalId = provisionApimService ? apim!.outputs.principalId : existingApimPrincipalId
+var effectiveApimGatewayUrl = provisionApimService ? apim!.outputs.gatewayUrl : existingApimGatewayUrl
+var effectiveGatewayApiPath = '${effectiveApimGatewayUrl}/${gatewayApiRelativePath}'
 
 module dataPlane 'modules/data-plane.bicep' = {
   name: 'turnstile-data-plane'
@@ -184,26 +215,31 @@ module dataPlane 'modules/data-plane.bicep' = {
     postgresAdministratorPassword: postgresAdministratorPassword
     postgresSkuName: postgresSkuName
     postgresTier: postgresTier
+    provisionPostgres: provisionPostgres
     credentialEncryptionKey: credentialEncryptionKey
     managementApiKey: managementApiKey
     apimSubscriptionKey: apimSubscriptionKey
     apimProbeSubscriptionKey: apimProbeSubscriptionKey
-    apimPrincipalId: apim.outputs.principalId
+    apimPrincipalId: effectiveApimPrincipalId
     apimResourceGroupName: platformResourceGroup.name
-    apimName: apim.outputs.name
+    apimName: effectiveApimName
+    apimGatewayUrl: effectiveGatewayApiPath
     ledgerTableName: ledgerTableName
     gatewayReleaseWorkerEnabled: provisionControlPlane && gatewayReleaseWorkerEnabled && apimUsageObserver.mode == 'enabled'
     gatewayApplicationKeyManagementEnabled: gatewayApplicationKeyManagementEnabled
     entraClientId: entraClientId
     entraAllowedEmailDomains: entraAllowedEmailDomains
+    bootstrapOwnerEmail: bootstrapOwnerEmail
+    bootstrapOwnerPasswordHash: bootstrapOwnerPasswordHash
   }
 }
 
-module apimIntegration 'modules/apim-integration.bicep' = {
+module apimIntegration 'modules/apim-integration.bicep' = if (deployApimBootstrap) {
   name: 'turnstile-apim-integration'
   scope: platformResourceGroup
   params: {
-    apimName: apim.outputs.name
+    apimName: effectiveApimName
+    apiPath: gatewayApiRelativePath
     eventHubNamespaceResourceId: dataPlane.outputs.eventHubNamespaceResourceId
     eventHubNamespaceName: dataPlane.outputs.eventHubNamespaceName
     eventHubName: dataPlane.outputs.eventHubName
@@ -236,14 +272,16 @@ module controlPlane 'modules/control-plane-function.bicep' = if (provisionContro
   params: {
     location: location
     suffix: suffix
+    appServicePlanName: 'plan-${resourcePrefix}-${suffix}'
+    virtualNetworkName: 'vnet-${resourcePrefix}-${suffix}'
     keyVaultName: dataPlane.outputs.keyVaultName
     databaseUrlSecretUri: dataPlane.outputs.databaseUrlSecretUri
     apimProbeSubscriptionKeySecretUri: dataPlane.outputs.apimProbeSubscriptionKeySecretUri
     credentialEncryptionKeySecretUri: dataPlane.outputs.credentialEncryptionKeySecretUri
     applicationInsightsConnectionString: dataPlane.outputs.applicationInsightsConnectionString
     apimResourceGroupName: platformResourceGroup.name
-    apimName: apim.outputs.name
-    apimGatewayUrl: apimIntegration.outputs.gatewayUrl
+    apimName: effectiveApimName
+    apimGatewayUrl: effectiveGatewayApiPath
     regressionModelKey: apimRegressionModelKey
     usageObserverUrl: apimUsageObserver.url
     usageObserverKeyNamedValue: apimUsageObserver.keyNamedValue
@@ -257,7 +295,7 @@ module controlPlaneApimRbac 'modules/control-plane-apim-rbac.bicep' = if (provis
   name: 'turnstile-control-plane-apim-rbac'
   scope: platformResourceGroup
   params: {
-    apimName: apim.outputs.name
+    apimName: effectiveApimName
     controlPlanePrincipalId: controlPlane!.outputs.principalId
   }
 }
@@ -266,7 +304,7 @@ module applicationKeyManagementRbac 'modules/application-key-management-rbac.bic
   name: 'turnstile-application-key-management-rbac'
   scope: platformResourceGroup
   params: {
-    apimName: apim.outputs.name
+    apimName: effectiveApimName
     apiPrincipalIds: [
       dataPlane.outputs.apiPrincipalId
     ]
@@ -274,10 +312,15 @@ module applicationKeyManagementRbac 'modules/application-key-management-rbac.bic
 }
 
 output resourceGroupName string = platformResourceGroup.name
-output apimName string = apim.outputs.name
+output apimName string = effectiveApimName
+output apimPrincipalId string = effectiveApimPrincipalId
 output postgresServerName string = dataPlane.outputs.postgresServerName
 output eventHubNamespaceName string = dataPlane.outputs.eventHubNamespaceName
 output applicationInsightsName string = dataPlane.outputs.applicationInsightsName
-output apimGatewayUrl string = apimIntegration.outputs.gatewayUrl
-output gatewayApiPath string = apimIntegration.outputs.gatewayApiPath
+output appServicePlanName string = dataPlane.outputs.appServicePlanName
+output apiName string = dataPlane.outputs.apiName
+output apiUrl string = dataPlane.outputs.apiUrl
+output telemetryFunctionName string = dataPlane.outputs.functionName
+output apimGatewayUrl string = effectiveApimGatewayUrl
+output gatewayApiPath string = effectiveGatewayApiPath
 output controlPlaneFunctionName string = provisionControlPlane ? controlPlane!.outputs.functionName : ''

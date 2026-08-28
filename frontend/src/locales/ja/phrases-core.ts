@@ -1362,7 +1362,7 @@ export const JAPANESE_CORE_PHRASES: Record<string, string> = {
   "首次为此连接添加模型时，再提供一次性 API Key 并通过候选 Revision 验证。": "最初のモデル追加時に一時 API Key を入力し、候補 Revision で接続を検証します。",
   "首次为此连接添加模型时，再提供一次性 API Key。": "最初のモデル追加時に一時 API Key を入力します。",
   "此处不收 API Key。添加首个模型时只需提供一次，后续模型复用此连接无需重复提供。": "ここでは API Key を収集しません。最初のモデル追加時に一度だけ入力し、以後のモデルでは再入力不要です。",
-  "新连接将显示为等待首次模型验证；添加首个模型时通过候选 Revision 完成验证。": "新しい接続は最初のモデル検証待ちとして表示され、最初のモデル追加時に候補 Revision で検証されます。",
+  "使用 Managed Identity 前，请先在目标 Foundry 资源（承载该 Project 的 Foundry Account）的 Access control (IAM) 中，将当前所选 APIM 的 Managed Identity 授予 Cognitive Services User。仅位于同一租户不会自动获得访问权限。连接可先保存；添加首个模型时会验证权限。若缺少权限，发布会暂停并显示 APIM Principal ID 和目标资源，完成授权后再继续验证。": "Managed Identity を使用する前に、対象の Foundry リソース（この Project をホストする Foundry Account）のアクセス制御 (IAM) で、選択した APIM の Managed Identity に Cognitive Services User ロールを付与してください。同じテナントにあるだけではアクセス権は自動的に付与されません。接続は先に保存でき、最初のモデル追加時に権限が検証されます。権限がない場合、公開は一時停止し、APIM Principal ID と対象リソースが表示されます。権限付与後に検証を再開してください。",
   "仅首次发布需要。Key 写入 APIM Secret Named Value 后即从 Turnstile 临时记录中清除；后续模型无需重复提供。": "初回公開時のみ必要です。Key は APIM Secret Named Value に書き込まれた後、Turnstile の一時レコードから削除され、以後のモデルでは再入力不要です。",
   "等待首次模型验证": "最初のモデル検証待ち",
   "待验证": "検証待ち",

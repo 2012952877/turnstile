@@ -2505,6 +2505,7 @@ ALTER TABLE ONLY public.user_session
 -- PostgreSQL database dump complete
 --
 
+SET search_path = public, pg_catalog;
 
 
 

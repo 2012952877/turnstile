@@ -2,8 +2,8 @@ targetScope = 'resourceGroup'
 
 param location string
 param suffix string
-param appServicePlanName string = 'plan-finops-${suffix}'
-param virtualNetworkName string = 'vnet-finops-${suffix}'
+param appServicePlanName string = 'plan-turnstile-${suffix}'
+param virtualNetworkName string = 'vnet-turnstile-${suffix}'
 param functionSubnetName string = 'snet-functions'
 param keyVaultName string
 param databaseUrlSecretUri string
@@ -27,8 +27,8 @@ param subscriptionAgentMap object = {}
 param publicationWorkerEnabled bool = false
 param releaseWorkerEnabled bool = false
 
-var storageName = 'stfinopscp${take(suffix, 12)}'
-var functionName = 'func-finops-control-${suffix}'
+var storageName = 'stturnstilecp${take(suffix, 11)}'
+var functionName = 'func-turnstile-control-${suffix}'
 var observerConfigured = !empty(trim(usageObserverUrl)) && !empty(trim(usageObserverKeyNamedValue))
 var effectivePublicationWorkerEnabled = publicationWorkerEnabled && observerConfigured
 var effectiveReleaseWorkerEnabled = releaseWorkerEnabled && observerConfigured

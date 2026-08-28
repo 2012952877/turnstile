@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     ledger_table_name: str = "TurnstileLedger"
     management_api_key: SecretStr | None = None
     production: bool = False
+    bootstrap_owner_email: str = ""
+    bootstrap_owner_password_hash: SecretStr | None = None
 
     # --- APIM control plane --------------------------------------------------------
     # Disabled unless an operator explicitly provisions the isolated publisher Function
@@ -55,6 +57,7 @@ class Settings(BaseSettings):
     apim_count_tokens_operation_id: str = "anthropic-count-tokens"
     apim_models_operation_id: str = "anthropic-models"
     apim_gateway_url: str | None = None
+    apim_dashboard_subscription_key: SecretStr | None = None
     apim_probe_subscription_key: SecretStr | None = None
     apim_probe_subscription_id: str = "turnstile-publisher-probe"
     apim_regression_model_key: str = ""
@@ -116,6 +119,15 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def require_usage_observer_for_control_plane(self) -> Settings:
+        owner_email = self.bootstrap_owner_email.strip()
+        owner_hash = self.bootstrap_owner_password_hash
+        if bool(owner_email) != bool(owner_hash):
+            raise ValueError(
+                "BOOTSTRAP_OWNER_EMAIL and BOOTSTRAP_OWNER_PASSWORD_HASH "
+                "must be configured together"
+            )
+        if owner_email and "@" not in owner_email:
+            raise ValueError("BOOTSTRAP_OWNER_EMAIL must be an email address")
         observer_url = (self.apim_usage_observer_url or "").strip()
         observer_key = (self.apim_usage_observer_key_named_value or "").strip()
         if bool(observer_url) != bool(observer_key):

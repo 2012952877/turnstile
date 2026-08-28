@@ -79,6 +79,10 @@ def test_connection_onboarding_is_distinct_from_model_publication() -> None:
         "align-items: center; gap: 5px;"
     ) in styles
     assert "此处不收 API Key" in connection_source
+    assert "当前所选 APIM 的 Managed Identity" in connection_source
+    assert "Cognitive Services User" in connection_source
+    assert "仅位于同一租户不会自动获得访问权限" in connection_source
+    assert ".field-help-popup { max-width: min(360px" in styles
     assert "<FieldHelp>" in connection_source
     assert "<FieldHelp>" in model_source
     assert '<p className="registry-field-help">' not in connection_source

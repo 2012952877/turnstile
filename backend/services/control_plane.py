@@ -2102,12 +2102,19 @@ class GatewayControlPlaneService:
                 if "gpt" in identity or "openai" in identity
                 else ModelFamilyKey.GENERIC
             )
+            derived_capabilities: list[ModelCapability] = (
+                ["chat", "tools", "vision", "reasoning", "streaming"]
+                if family is ModelFamilyKey.CLAUDE
+                else ["chat", "tools", "streaming"]
+                if family is ModelFamilyKey.OPENAI
+                else ["chat", "streaming"]
+            )
             return ModelTarget(
                 model_key=model_key,
                 display_name=f"{deployment} · Microsoft Foundry",
                 upstream_model_id=deployment,
                 family_key=family,
-                capabilities=["chat", "streaming"],
+                capabilities=derived_capabilities,
                 context_window=model.context_window,
                 input_cost_per_million=model.input_cost_per_million,
                 output_cost_per_million=model.output_cost_per_million,

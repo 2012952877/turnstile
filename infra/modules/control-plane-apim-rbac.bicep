@@ -8,10 +8,10 @@ resource apim 'Microsoft.ApiManagement/service@2024-05-01' existing = {
 }
 
 resource publisherRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
-  name: guid(resourceGroup().id, 'finops-apim-publisher')
+  name: guid(resourceGroup().id, 'turnstile-apim-publisher')
   properties: {
-    roleName: 'FinOps APIM Publisher'
-    description: 'Publishes FinOps API resources and provisions governed APIM subscriptions.'
+    roleName: 'Turnstile APIM Publisher'
+    description: 'Publishes Turnstile API resources and provisions governed APIM subscriptions.'
     type: 'CustomRole'
     permissions: [
       {
@@ -52,7 +52,7 @@ resource publisherRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
 }
 
 resource functionApimPublisher 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(apim.id, controlPlanePrincipalId, 'finops-apim-publisher')
+  name: guid(apim.id, controlPlanePrincipalId, 'turnstile-apim-publisher')
   scope: apim
   properties: {
     principalId: controlPlanePrincipalId

@@ -1362,7 +1362,7 @@ export const KOREAN_CORE_PHRASES: Record<string, string> = {
   "首次为此连接添加模型时，再提供一次性 API Key 并通过候选 Revision 验证。": "첫 모델을 추가할 때 일회용 API Key를 입력하고 후보 Revision으로 연결을 검증합니다.",
   "首次为此连接添加模型时，再提供一次性 API Key。": "첫 모델을 추가할 때 일회용 API Key를 입력합니다.",
   "此处不收 API Key。添加首个模型时只需提供一次，后续模型复用此连接无需重复提供。": "여기서는 API Key를 수집하지 않습니다. 첫 모델 추가 시 한 번만 입력하며 이후 모델에서는 다시 입력할 필요가 없습니다.",
-  "新连接将显示为等待首次模型验证；添加首个模型时通过候选 Revision 完成验证。": "새 연결은 첫 모델 검증 대기로 표시되며 첫 모델 추가 시 후보 Revision으로 검증됩니다.",
+  "使用 Managed Identity 前，请先在目标 Foundry 资源（承载该 Project 的 Foundry Account）的 Access control (IAM) 中，将当前所选 APIM 的 Managed Identity 授予 Cognitive Services User。仅位于同一租户不会自动获得访问权限。连接可先保存；添加首个模型时会验证权限。若缺少权限，发布会暂停并显示 APIM Principal ID 和目标资源，完成授权后再继续验证。": "Managed Identity를 사용하기 전에 대상 Foundry 리소스(이 Project를 호스팅하는 Foundry Account)의 액세스 제어(IAM)에서 선택한 APIM Managed Identity에 Cognitive Services User 역할을 부여하세요. 동일한 테넌트에 있다는 사실만으로는 액세스 권한이 자동 부여되지 않습니다. 연결은 먼저 저장할 수 있으며 첫 모델을 추가할 때 권한을 검증합니다. 권한이 없으면 게시가 일시 중지되고 APIM Principal ID와 대상 리소스가 표시됩니다. 권한을 부여한 후 검증을 재개하세요.",
   "仅首次发布需要。Key 写入 APIM Secret Named Value 后即从 Turnstile 临时记录中清除；后续模型无需重复提供。": "첫 게시 시에만 필요합니다. Key는 APIM Secret Named Value에 기록된 후 Turnstile 임시 레코드에서 삭제되며 이후 모델에서는 다시 입력할 필요가 없습니다.",
   "等待首次模型验证": "첫 모델 검증 대기",
   "待验证": "검증 대기",

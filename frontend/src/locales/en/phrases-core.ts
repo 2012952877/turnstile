@@ -1368,7 +1368,7 @@ export const ENGLISH_CORE_PHRASES: Record<string, string> = {
   "首次为此连接添加模型时，再提供一次性 API Key 并通过候选 Revision 验证。": "Provide a one-time API key when adding the first model; the candidate revision will verify the connection.",
   "首次为此连接添加模型时，再提供一次性 API Key。": "Provide a one-time API key when adding the first model.",
   "此处不收 API Key。添加首个模型时只需提供一次，后续模型复用此连接无需重复提供。": "No API key is collected here. Provide it once when adding the first model; later models reuse the connection without asking again.",
-  "新连接将显示为等待首次模型验证；添加首个模型时通过候选 Revision 完成验证。": "The new connection will wait for first-model verification. Adding the first model verifies it through a candidate revision.",
+  "使用 Managed Identity 前，请先在目标 Foundry 资源（承载该 Project 的 Foundry Account）的 Access control (IAM) 中，将当前所选 APIM 的 Managed Identity 授予 Cognitive Services User。仅位于同一租户不会自动获得访问权限。连接可先保存；添加首个模型时会验证权限。若缺少权限，发布会暂停并显示 APIM Principal ID 和目标资源，完成授权后再继续验证。": "Before using Managed Identity, grant the selected APIM managed identity the Cognitive Services User role in Access control (IAM) on the target Foundry resource (the Foundry account that hosts this project). Being in the same tenant does not grant access automatically. You can save the connection first; adding the first model verifies access. If access is missing, publication pauses and shows the APIM Principal ID and target resource. Grant access, then resume verification.",
   "仅首次发布需要。Key 写入 APIM Secret Named Value 后即从 Turnstile 临时记录中清除；后续模型无需重复提供。": "Required only for the first publication. After the key is written to an APIM secret named value, it is removed from Turnstile's temporary record; later models do not require it again.",
   "等待首次模型验证": "Waiting for first model verification",
   "待验证": "Pending",

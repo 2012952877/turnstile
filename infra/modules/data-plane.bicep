@@ -9,6 +9,7 @@ param postgresAdministratorLogin string
 param postgresAdministratorPassword string
 param postgresSkuName string
 param postgresTier string
+param provisionPostgres bool = true
 @secure()
 param credentialEncryptionKey string
 @secure()
@@ -20,11 +21,15 @@ param apimProbeSubscriptionKey string
 param apimPrincipalId string
 param apimResourceGroupName string
 param apimName string
+param apimGatewayUrl string
 param ledgerTableName string
 param gatewayReleaseWorkerEnabled bool = false
 param gatewayApplicationKeyManagementEnabled bool = false
 param entraClientId string = ''
 param entraAllowedEmailDomains array = []
+param bootstrapOwnerEmail string
+@secure()
+param bootstrapOwnerPasswordHash string
 
 var storageName = 'st${resourcePrefix}${take(suffix, 10)}'
 var ledgerStorageName = 'st${resourcePrefix}ledger${take(suffix, 4)}'
@@ -98,7 +103,7 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   }
 }
 
-resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
+resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = if (provisionPostgres) {
   name: postgresServerName
   location: postgresLocation
   sku: {
@@ -131,7 +136,7 @@ resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
   }
 }
 
-resource database 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2024-08-01' = {
+resource database 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2024-08-01' = if (provisionPostgres) {
   parent: postgres
   name: databaseName
   properties: {
@@ -140,7 +145,7 @@ resource database 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2024-08-0
   }
 }
 
-resource allowAzure 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2024-08-01' = {
+resource allowAzure 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2024-08-01' = if (provisionPostgres) {
   parent: postgres
   name: 'AllowAzureServices'
   properties: {
@@ -396,14 +401,14 @@ resource api 'Microsoft.Web/sites@2024-11-01' = {
       linuxFxVersion: 'PYTHON|3.11'
       alwaysOn: true
       healthCheckPath: '/health'
-      appCommandLine: 'python -m backend.migrate && python -m uvicorn backend.api:app --host 0.0.0.0 --port 8000'
+      appCommandLine: 'python -m backend.migrate && python -m backend.bootstrap && python -m uvicorn backend.api:app --host 0.0.0.0 --port 8000'
       ftpsState: 'Disabled'
       minTlsVersion: '1.2'
       appSettings: [
         { name: 'SCM_DO_BUILD_DURING_DEPLOYMENT', value: 'false' }
         { name: 'ENABLE_ORYX_BUILD', value: 'false' }
         { name: 'WEBSITE_RUN_FROM_PACKAGE', value: '1' }
-        { name: 'PYTHONPATH', value: '/home/site/wwwroot/.python_packages/lib/site-packages' }
+        { name: 'PYTHONPATH', value: '/home/site/wwwroot:/home/site/wwwroot/.python_packages/lib/site-packages' }
         { name: 'WEBSITES_PORT', value: '8000' }
         { name: 'DATABASE_URL', value: postgresConnectionString }
         { name: 'DATA_BACKEND', value: 'postgresql' }
@@ -413,10 +418,14 @@ resource api 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'AZURE_SUBSCRIPTION_ID', value: subscription().subscriptionId }
         { name: 'APIM_RESOURCE_GROUP', value: apimResourceGroupName }
         { name: 'APIM_SERVICE_NAME', value: apimName }
+        { name: 'APIM_GATEWAY_URL', value: apimGatewayUrl }
+        { name: 'APIM_DASHBOARD_SUBSCRIPTION_KEY', value: apimSubscriptionKey }
         { name: 'GATEWAY_RELEASE_WORKER_ENABLED', value: string(gatewayReleaseWorkerEnabled) }
         { name: 'GATEWAY_APPLICATION_KEY_MANAGEMENT_ENABLED', value: string(gatewayApplicationKeyManagementEnabled) }
         { name: 'ENTRA_CLIENT_ID', value: entraClientId }
         { name: 'ENTRA_ALLOWED_EMAIL_DOMAINS', value: string(entraAllowedEmailDomains) }
+        { name: 'BOOTSTRAP_OWNER_EMAIL', value: bootstrapOwnerEmail }
+        { name: 'BOOTSTRAP_OWNER_PASSWORD_HASH', value: bootstrapOwnerPasswordHash }
         { name: 'PRODUCTION', value: 'true' }
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
         { name: 'TRAFFIC_GENERATION_BUDGET_USD', value: '20' }
@@ -556,9 +565,9 @@ resource apimEventHubSender 'Microsoft.Authorization/roleAssignments@2022-04-01'
   }
 }
 
-output postgresServerName string = postgres.name
-output postgresFqdn string = postgres.properties.fullyQualifiedDomainName
-output databaseName string = database.name
+output postgresServerName string = postgresServerName
+output postgresFqdn string = '${postgresServerName}.postgres.database.azure.com'
+output databaseName string = databaseName
 output eventHubNamespaceResourceId string = eventHubNamespace.id
 output eventHubNamespaceName string = eventHubNamespace.name
 output eventHubName string = usageEventHub.name
@@ -571,6 +580,7 @@ output databaseUrlSecretUri string = databaseUrlSecret.properties.secretUri
 output apimSubscriptionKeySecretUri string = apimKeySecret.properties.secretUri
 output apimProbeSubscriptionKeySecretUri string = apimProbeKeySecret.properties.secretUri
 output credentialEncryptionKeySecretUri string = credentialKeySecret.properties.secretUri
+output appServicePlanName string = apiPlan.name
 output apiName string = api.name
 output apiUrl string = 'https://${api.properties.defaultHostName}'
 output apiPrincipalId string = api.identity.principalId

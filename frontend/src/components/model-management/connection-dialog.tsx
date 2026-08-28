@@ -279,7 +279,7 @@ export function ConnectionDialog({
           {foundry && <>
             <label className="registry-field"><span className="registry-field-label">Project Endpoint</span><Input type="url" value={projectEndpoint} onChange={(event) => setProjectEndpoint(event.target.value)} disabled={busy || editing} placeholder="https://contoso-ai.services.ai.azure.com/api/projects/finops" /></label>
             <div className="registry-field">
-              <span className="registry-field-label-row"><span className="registry-field-label">认证方式</span><FieldHelp>{foundryAuthMode === "api_key" ? "此处不收 API Key。添加首个模型时只需提供一次，后续模型复用此连接无需重复提供。" : "新连接将显示为等待首次模型验证；添加首个模型时通过候选 Revision 完成验证。"}</FieldHelp></span>
+              <span className="registry-field-label-row"><span className="registry-field-label">认证方式</span><FieldHelp>{foundryAuthMode === "api_key" ? "此处不收 API Key。添加首个模型时只需提供一次，后续模型复用此连接无需重复提供。" : "使用 Managed Identity 前，请先在目标 Foundry 资源（承载该 Project 的 Foundry Account）的 Access control (IAM) 中，将当前所选 APIM 的 Managed Identity 授予 Cognitive Services User。仅位于同一租户不会自动获得访问权限。连接可先保存；添加首个模型时会验证权限。若缺少权限，发布会暂停并显示 APIM Principal ID 和目标资源，完成授权后再继续验证。"}</FieldHelp></span>
               <FoundryAuthModeSwitch value={foundryAuthMode} disabled={busy || editing} onChange={chooseFoundryAuthMode} />
             </div>
             {foundryAuthMode === "api_key" && <label className="registry-field"><span className="registry-field-label">Inference Endpoint</span><Input type="url" value={inferenceEndpoint} onChange={(event) => setInferenceEndpoint(event.target.value)} disabled={busy || editing} placeholder="https://contoso-ai.openai.azure.com/openai/v1" /></label>}

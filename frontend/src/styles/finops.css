@@ -176,7 +176,7 @@
 .field-help-trigger:hover { background: var(--muted); color: var(--foreground); }
 .field-help-trigger:focus-visible { box-shadow: 0 0 0 2px color-mix(in oklch, var(--ring) 50%, transparent); color: var(--foreground); }
 .field-help-positioner { z-index: 90; outline: none; }
-.field-help-popup { max-width: min(280px, calc(100vw - 24px)); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; background: var(--popover); color: var(--popover-foreground); box-shadow: 0 8px 24px oklch(0 0 0 / 18%); font-size: 11px; line-height: 16px; }
+.field-help-popup { max-width: min(360px, calc(100vw - 24px)); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; background: var(--popover); color: var(--popover-foreground); box-shadow: 0 8px 24px oklch(0 0 0 / 18%); font-size: 11px; line-height: 16px; }
 .registry-field [data-slot="input"], .registry-field [data-slot="textarea"] { width: 100%; min-width: 0; border: 1px solid var(--input); border-radius: 8px; outline: none; background: transparent; color: var(--foreground); font-size: 14px; line-height: 20px; transition: border-color 100ms ease, background-color 100ms ease, box-shadow 100ms ease; }
 .registry-field [data-slot="input"] { height: 32px; padding: 4px 10px; }
 .registry-field [data-slot="textarea"] { min-height: 92px; resize: vertical; padding: 8px 10px; font-family: "Geist Mono", "Geist Mono Fallback", ui-monospace, monospace; }

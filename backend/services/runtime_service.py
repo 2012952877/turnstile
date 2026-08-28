@@ -774,6 +774,12 @@ class ModelRuntimeService:
             raise HTTPException(
                 status_code=404, detail="No enabled model route matches the request"
             )
+        if (
+            route.get("gateway_implementation") == GatewayKind.APIM
+            and not route.get("gateway_base_url")
+            and self._settings.apim_gateway_url
+        ):
+            route["gateway_base_url"] = self._settings.apim_gateway_url
         route = self._model_protocol_route(route)
         if self._settings.production and route.get("gateway_implementation") != GatewayKind.APIM:
             raise HTTPException(
@@ -783,6 +789,15 @@ class ModelRuntimeService:
         self._assert_model_allowed(request, route, request_id)
         self._assert_budget_available(request, route, request_id)
         route = self._decrypt_route(route)
+        if (
+            route.get("gateway_implementation") == GatewayKind.APIM
+            and not route.get("gateway_credential")
+            and self._settings.apim_dashboard_subscription_key
+        ):
+            route["gateway_credential"] = (
+                self._settings.apim_dashboard_subscription_key.get_secret_value()
+            )
+            route["gateway_auth_type"] = "api_key"
         if timeout_ms is not None:
             runtime_config = dict(route.get("runtime_config") or {})
             configured_timeout = float(runtime_config.get("timeout_seconds", 120))

@@ -1265,6 +1265,46 @@ def test_registry_redacts_secret_and_invocation_records_attribution(
     assert service.invoke(request()).content == "SERVICE_OK"
 
 
+def test_apim_invocation_uses_configured_gateway_when_registry_url_is_empty(
+    tmp_path: Path,
+) -> None:
+    def handler(incoming: httpx.Request) -> httpx.Response:
+        assert str(incoming.url) == "https://gateway.test/turnstile/llm/chat/completions"
+        assert incoming.headers["Ocp-Apim-Subscription-Key"] == "dashboard-key"
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "CONFIGURED_GATEWAY_OK"}}],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 2},
+            },
+        )
+
+    repository = InMemoryRepository()
+    repository.gateways[0]["base_url"] = None
+    service = ModelRuntimeService(
+        repository,
+        Settings(
+            apim_gateway_url="https://gateway.test/turnstile/llm",
+            apim_dashboard_subscription_key=SecretStr("dashboard-key"),
+            credential_key_file=tmp_path / "credential.key",
+        ),
+        GatewayRouter(httpx.Client(transport=httpx.MockTransport(handler))),
+    )
+
+    invocation = request(
+        model="gpt-5.6-luna", runtime="Microsoft Foundry via APIM"
+    ).model_copy(
+        update={
+            "runtime_id": UUID("30000000-0000-4000-8000-000000000003"),
+            "model_id": UUID("9b45b7e1-403d-4c6c-a877-5dc77775b911"),
+        }
+    )
+
+    response = service.invoke(invocation)
+
+    assert response.content == "CONFIGURED_GATEWAY_OK"
+
+
 def test_apim_registry_excludes_github_copilot_telemetry_identity() -> None:
     repository = InMemoryRepository()
     service = ModelRuntimeService(repository, Settings())

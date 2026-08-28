@@ -15,13 +15,16 @@ Use this checklist for each release. Record resource identifiers and request IDs
 - [ ] Apply `001_initial_schema`
 - [ ] Re-run the migration command and confirm zero pending migrations
 - [ ] Start the API and frontend
-- [ ] Sign in as Owner
+- [ ] Create the first password account with `python -m backend.accounts <email> --role owner`
+- [ ] Sign in through the real web page with that email and password
+- [ ] Confirm `/api/v1/auth/me` reports `role=owner` and `method=password`
 - [ ] Confirm health, authentication, registry, and empty-state pages
 
 ## Customer-owned model onboarding
 
-- [ ] Add a connection to an existing Foundry project
-- [ ] Add a model that references an existing provider deployment
+- [ ] Add a connection to an existing Foundry project through the authenticated web UI
+- [ ] Add a model that references an existing provider deployment through the authenticated web UI
+- [ ] Preserve Playwright evidence for both submissions; direct API calls do not satisfy these two checks
 - [ ] Configure an APIM native backend pool if multiple equivalent runtimes exist
 - [ ] Publish and verify the gateway release
 - [ ] Make one small attributed invocation
@@ -50,12 +53,12 @@ Use this checklist for each release. Record resource identifiers and request IDs
 | Date | 2026-08-28 |
 | Commit | Initial repository commit |
 | Clean dependency install | Passed from an exported Git index tree with `uv sync --frozen` and `npm ci` |
-| Automated validation | 578 tests passed in both working and clean trees; Ruff, mypy, frontend build, Bicep, OpenAPI, and APIM XML passed |
+| Automated validation | 606 tests passed in the working tree; Ruff, mypy, frontend build, Bicep, OpenAPI, and APIM XML passed; clean-tree rerun remains pending |
 | Local process smoke | Clean-tree API, Vite frontend, and Vite `/health` proxy returned HTTP 200 in explicit demo mode; not persistence evidence |
 | Infrastructure preview | Subscription what-if passed: 62 Create, 2 Unsupported, 0 Modify/Delete; unsupported types were Storage Account and Event Hubs |
-| Infrastructure deployment | Not run; creating the empty platform requires explicit target and cost approval |
-| Application deployment | Not run against a new empty platform |
-| Connection/model/pool validation | Not run against a new empty platform |
+| Infrastructure deployment | Fresh Azure platform is live, but it was assembled during engineering validation; the new `scripts.deploy` workflow has not yet completed from a clean clone in a second empty resource group |
+| Application deployment | API, telemetry Function, control-plane Function, observer, and APIM publication are live in the engineering environment; this is not yet evidence for the self-service command |
+| Connection/model/pool validation | Boundary connection and model were created through authenticated APIs and returned a real HTTP 200 inference; authenticated Playwright has inspected but not submitted the frontend creation flow, so the frontend onboarding gate remains open |
 | Known limitations | See root README |
 
 Do not mark a row passed without evidence from the real configured environment. Local unit tests and mocks are not E2E evidence.

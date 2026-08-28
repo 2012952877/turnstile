@@ -8,9 +8,9 @@ resource apim 'Microsoft.ApiManagement/service@2024-05-01' existing = {
 }
 
 resource keyOperatorRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
-  name: guid(resourceGroup().id, 'finops-apim-subscription-key-operator')
+  name: guid(resourceGroup().id, 'turnstile-apim-subscription-key-operator')
   properties: {
-    roleName: 'FinOps APIM Subscription Key Operator'
+    roleName: 'Turnstile APIM Subscription Key Operator'
     description: 'Allows the Turnstile API to reveal and rotate keys for governed APIM subscriptions.'
     type: 'CustomRole'
     permissions: [
@@ -33,7 +33,7 @@ resource keyOperatorRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = 
 }
 
 resource apiKeyOperators 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for apiPrincipalId in apiPrincipalIds: {
-  name: guid(apim.id, apiPrincipalId, 'finops-apim-subscription-key-operator')
+  name: guid(apim.id, apiPrincipalId, 'turnstile-apim-subscription-key-operator')
   scope: apim
   properties: {
     principalId: apiPrincipalId

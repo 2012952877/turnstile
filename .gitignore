@@ -13,6 +13,7 @@ local.settings.json
 *.credentials.json
 !*.credentials.example.json
 .turnstile/
+.agents/
 
 # Python
 .venv/

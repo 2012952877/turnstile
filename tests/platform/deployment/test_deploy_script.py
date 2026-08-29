@@ -27,6 +27,7 @@ from scripts.deploy import (
     pip_linux_dependency_command,
     runtime_release_parameters,
     temporary_parameter_file,
+    wait_for_health,
     what_if,
 )
 from scripts.stage_deployment import REPOSITORY_ROOT
@@ -305,6 +306,14 @@ def test_api_deployment_uses_turnstile_health_gate(monkeypatch: pytest.MonkeyPat
     assert "--track-status" in commands[0]
     assert commands[0][commands[0].index("--track-status") + 1] == "false"
     assert health_calls == [("https://api.example.test", 1800)]
+
+
+def test_health_gate_accepts_successful_empty_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("scripts.deploy._open_without_proxy", lambda *_: b"")
+
+    assert wait_for_health("https://observer.example.test") == ""
 
 
 def test_linux_dependency_command_uses_pinned_target_platform(tmp_path: Path) -> None:

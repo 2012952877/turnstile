@@ -823,8 +823,7 @@ def wait_for_health(api_url: str, timeout_seconds: int = 180) -> str:
             body = _open_without_proxy(
                 urllib.request.Request(f"{api_url.rstrip('/')}/health"), 15
             ).decode("utf-8")
-            if body:
-                return body
+            return body
         except (OSError, urllib.error.URLError) as error:
             last_error = str(error)
         time.sleep(3)

@@ -65,11 +65,41 @@ param deployApimBootstrap bool = true
 @description('Name of an existing APIM service when provisionApimService is false.')
 param existingApimName string = ''
 
+@description('Resource group of an existing APIM service when provisionApimService is false.')
+param existingApimResourceGroupName string = ''
+
 @description('Principal ID of an existing APIM system-assigned identity when provisionApimService is false.')
 param existingApimPrincipalId string = ''
 
 @description('Gateway origin of an existing APIM service when provisionApimService is false.')
 param existingApimGatewayUrl string = ''
+
+@description('Environment-unique API identifier within the APIM service.')
+param apimApiId string = 'turnstile-llm'
+
+@description('Environment-unique API path within the APIM gateway.')
+param gatewayApiRelativePath string = 'turnstile/llm'
+
+@description('Environment-unique APIM product identifier.')
+param apimProductId string = 'finops-ai-consumers'
+
+@description('Environment-unique dashboard subscription identifier.')
+param apimDashboardSubscriptionId string = 'turnstile-dashboard'
+
+@description('Environment-unique publisher probe subscription identifier.')
+param apimProbeSubscriptionId string = 'turnstile-publisher-probe'
+
+@description('Environment-unique Application Insights logger identifier.')
+param apimAppInsightsLoggerId string = 'finops-appinsights'
+
+@description('Environment-unique Event Hub logger identifier.')
+param apimEventHubLoggerId string = 'finops-token-usage-eventhub'
+
+@description('Environment-unique APIM diagnostic setting name.')
+param apimDiagnosticSettingName string = 'finops-llm-token-logs'
+
+@description('Environment-unique Observer adapter key named value.')
+param observerAdapterKeyNamedValueName string = 'turnstile-envoy-adapter-key'
 
 @secure()
 @minLength(16)
@@ -174,7 +204,6 @@ param postgresAdministratorLogin string = 'turnstileadmin'
 param postgresSkuName string = 'Standard_B1ms'
 param postgresTier string = 'Burstable'
 param suffix string = uniqueString(subscription().id, resourceGroupName)
-var gatewayApiRelativePath = 'turnstile/llm'
 
 resource platformResourceGroup 'Microsoft.Resources/resourceGroups@2024-11-01' = {
   name: resourceGroupName
@@ -183,6 +212,12 @@ resource platformResourceGroup 'Microsoft.Resources/resourceGroups@2024-11-01' =
     workload: 'turnstile'
     dataClassification: 'usage-metadata-only'
   }
+}
+
+var effectiveApimResourceGroupName = provisionApimService ? platformResourceGroup.name : existingApimResourceGroupName
+
+resource effectiveApimResourceGroup 'Microsoft.Resources/resourceGroups@2024-11-01' existing = {
+  name: effectiveApimResourceGroupName
 }
 
 module apim 'modules/apim-service.bicep' = if (provisionApimService) {
@@ -221,8 +256,9 @@ module dataPlane 'modules/data-plane.bicep' = {
     apimSubscriptionKey: apimSubscriptionKey
     apimProbeSubscriptionKey: apimProbeSubscriptionKey
     apimPrincipalId: effectiveApimPrincipalId
-    apimResourceGroupName: platformResourceGroup.name
+    apimResourceGroupName: effectiveApimResourceGroupName
     apimName: effectiveApimName
+    apimApiId: apimApiId
     apimGatewayUrl: effectiveGatewayApiPath
     ledgerTableName: ledgerTableName
     gatewayReleaseWorkerEnabled: provisionControlPlane && gatewayReleaseWorkerEnabled && apimUsageObserver.mode == 'enabled'
@@ -235,11 +271,18 @@ module dataPlane 'modules/data-plane.bicep' = {
 }
 
 module apimIntegration 'modules/apim-integration.bicep' = if (deployApimBootstrap) {
-  name: 'turnstile-apim-integration'
-  scope: platformResourceGroup
+  name: 'turnstile-apim-integration-${take(suffix, 13)}'
+  scope: effectiveApimResourceGroup
   params: {
     apimName: effectiveApimName
+    apiId: apimApiId
     apiPath: gatewayApiRelativePath
+    productId: apimProductId
+    dashboardSubscriptionId: apimDashboardSubscriptionId
+    probeSubscriptionId: apimProbeSubscriptionId
+    appInsightsLoggerId: apimAppInsightsLoggerId
+    eventHubLoggerId: apimEventHubLoggerId
+    diagnosticSettingName: apimDiagnosticSettingName
     eventHubNamespaceResourceId: dataPlane.outputs.eventHubNamespaceResourceId
     eventHubNamespaceName: dataPlane.outputs.eventHubNamespaceName
     eventHubName: dataPlane.outputs.eventHubName
@@ -271,16 +314,19 @@ module controlPlane 'modules/control-plane-function.bicep' = if (provisionContro
   scope: platformResourceGroup
   params: {
     location: location
+    resourcePrefix: resourcePrefix
     suffix: suffix
-    appServicePlanName: 'plan-${resourcePrefix}-${suffix}'
     virtualNetworkName: 'vnet-${resourcePrefix}-${suffix}'
+    functionSubnetName: 'snet-flex-control'
     keyVaultName: dataPlane.outputs.keyVaultName
     databaseUrlSecretUri: dataPlane.outputs.databaseUrlSecretUri
     apimProbeSubscriptionKeySecretUri: dataPlane.outputs.apimProbeSubscriptionKeySecretUri
     credentialEncryptionKeySecretUri: dataPlane.outputs.credentialEncryptionKeySecretUri
     applicationInsightsConnectionString: dataPlane.outputs.applicationInsightsConnectionString
-    apimResourceGroupName: platformResourceGroup.name
+    apimResourceGroupName: effectiveApimResourceGroupName
     apimName: effectiveApimName
+    apimApiId: apimApiId
+    probeSubscriptionId: apimProbeSubscriptionId
     apimGatewayUrl: effectiveGatewayApiPath
     regressionModelKey: apimRegressionModelKey
     usageObserverUrl: apimUsageObserver.url
@@ -292,8 +338,8 @@ module controlPlane 'modules/control-plane-function.bicep' = if (provisionContro
 }
 
 module controlPlaneApimRbac 'modules/control-plane-apim-rbac.bicep' = if (provisionControlPlane) {
-  name: 'turnstile-control-plane-apim-rbac'
-  scope: platformResourceGroup
+  name: 'turnstile-control-plane-apim-rbac-${take(suffix, 13)}'
+  scope: effectiveApimResourceGroup
   params: {
     apimName: effectiveApimName
     controlPlanePrincipalId: controlPlane!.outputs.principalId
@@ -301,8 +347,8 @@ module controlPlaneApimRbac 'modules/control-plane-apim-rbac.bicep' = if (provis
 }
 
 module applicationKeyManagementRbac 'modules/application-key-management-rbac.bicep' = if (gatewayApplicationKeyManagementEnabled) {
-  name: 'turnstile-application-key-management-rbac'
-  scope: platformResourceGroup
+  name: 'turnstile-application-key-management-rbac-${take(suffix, 13)}'
+  scope: effectiveApimResourceGroup
   params: {
     apimName: effectiveApimName
     apiPrincipalIds: [
@@ -313,14 +359,22 @@ module applicationKeyManagementRbac 'modules/application-key-management-rbac.bic
 
 output resourceGroupName string = platformResourceGroup.name
 output apimName string = effectiveApimName
+output apimResourceGroupName string = effectiveApimResourceGroupName
 output apimPrincipalId string = effectiveApimPrincipalId
+output apimApiId string = apimApiId
+output apimProbeSubscriptionId string = apimProbeSubscriptionId
+output observerAdapterKeyNamedValueName string = observerAdapterKeyNamedValueName
 output postgresServerName string = dataPlane.outputs.postgresServerName
 output eventHubNamespaceName string = dataPlane.outputs.eventHubNamespaceName
 output applicationInsightsName string = dataPlane.outputs.applicationInsightsName
 output appServicePlanName string = dataPlane.outputs.appServicePlanName
+output telemetryFunctionPlanName string = dataPlane.outputs.telemetryFunctionPlanName
+output telemetryDeploymentContainerName string = dataPlane.outputs.telemetryDeploymentContainerName
 output apiName string = dataPlane.outputs.apiName
 output apiUrl string = dataPlane.outputs.apiUrl
 output telemetryFunctionName string = dataPlane.outputs.functionName
 output apimGatewayUrl string = effectiveApimGatewayUrl
 output gatewayApiPath string = effectiveGatewayApiPath
 output controlPlaneFunctionName string = provisionControlPlane ? controlPlane!.outputs.functionName : ''
+output controlPlaneFunctionPlanName string = provisionControlPlane ? controlPlane!.outputs.appServicePlanName : ''
+output controlPlaneDeploymentContainerName string = provisionControlPlane ? controlPlane!.outputs.deploymentContainerName : ''

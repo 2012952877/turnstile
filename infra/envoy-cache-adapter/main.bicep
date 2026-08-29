@@ -12,6 +12,7 @@ param imageTag string
 param eventHubNamespaceName string
 param eventHubName string = 'token-usage'
 param apimName string
+param adapterKeyNamedValueName string = 'turnstile-envoy-adapter-key'
 
 @secure()
 param adapterSharedKey string
@@ -68,9 +69,10 @@ module acrRole 'acr-role.bicep' = {
 
 module apimIntegration 'apim.bicep' = {
   scope: apimResourceGroup
-  name: 'envoy-cache-adapter-apim'
+  name: 'envoy-cache-adapter-apim-${uniqueString(resourceGroupName)}'
   params: {
     apimName: apimName
+    adapterKeyNamedValueName: adapterKeyNamedValueName
     adapterSharedKey: adapterSharedKey
   }
 }

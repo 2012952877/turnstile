@@ -1,10 +1,10 @@
 targetScope = 'resourceGroup'
 
 param location string
+param resourcePrefix string
 param suffix string
-param appServicePlanName string = 'plan-turnstile-${suffix}'
 param virtualNetworkName string = 'vnet-turnstile-${suffix}'
-param functionSubnetName string = 'snet-functions'
+param functionSubnetName string = 'snet-flex-control'
 param keyVaultName string
 param databaseUrlSecretUri string
 param apimProbeSubscriptionKeySecretUri string
@@ -13,6 +13,7 @@ param applicationInsightsConnectionString string
 param apimResourceGroupName string
 param apimName string
 param apimApiId string = 'turnstile-llm'
+param probeSubscriptionId string = 'turnstile-publisher-probe'
 param chatCompletionsOperationId string = 'chat-completions'
 param responsesOperationId string = 'responses'
 param responsesCompactOperationId string = 'responses-compact'
@@ -28,7 +29,9 @@ param publicationWorkerEnabled bool = false
 param releaseWorkerEnabled bool = false
 
 var storageName = 'stturnstilecp${take(suffix, 11)}'
-var functionName = 'func-turnstile-control-${suffix}'
+var planName = 'plan-${resourcePrefix}-control-${suffix}'
+var functionName = 'func-${resourcePrefix}-control-${suffix}'
+var deploymentContainerName = 'deploy-control-plane'
 var observerConfigured = !empty(trim(usageObserverUrl)) && !empty(trim(usageObserverKeyNamedValue))
 var effectivePublicationWorkerEnabled = publicationWorkerEnabled && observerConfigured
 var effectiveReleaseWorkerEnabled = releaseWorkerEnabled && observerConfigured
@@ -57,8 +60,30 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   }
 }
 
-resource plan 'Microsoft.Web/serverfarms@2024-11-01' existing = {
-  name: appServicePlanName
+resource deploymentBlobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
+  parent: storage
+  name: 'default'
+}
+
+resource deploymentContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  parent: deploymentBlobService
+  name: deploymentContainerName
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
+resource plan 'Microsoft.Web/serverfarms@2024-11-01' = {
+  name: planName
+  location: location
+  kind: 'functionapp'
+  sku: {
+    name: 'FC1'
+    tier: 'FlexConsumption'
+  }
+  properties: {
+    reserved: true
+  }
 }
 
 resource virtualNetwork 'Microsoft.Network/virtualNetworks@2024-05-01' existing = {
@@ -81,29 +106,34 @@ resource functionApp 'Microsoft.Web/sites@2024-11-01' = {
     serverFarmId: plan.id
     httpsOnly: true
     clientAffinityEnabled: false
-    virtualNetworkSubnetId: functionSubnet.id
-    outboundVnetRouting: {
-      allTraffic: true
+    functionAppConfig: {
+      deployment: {
+        storage: {
+          type: 'blobContainer'
+          value: '${storage.properties.primaryEndpoints.blob}${deploymentContainer.name}'
+          authentication: {
+            type: 'SystemAssignedIdentity'
+          }
+        }
+      }
+      scaleAndConcurrency: {
+        maximumInstanceCount: 100
+        instanceMemoryMB: 2048
+      }
+      runtime: {
+        name: 'python'
+        version: '3.11'
+      }
     }
     siteConfig: {
-      linuxFxVersion: 'Python|3.11'
-      alwaysOn: true
-      vnetRouteAllEnabled: true
-      ftpsState: 'Disabled'
       minTlsVersion: '1.2'
       appSettings: [
-        { name: 'FUNCTIONS_EXTENSION_VERSION', value: '~4' }
-        { name: 'FUNCTIONS_WORKER_RUNTIME', value: 'python' }
         { name: 'AzureWebJobsFeatureFlags', value: 'EnableWorkerIndexing' }
         { name: 'AzureWebJobsStorage__accountName', value: storage.name }
         { name: 'AzureWebJobsStorage__blobServiceUri', value: storage.properties.primaryEndpoints.blob }
         { name: 'AzureWebJobsStorage__queueServiceUri', value: storage.properties.primaryEndpoints.queue }
         { name: 'AzureWebJobsStorage__tableServiceUri', value: storage.properties.primaryEndpoints.table }
         { name: 'AzureWebJobsStorage__credential', value: 'managedidentity' }
-        { name: 'SCM_DO_BUILD_DURING_DEPLOYMENT', value: 'false' }
-        { name: 'ENABLE_ORYX_BUILD', value: 'false' }
-        { name: 'WEBSITE_RUN_FROM_PACKAGE', value: '1' }
-        { name: 'WEBSITES_CONTAINER_START_TIME_LIMIT', value: '1800' }
         { name: 'DATABASE_URL', value: '@Microsoft.KeyVault(SecretUri=${databaseUrlSecretUri})' }
         { name: 'CREDENTIAL_ENCRYPTION_KEY', value: '@Microsoft.KeyVault(SecretUri=${credentialEncryptionKeySecretUri})' }
         { name: 'DATA_BACKEND', value: 'postgresql' }
@@ -126,7 +156,7 @@ resource functionApp 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'APIM_MODELS_OPERATION_ID', value: modelsOperationId }
         { name: 'APIM_GATEWAY_URL', value: apimGatewayUrl }
         { name: 'APIM_PROBE_SUBSCRIPTION_KEY', value: '@Microsoft.KeyVault(SecretUri=${apimProbeSubscriptionKeySecretUri})' }
-        { name: 'APIM_PROBE_SUBSCRIPTION_ID', value: 'turnstile-publisher-probe' }
+        { name: 'APIM_PROBE_SUBSCRIPTION_ID', value: probeSubscriptionId }
         { name: 'APIM_REGRESSION_MODEL_KEY', value: regressionModelKey }
         { name: 'APIM_USAGE_OBSERVER_URL', value: usageObserverUrl }
         { name: 'APIM_USAGE_OBSERVER_KEY_NAMED_VALUE', value: usageObserverKeyNamedValue }
@@ -136,6 +166,15 @@ resource functionApp 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: applicationInsightsConnectionString }
       ]
     }
+  }
+}
+
+resource functionVnetIntegration 'Microsoft.Web/sites/networkConfig@2024-11-01' = {
+  parent: functionApp
+  name: 'virtualNetwork'
+  properties: {
+    subnetResourceId: functionSubnet.id
+    swiftSupported: true
   }
 }
 
@@ -221,3 +260,5 @@ resource functionProbeSecretReader 'Microsoft.Authorization/roleAssignments@2022
 output functionName string = functionApp.name
 output principalId string = functionApp.identity.principalId
 output storageName string = storage.name
+output appServicePlanName string = plan.name
+output deploymentContainerName string = deploymentContainer.name

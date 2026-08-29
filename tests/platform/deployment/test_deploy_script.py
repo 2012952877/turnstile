@@ -33,6 +33,7 @@ from scripts.deploy import (
     restart_runtime_apps,
     runtime_release_parameters,
     temporary_parameter_file,
+    validate_flex_consumption_capabilities,
     validate_postgres_capabilities,
     verify_owner_login,
     wait_for_health,
@@ -116,6 +117,49 @@ def test_postgres_preflight_rejects_restricted_region(
 
     with pytest.raises(DeploymentError, match="PostgreSQL 16 is unavailable in eastus2"):
         validate_postgres_capabilities(runner, inputs)
+
+
+def test_flex_preflight_accepts_registered_supported_region(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = DeploymentInputs.load(
+        "subscription",
+        _parameters(tmp_path / "parameters.json"),
+        tmp_path / "state.json",
+    )
+    runner = CommandRunner()
+    responses = iter(("Registered\n", "eastus2\nwestus3\n"))
+
+    def run(
+        command: Sequence[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(command, 0, stdout=next(responses))
+
+    monkeypatch.setattr(runner, "run", run)
+
+    validate_flex_consumption_capabilities(runner, inputs)
+
+
+def test_flex_preflight_rejects_unsupported_region(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = DeploymentInputs.load(
+        "subscription",
+        _parameters(tmp_path / "parameters.json"),
+        tmp_path / "state.json",
+    )
+    runner = CommandRunner()
+    responses = iter(("Registered\n", "westus3\n"))
+
+    def run(
+        command: Sequence[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(command, 0, stdout=next(responses))
+
+    monkeypatch.setattr(runner, "run", run)
+
+    with pytest.raises(DeploymentError, match="Flex Consumption is unavailable"):
+        validate_flex_consumption_capabilities(runner, inputs)
 
 
 def test_postgres_preflight_accepts_requested_sku_and_zone(
@@ -212,7 +256,7 @@ def test_base_parameters_disable_workers_until_observer_exists(tmp_path: Path) -
     assert "observerAdapterSharedKey" not in parameters
 
 
-def test_existing_core_skips_large_resources_and_gateway_bootstrap(tmp_path: Path) -> None:
+def test_external_apim_still_provisions_a_clean_platform(tmp_path: Path) -> None:
     inputs = DeploymentInputs.load(
         "subscription",
         _parameters(tmp_path / "parameters.json"),
@@ -226,6 +270,7 @@ def test_existing_core_skips_large_resources_and_gateway_bootstrap(tmp_path: Pat
     )
     core = ExistingCore(
         apim_name="apim-existing",
+        apim_resource_group_name="apim-shared",
         apim_principal_id="00000000-0000-4000-8000-000000000010",
         apim_gateway_url="https://apim-existing.azure-api.net",
     )
@@ -235,11 +280,65 @@ def test_existing_core_skips_large_resources_and_gateway_bootstrap(tmp_path: Pat
     )["parameters"]
 
     assert parameters["provisionApimService"]["value"] is False
-    assert parameters["provisionPostgres"]["value"] is False
-    assert parameters["deployApimBootstrap"]["value"] is False
+    assert parameters["provisionPostgres"]["value"] is True
+    assert parameters["deployApimBootstrap"]["value"] is True
     assert parameters["existingApimName"]["value"] == core.apim_name
+    assert (
+        parameters["existingApimResourceGroupName"]["value"]
+        == core.apim_resource_group_name
+    )
     assert parameters["existingApimPrincipalId"]["value"] == core.apim_principal_id
     assert parameters["existingApimGatewayUrl"]["value"] == core.apim_gateway_url
+    assert parameters["apimApiId"]["value"] == "turnstile-llm"
+    assert parameters["gatewayApiRelativePath"]["value"] == "turnstile/llm"
+    assert parameters["observerAdapterKeyNamedValueName"]["value"] == (
+        "turnstile-observer-key"
+    )
+
+
+def test_external_apim_adoption_rejects_partial_configuration(tmp_path: Path) -> None:
+    path = _parameters(tmp_path / "parameters.json")
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["parameters"]["existingApimName"] = {"value": "apim-existing"}
+    path.write_text(json.dumps(document), encoding="utf-8")
+    inputs = DeploymentInputs.load("subscription", path, tmp_path / "state.json")
+
+    with pytest.raises(
+        DeploymentError,
+        match="Existing APIM adoption requires:.*existingApimResourceGroupName",
+    ):
+        ExistingCore.from_parameters(inputs.parameters)
+
+
+def test_resume_skips_existing_platform_and_gateway_bootstrap(tmp_path: Path) -> None:
+    inputs = DeploymentInputs.load(
+        "subscription",
+        _parameters(tmp_path / "parameters.json"),
+        tmp_path / "state.json",
+    )
+    answers = iter(("a-secure-owner-password", "a-secure-owner-password"))
+    material = load_or_create_secret_material(
+        inputs,
+        read_password=lambda _: next(answers),
+        require_owner_password=False,
+    )
+    core = ExistingCore(
+        apim_name="apim-existing",
+        apim_resource_group_name="turnstile-test",
+        apim_principal_id="00000000-0000-4000-8000-000000000010",
+        apim_gateway_url="https://apim-existing.azure-api.net",
+    )
+
+    parameters = deployment_parameters(
+        inputs,
+        material,
+        existing_core=core,
+        resume_existing_environment=True,
+    )["parameters"]
+
+    assert parameters["provisionApimService"]["value"] is False
+    assert parameters["provisionPostgres"]["value"] is False
+    assert parameters["deployApimBootstrap"]["value"] is False
 
 
 def test_saved_outputs_enable_existing_core_on_rerun(tmp_path: Path) -> None:
@@ -252,6 +351,7 @@ def test_saved_outputs_enable_existing_core_on_rerun(tmp_path: Path) -> None:
     outputs_path.write_text(
         json.dumps(
             {
+                    "resourceGroupName": "turnstile-test",
                 "apimName": "apim-existing",
                 "apimPrincipalId": "00000000-0000-4000-8000-000000000010",
                 "apimGatewayUrl": "https://apim-existing.azure-api.net",
@@ -264,6 +364,7 @@ def test_saved_outputs_enable_existing_core_on_rerun(tmp_path: Path) -> None:
 
     assert core is not None
     assert core.apim_name == "apim-existing"
+    assert core.apim_resource_group_name == "turnstile-test"
 
 
 def test_temporary_parameter_file_is_private_and_deleted(tmp_path: Path) -> None:
@@ -306,9 +407,11 @@ def test_observer_parameters_reuse_apps_but_isolate_the_observer_plan(
         inputs,
         {
             "resourceGroupName": "turnstile-test",
+            "apimResourceGroupName": "shared-apim",
             "appServicePlanName": "plan-turnstile-test",
             "eventHubNamespaceName": "eh-turnstile-test",
             "apimName": "apim-turnstile-test",
+            "observerAdapterKeyNamedValueName": "turnstile-test-observer-key",
         },
         material,
         "abc123",
@@ -321,6 +424,10 @@ def test_observer_parameters_reuse_apps_but_isolate_the_observer_plan(
 
     assert document["parameters"]["acrName"]["value"] == "acrexisting"
     assert document["parameters"]["webAppName"]["value"] == "observer-existing"
+    assert document["parameters"]["apimResourceGroupName"]["value"] == "shared-apim"
+    assert document["parameters"]["adapterKeyNamedValueName"]["value"] == (
+        "turnstile-test-observer-key"
+    )
     assert (
         document["parameters"]["appServicePlanName"]["value"]
         == observer_plan_name(inputs)

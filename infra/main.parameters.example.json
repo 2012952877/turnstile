@@ -26,6 +26,18 @@
     "apimSkuName": {
       "value": "Developer"
     },
+    "existingApimName": {
+      "value": ""
+    },
+    "existingApimResourceGroupName": {
+      "value": ""
+    },
+    "existingApimPrincipalId": {
+      "value": ""
+    },
+    "existingApimGatewayUrl": {
+      "value": ""
+    },
     "entraClientId": {
       "value": ""
     },

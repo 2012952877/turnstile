@@ -27,7 +27,14 @@ type EnabledUsageObserver = {
 }
 
 param apimName string
+param apiId string = 'turnstile-llm'
 param apiPath string
+param productId string = 'finops-ai-consumers'
+param dashboardSubscriptionId string = 'turnstile-dashboard'
+param probeSubscriptionId string = 'turnstile-publisher-probe'
+param appInsightsLoggerId string = 'finops-appinsights'
+param eventHubLoggerId string = 'finops-token-usage-eventhub'
+param diagnosticSettingName string = 'finops-llm-token-logs'
 param eventHubNamespaceResourceId string
 param eventHubNamespaceName string
 param eventHubName string
@@ -191,7 +198,7 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' existing = {
 
 resource metricsLogger 'Microsoft.ApiManagement/service/loggers@2024-05-01' = {
   parent: apim
-  name: 'finops-appinsights'
+  name: appInsightsLoggerId
   properties: {
     loggerType: 'applicationInsights'
     description: 'FinOps accurate LLM token metrics, including streamed responses.'
@@ -215,7 +222,7 @@ resource azureMonitorLogger 'Microsoft.ApiManagement/service/loggers@2024-05-01'
 
 resource llmDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
   scope: apim
-  name: 'finops-llm-token-logs'
+  name: diagnosticSettingName
   properties: {
     workspaceId: appInsights.properties.WorkspaceResourceId
     logAnalyticsDestinationType: 'Dedicated'
@@ -239,7 +246,7 @@ resource llmDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-previe
 
 resource logger 'Microsoft.ApiManagement/service/loggers@2024-05-01' = {
   parent: apim
-  name: 'finops-token-usage-eventhub'
+  name: eventHubLoggerId
   properties: {
     loggerType: 'azureEventHub'
     description: 'FinOps usage metadata only; prompt and completion bodies are prohibited.'
@@ -255,7 +262,7 @@ resource logger 'Microsoft.ApiManagement/service/loggers@2024-05-01' = {
 
 resource api 'Microsoft.ApiManagement/service/apis@2024-05-01' = {
   parent: apim
-  name: 'turnstile-llm'
+  name: apiId
   properties: {
     apiType: 'http'
     displayName: 'Turnstile AI Gateway'
@@ -274,7 +281,7 @@ resource api 'Microsoft.ApiManagement/service/apis@2024-05-01' = {
 
 resource product 'Microsoft.ApiManagement/service/products@2024-05-01' = {
   parent: apim
-  name: 'finops-ai-consumers'
+  name: productId
   properties: {
     displayName: 'Turnstile AI'
     description: 'Product-scoped access to governed model provider integrations.'
@@ -625,7 +632,7 @@ resource apiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-05-01' = 
 }
 resource subscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01' = {
   parent: apim
-  name: 'turnstile-dashboard'
+  name: dashboardSubscriptionId
   properties: {
     displayName: 'Turnstile Dashboard'
     scope: product.id
@@ -641,7 +648,7 @@ resource subscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01'
 
 resource probeSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01' = {
   parent: apim
-  name: 'turnstile-publisher-probe'
+  name: probeSubscriptionId
   properties: {
     displayName: 'Turnstile Publisher Probe'
     scope: product.id

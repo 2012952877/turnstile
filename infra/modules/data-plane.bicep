@@ -21,6 +21,7 @@ param apimProbeSubscriptionKey string
 param apimPrincipalId string
 param apimResourceGroupName string
 param apimName string
+param apimApiId string = 'turnstile-llm'
 param apimGatewayUrl string
 param ledgerTableName string
 param gatewayReleaseWorkerEnabled bool = false
@@ -41,11 +42,14 @@ var workspaceName = 'log-${resourcePrefix}-${suffix}'
 var appInsightsName = 'appi-${resourcePrefix}-${suffix}'
 var keyVaultName = 'kv-${resourcePrefix}-${take(suffix, 8)}'
 var planName = 'plan-${resourcePrefix}-${suffix}'
+var telemetryPlanName = 'plan-${resourcePrefix}-telemetry-${suffix}'
 var apiName = 'api-${resourcePrefix}-${suffix}'
-var functionName = 'func-${resourcePrefix}-${suffix}'
+var functionName = 'func-${resourcePrefix}-telemetry-${suffix}'
 var virtualNetworkName = 'vnet-${resourcePrefix}-${suffix}'
-var functionSubnetName = 'snet-functions'
+var telemetryFunctionSubnetName = 'snet-flex-telemetry'
+var controlFunctionSubnetName = 'snet-flex-control'
 var privateEndpointSubnetName = 'snet-private-endpoints'
+var telemetryDeploymentContainerName = 'deploy-telemetry'
 var blobPrivateDnsZoneName = 'privatelink.blob.${environment().suffixes.storage}'
 var queuePrivateDnsZoneName = 'privatelink.queue.${environment().suffixes.storage}'
 var tablePrivateDnsZoneName = 'privatelink.table.${environment().suffixes.storage}'
@@ -240,6 +244,19 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   }
 }
 
+resource functionDeploymentBlobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
+  parent: storage
+  name: 'default'
+}
+
+resource functionDeploymentContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
+  parent: functionDeploymentBlobService
+  name: telemetryDeploymentContainerName
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
 resource ledgerStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: ledgerStorageName
   location: location
@@ -286,16 +303,32 @@ resource virtualNetwork 'Microsoft.Network/virtualNetworks@2024-05-01' = {
   }
 }
 
-resource functionSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
+resource telemetryFunctionSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
   parent: virtualNetwork
-  name: functionSubnetName
+  name: telemetryFunctionSubnetName
   properties: {
-    addressPrefix: '10.42.1.0/24'
+    addressPrefix: '10.42.3.0/27'
     delegations: [
       {
-        name: 'app-service-delegation'
+        name: 'flex-consumption-delegation'
         properties: {
-          serviceName: 'Microsoft.Web/serverFarms'
+          serviceName: 'Microsoft.App/environments'
+        }
+      }
+    ]
+  }
+}
+
+resource controlFunctionSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
+  parent: virtualNetwork
+  name: controlFunctionSubnetName
+  properties: {
+    addressPrefix: '10.42.3.32/27'
+    delegations: [
+      {
+        name: 'flex-consumption-delegation'
+        properties: {
+          serviceName: 'Microsoft.App/environments'
         }
       }
     ]
@@ -494,6 +527,19 @@ resource apiPlan 'Microsoft.Web/serverfarms@2024-11-01' = {
   }
 }
 
+resource telemetryPlan 'Microsoft.Web/serverfarms@2024-11-01' = {
+  name: telemetryPlanName
+  location: location
+  kind: 'functionapp'
+  sku: {
+    name: 'FC1'
+    tier: 'FlexConsumption'
+  }
+  properties: {
+    reserved: true
+  }
+}
+
 resource api 'Microsoft.Web/sites@2024-11-01' = {
   name: apiName
   location: location
@@ -553,31 +599,36 @@ resource functionApp 'Microsoft.Web/sites@2024-11-01' = {
     type: 'SystemAssigned'
   }
   properties: {
-    serverFarmId: apiPlan.id
+    serverFarmId: telemetryPlan.id
     httpsOnly: true
-    virtualNetworkSubnetId: functionSubnet.id
-    outboundVnetRouting: {
-      allTraffic: true
+    functionAppConfig: {
+      deployment: {
+        storage: {
+          type: 'blobContainer'
+          value: '${storage.properties.primaryEndpoints.blob}${functionDeploymentContainer.name}'
+          authentication: {
+            type: 'SystemAssignedIdentity'
+          }
+        }
+      }
+      scaleAndConcurrency: {
+        maximumInstanceCount: 100
+        instanceMemoryMB: 2048
+      }
+      runtime: {
+        name: 'python'
+        version: '3.11'
+      }
     }
     siteConfig: {
-      linuxFxVersion: 'Python|3.11'
-      alwaysOn: true
-      vnetRouteAllEnabled: true
-      ftpsState: 'Disabled'
       minTlsVersion: '1.2'
       appSettings: [
-        { name: 'FUNCTIONS_EXTENSION_VERSION', value: '~4' }
-        { name: 'FUNCTIONS_WORKER_RUNTIME', value: 'python' }
         { name: 'AzureWebJobsFeatureFlags', value: 'EnableWorkerIndexing' }
         { name: 'AzureWebJobsStorage__accountName', value: storage.name }
         { name: 'AzureWebJobsStorage__blobServiceUri', value: storage.properties.primaryEndpoints.blob }
         { name: 'AzureWebJobsStorage__queueServiceUri', value: storage.properties.primaryEndpoints.queue }
         { name: 'AzureWebJobsStorage__tableServiceUri', value: storage.properties.primaryEndpoints.table }
         { name: 'AzureWebJobsStorage__credential', value: 'managedidentity' }
-        { name: 'SCM_DO_BUILD_DURING_DEPLOYMENT', value: 'false' }
-        { name: 'ENABLE_ORYX_BUILD', value: 'false' }
-        { name: 'WEBSITE_RUN_FROM_PACKAGE', value: '1' }
-        { name: 'WEBSITES_CONTAINER_START_TIME_LIMIT', value: '1800' }
         { name: 'EVENT_HUB_NAME', value: eventHubName }
         { name: 'EVENT_HUB_CONNECTION__fullyQualifiedNamespace', value: '${eventHubNamespace.name}.servicebus.windows.net' }
         { name: 'EVENT_HUB_CONNECTION__credential', value: 'managedidentity' }
@@ -585,7 +636,7 @@ resource functionApp 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'DATA_BACKEND', value: 'postgresql' }
         { name: 'PRODUCTION', value: 'true' }
         { name: 'LOG_ANALYTICS_WORKSPACE_ID', value: workspace.properties.customerId }
-        { name: 'APIM_API_ID', value: 'turnstile-llm' }
+        { name: 'APIM_API_ID', value: apimApiId }
         { name: 'CACHE_READ_BACKFILL_HOURS', value: '720' }
         { name: 'CACHE_READ_OVERLAP_HOURS', value: '24' }
         { name: 'LEDGER_SYNC_ENABLED', value: 'true' }
@@ -594,6 +645,15 @@ resource functionApp 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
       ]
     }
+  }
+}
+
+resource functionVnetIntegration 'Microsoft.Web/sites/networkConfig@2024-11-01' = {
+  parent: functionApp
+  name: 'virtualNetwork'
+  properties: {
+    subnetResourceId: telemetryFunctionSubnet.id
+    swiftSupported: true
   }
 }
 
@@ -713,6 +773,8 @@ output apimSubscriptionKeySecretUri string = apimKeySecret.properties.secretUri
 output apimProbeSubscriptionKeySecretUri string = apimProbeKeySecret.properties.secretUri
 output credentialEncryptionKeySecretUri string = credentialKeySecret.properties.secretUri
 output appServicePlanName string = apiPlan.name
+output telemetryFunctionPlanName string = telemetryPlan.name
+output telemetryDeploymentContainerName string = functionDeploymentContainer.name
 output apiName string = api.name
 output apiUrl string = 'https://${api.properties.defaultHostName}'
 output apiPrincipalId string = api.identity.principalId

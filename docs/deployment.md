@@ -2,7 +2,7 @@
 
 ## Scope
 
-Turnstile infrastructure includes PostgreSQL, Event Hubs, Storage, Key Vault, Application Insights, the Web App, telemetry and control-plane Functions, and APIM configuration. The templates do not create Azure AI Foundry projects or provider model deployments.
+Turnstile infrastructure includes PostgreSQL, Event Hubs, Storage, Key Vault, Application Insights, the Web App, telemetry and control-plane Functions, and APIM configuration. FastAPI and the observer each have a dedicated App Service Plan. The telemetry and control-plane Functions each have a separate Flex Consumption plan, deployment container, and VNet subnet. The templates do not create Azure AI Foundry projects or provider model deployments.
 
 ## Prerequisites
 
@@ -25,6 +25,8 @@ cp infra/main.parameters.example.json .turnstile/main.parameters.json
 
 Set the resource prefix, resource group, Azure and PostgreSQL regions, APIM publisher email, and `bootstrapOwnerEmail`. `entraClientId` and `entraAllowedEmailDomains` are optional; password Owner login works without Entra.
 
+To run a clean end-to-end deployment without provisioning another APIM service, set all four `existingApimName`, `existingApimResourceGroupName`, `existingApimPrincipalId`, and `existingApimGatewayUrl` values. PostgreSQL and every other platform resource are still created from scratch. The deployment derives environment-unique API, path, product, subscription, logger, diagnostic-setting, and observer Named Value identifiers from `resourcePrefix`, so the shared APIM configuration does not overwrite another Turnstile environment.
+
 Do not add passwords, keys, hashes, or connection strings to this file. The deployment command rejects secure parameter names in the public file.
 
 Interactive deployment prompts for the initial Owner's chosen password. For automation, copy `infra/owner.credentials.example.json` to `.turnstile/owner.credentials.json`, use the same email as `bootstrapOwnerEmail`, choose the password, run `chmod 600`, and pass `--owner-credentials .turnstile/owner.credentials.json`. The plaintext is read only in process memory; state and ARM receive only its scrypt hash.
@@ -41,7 +43,7 @@ uv run python -m scripts.deploy plan \
 
 The first preview asks for the initial Owner password twice and stores only its scrypt hash. It also creates independent random platform secrets in `.turnstile/deployments/<resource-group>.json` with mode `0600`. Repeated previews and deployments reuse that state.
 
-Before creating deployment state, the command verifies that the selected PostgreSQL region currently supports PostgreSQL 16 and the configured SKU and availability zone. If the subscription is restricted in that region, choose another `postgresLocation` and run the preview again.
+Before creating deployment state, the command verifies that the selected region supports Flex Consumption, that `Microsoft.App` is registered, and that the selected PostgreSQL region supports PostgreSQL 16 with the configured SKU and availability zone. If either service is unavailable, choose another location and run the preview again.
 
 Review all creates, updates, unsupported previews, role assignments, and network settings. The script refuses every what-if containing a Delete change.
 
@@ -59,8 +61,8 @@ The command runs these phases in order:
 2. Provision the platform with publication and release workers disabled.
 3. Build the frontend with the configured public Entra client ID.
 4. Install exact Linux x86-64/Python 3.11 dependencies and create deterministic API, telemetry Function, and control-plane Function ZIPs.
-5. Deploy all three Run-From-Package artifacts.
-6. Provision a Basic ACR and observer App Service, build the image remotely, and restart the observer.
+5. Deploy the API package and publish both Function packages through Flex One Deploy.
+6. Provision a Basic ACR and observer App Service on its own plan, build the image remotely, and restart the observer.
 7. Run another no-delete what-if and enable the workers with the observer URL and APIM Named Value.
 8. Verify API health, Function indexing, and real password Owner login.
 

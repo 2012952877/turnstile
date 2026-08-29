@@ -142,16 +142,46 @@ class SecretMaterial:
 @dataclass(frozen=True)
 class ExistingCore:
     apim_name: str
+    apim_resource_group_name: str
     apim_principal_id: str
     apim_gateway_url: str
 
     @classmethod
     def from_outputs(cls, outputs: Mapping[str, Any]) -> ExistingCore:
+        apim_resource_group_name = outputs.get("apimResourceGroupName")
+        if not isinstance(apim_resource_group_name, str) or not apim_resource_group_name:
+            apim_resource_group_name = _output_string(outputs, "resourceGroupName")
         return cls(
             apim_name=_output_string(outputs, "apimName"),
+            apim_resource_group_name=apim_resource_group_name,
             apim_principal_id=_output_string(outputs, "apimPrincipalId"),
             apim_gateway_url=_output_string(outputs, "apimGatewayUrl"),
         )
+
+    @classmethod
+    def from_parameters(cls, parameters: Mapping[str, Any]) -> ExistingCore | None:
+        fields = {
+            "existingApimName": "apim_name",
+            "existingApimResourceGroupName": "apim_resource_group_name",
+            "existingApimPrincipalId": "apim_principal_id",
+            "existingApimGatewayUrl": "apim_gateway_url",
+        }
+        configured = {
+            field: str(parameters.get(parameter) or "").strip()
+            for parameter, field in fields.items()
+        }
+        if not any(configured.values()):
+            return None
+        missing = [
+            parameter
+            for parameter, field in fields.items()
+            if not configured[field]
+        ]
+        if missing:
+            raise DeploymentError(
+                "Existing APIM adoption requires: " + ", ".join(sorted(missing))
+            )
+        return cls(**configured)
 
 
 class CommandRunner:
@@ -283,8 +313,24 @@ def deployment_parameters(
     *,
     observer: Mapping[str, str] | None = None,
     existing_core: ExistingCore | None = None,
+    resume_existing_environment: bool = False,
 ) -> JsonObject:
     values = dict(inputs.parameters)
+    if existing_core is not None and not resume_existing_environment:
+        isolated_apim_defaults = {
+            "apimApiId": f"{inputs.resource_prefix}-llm",
+            "gatewayApiRelativePath": f"{inputs.resource_prefix}/llm",
+            "apimProductId": f"{inputs.resource_prefix}-ai-consumers",
+            "apimDashboardSubscriptionId": f"{inputs.resource_prefix}-dashboard",
+            "apimProbeSubscriptionId": f"{inputs.resource_prefix}-publisher-probe",
+            "apimAppInsightsLoggerId": f"{inputs.resource_prefix}-appinsights",
+            "apimEventHubLoggerId": f"{inputs.resource_prefix}-eventhub",
+            "apimDiagnosticSettingName": f"{inputs.resource_prefix}-gateway-logs",
+            "observerAdapterKeyNamedValueName": f"{inputs.resource_prefix}-observer-key",
+        }
+        for name, default in isolated_apim_defaults.items():
+            if not str(values.get(name) or "").strip():
+                values[name] = default
     values.update({name: secrets_.values[name] for name in SECRET_PARAMETER_NAMES})
     values.update(
         bootstrapOwnerEmail=inputs.owner_email,
@@ -293,9 +339,12 @@ def deployment_parameters(
         controlPlaneEnabled=observer is not None,
         gatewayReleaseWorkerEnabled=observer is not None,
         provisionApimService=existing_core is None,
-        provisionPostgres=existing_core is None,
-        deployApimBootstrap=existing_core is None,
+        provisionPostgres=not resume_existing_environment,
+        deployApimBootstrap=not resume_existing_environment,
         existingApimName=existing_core.apim_name if existing_core else "",
+        existingApimResourceGroupName=(
+            existing_core.apim_resource_group_name if existing_core else ""
+        ),
         existingApimPrincipalId=(
             existing_core.apim_principal_id if existing_core else ""
         ),
@@ -358,6 +407,50 @@ def require_prerequisites(runner: CommandRunner, subscription: str) -> None:
         ["az", "account", "show", "--subscription", subscription, "--output", "json"]
     )
     runner.run(["az", "bicep", "version"], capture=True)
+
+
+def validate_flex_consumption_capabilities(
+    runner: CommandRunner, inputs: DeploymentInputs
+) -> None:
+    provider = runner.run(
+        [
+            "az",
+            "provider",
+            "show",
+            "--subscription",
+            inputs.subscription,
+            "--namespace",
+            "Microsoft.App",
+            "--query",
+            "registrationState",
+            "--output",
+            "tsv",
+        ],
+        capture=True,
+    )
+    if provider.stdout.strip() != "Registered":
+        raise DeploymentError(
+            "Microsoft.App must be registered before deploying Flex Consumption apps"
+        )
+    locations = runner.run(
+        [
+            "az",
+            "functionapp",
+            "list-flexconsumption-locations",
+            "--subscription",
+            inputs.subscription,
+            "--query",
+            "[].name",
+            "--output",
+            "tsv",
+        ],
+        capture=True,
+    )
+    available = {location.strip().lower() for location in locations.stdout.splitlines()}
+    if inputs.location.lower() not in available:
+        raise DeploymentError(
+            f"Flex Consumption is unavailable in {inputs.location} for this subscription"
+        )
 
 
 def validate_postgres_capabilities(
@@ -853,12 +946,18 @@ def observer_parameters(
     else:
         acr_name = _output_string(existing_observer, "acrName")
         web_app_name = _output_string(existing_observer, "webAppName")
+    apim_resource_group_name = platform_outputs.get("apimResourceGroupName")
+    if not isinstance(apim_resource_group_name, str) or not apim_resource_group_name:
+        apim_resource_group_name = _output_string(platform_outputs, "resourceGroupName")
+    adapter_key_named_value_name = platform_outputs.get(
+        "observerAdapterKeyNamedValueName"
+    )
+    if not isinstance(adapter_key_named_value_name, str) or not adapter_key_named_value_name:
+        adapter_key_named_value_name = "turnstile-envoy-adapter-key"
     return _arm_parameter_document(
         {
             "resourceGroupName": _output_string(platform_outputs, "resourceGroupName"),
-            "apimResourceGroupName": _output_string(
-                platform_outputs, "resourceGroupName"
-            ),
+            "apimResourceGroupName": apim_resource_group_name,
             "location": inputs.location,
             "appServicePlanName": observer_plan_name(inputs),
             "webAppName": web_app_name,
@@ -870,6 +969,7 @@ def observer_parameters(
             ),
             "eventHubName": "token-usage",
             "apimName": _output_string(platform_outputs, "apimName"),
+            "adapterKeyNamedValueName": adapter_key_named_value_name,
             "adapterSharedKey": secrets_.values["observerAdapterSharedKey"],
         }
     )
@@ -1165,6 +1265,7 @@ def execute(args: argparse.Namespace, runner: CommandRunner) -> None:
         validate_source_snapshot(REPOSITORY_ROOT)
     saved_outputs = load_saved_outputs(inputs)
     if saved_outputs is None:
+        validate_flex_consumption_capabilities(runner, inputs)
         validate_postgres_capabilities(runner, inputs)
     password_reader: PasswordReader = getpass.getpass
     if args.owner_credentials is not None:
@@ -1182,10 +1283,15 @@ def execute(args: argparse.Namespace, runner: CommandRunner) -> None:
         require_owner_password=args.action == "deploy",
     )
     existing_core = (
-        ExistingCore.from_outputs(saved_outputs) if saved_outputs is not None else None
+        ExistingCore.from_outputs(saved_outputs)
+        if saved_outputs is not None
+        else ExistingCore.from_parameters(inputs.parameters)
     )
     base_parameters = deployment_parameters(
-        inputs, secrets_, existing_core=existing_core
+        inputs,
+        secrets_,
+        existing_core=existing_core,
+        resume_existing_environment=saved_outputs is not None,
     )
     main_template = REPOSITORY_ROOT / "infra" / "main.bicep"
     release_template = REPOSITORY_ROOT / "infra" / "runtime-release.bicep"

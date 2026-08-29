@@ -38,12 +38,29 @@ def test_main_creates_the_platform_resource_group_and_apim() -> None:
 
 
 def test_apim_exposes_the_turnstile_gateway_path() -> None:
-    assert "name: 'turnstile-llm'" in APIM_INTEGRATION
+    assert "param apimApiId string = 'turnstile-llm'" in MAIN
+    assert "param gatewayApiRelativePath string = 'turnstile/llm'" in MAIN
+    assert "name: apiId" in APIM_INTEGRATION
     assert "displayName: 'Turnstile AI Gateway'" in APIM_INTEGRATION
-    assert "var gatewayApiRelativePath = 'turnstile/llm'" in MAIN
     assert "param apiPath string" in APIM_INTEGRATION
     assert "path: apiPath" in APIM_INTEGRATION
     assert "path: 'finops/llm'" not in APIM_INTEGRATION
+
+
+def test_shared_apim_resources_are_environment_isolated() -> None:
+    for parameter, resource_name in (
+        ("apiId", "apiId"),
+        ("productId", "productId"),
+        ("dashboardSubscriptionId", "dashboardSubscriptionId"),
+        ("probeSubscriptionId", "probeSubscriptionId"),
+        ("appInsightsLoggerId", "appInsightsLoggerId"),
+        ("eventHubLoggerId", "eventHubLoggerId"),
+        ("diagnosticSettingName", "diagnosticSettingName"),
+    ):
+        assert f"param {parameter} string" in APIM_INTEGRATION
+        assert f"name: {resource_name}" in APIM_INTEGRATION
+    assert "param existingApimResourceGroupName string = ''" in MAIN
+    assert "scope: effectiveApimResourceGroup" in MAIN
 
 
 def test_fresh_apim_creates_its_azure_monitor_logger() -> None:
@@ -103,12 +120,54 @@ def test_api_python_path_contains_package_root_and_prebuilt_dependencies() -> No
     )
 
 
-def test_functions_allow_vnet_cold_start_to_complete() -> None:
-    startup_limit = (
-        "{ name: 'WEBSITES_CONTAINER_START_TIME_LIMIT', value: '1800' }"
+def test_functions_use_separate_flex_consumption_plans() -> None:
+    telemetry = DATA_PLANE.split("resource functionApp", 1)[1].split(
+        "resource functionStorageBlobOwner", 1
+    )[0]
+    control = CONTROL_PLANE.split("resource functionApp", 1)[1].split(
+        "resource keyVault", 1
+    )[0]
+
+    assert "serverFarmId: apiPlan.id" in DATA_PLANE
+    assert "serverFarmId: telemetryPlan.id" in telemetry
+    assert "serverFarmId: plan.id" in control
+    assert DATA_PLANE.count("tier: 'FlexConsumption'") == 1
+    assert CONTROL_PLANE.count("tier: 'FlexConsumption'") == 1
+    assert "name: 'FC1'" in DATA_PLANE
+    assert "name: 'FC1'" in CONTROL_PLANE
+    for template in (telemetry, control):
+        assert "functionAppConfig:" in template
+        assert "instanceMemoryMB: 2048" in template
+        assert "maximumInstanceCount: 100" in template
+        assert "name: 'python'" in template
+        assert "version: '3.11'" in template
+        assert "type: 'SystemAssignedIdentity'" in template
+        for incompatible in (
+            "alwaysOn:",
+            "linuxFxVersion:",
+            "vnetRouteAllEnabled:",
+            "WEBSITE_RUN_FROM_PACKAGE",
+            "WEBSITES_CONTAINER_START_TIME_LIMIT",
+            "SCM_DO_BUILD_DURING_DEPLOYMENT",
+            "FUNCTIONS_WORKER_RUNTIME",
+        ):
+            assert incompatible not in template
+
+
+def test_flex_functions_have_isolated_network_and_deployment_storage() -> None:
+    assert "addressPrefix: '10.42.3.0/27'" in DATA_PLANE
+    assert "addressPrefix: '10.42.3.32/27'" in DATA_PLANE
+    assert DATA_PLANE.count("serviceName: 'Microsoft.App/environments'") == 2
+    assert "var telemetryDeploymentContainerName = 'deploy-telemetry'" in DATA_PLANE
+    assert "name: telemetryDeploymentContainerName" in DATA_PLANE
+    assert "var deploymentContainerName = 'deploy-control-plane'" in CONTROL_PLANE
+    assert "name: deploymentContainerName" in CONTROL_PLANE
+    assert "resource functionVnetIntegration 'Microsoft.Web/sites/networkConfig@" in (
+        DATA_PLANE
     )
-    assert DATA_PLANE.count(startup_limit) == 2
-    assert startup_limit in CONTROL_PLANE
+    assert "resource functionVnetIntegration 'Microsoft.Web/sites/networkConfig@" in (
+        CONTROL_PLANE
+    )
 
 
 def test_telemetry_host_storage_is_fully_reachable_over_private_links() -> None:
@@ -127,13 +186,14 @@ def test_telemetry_host_storage_is_fully_reachable_over_private_links() -> None:
 
 
 def test_api_and_apim_share_the_same_gateway_path() -> None:
-    assert "var gatewayApiRelativePath = 'turnstile/llm'" in MAIN
+    assert "param gatewayApiRelativePath string = 'turnstile/llm'" in MAIN
     assert (
         "var effectiveGatewayApiPath = "
         "'${effectiveApimGatewayUrl}/${gatewayApiRelativePath}'"
         in MAIN
     )
     assert "apimGatewayUrl: effectiveGatewayApiPath" in MAIN
+    assert "apimApiId: apimApiId" in MAIN
     assert "apiPath: gatewayApiRelativePath" in MAIN
     assert "{ name: 'APIM_GATEWAY_URL', value: apimGatewayUrl }" in DATA_PLANE
     assert (
@@ -198,12 +258,16 @@ def test_control_plane_features_default_to_disabled() -> None:
     assert "effectiveReleaseWorkerEnabled = releaseWorkerEnabled" in CONTROL_PLANE
 
 
-def test_control_plane_uses_the_data_plane_plan_and_vnet() -> None:
-    assert "appServicePlanName: 'plan-${resourcePrefix}-${suffix}'" in MAIN
+def test_control_plane_uses_its_own_flex_plan_and_the_platform_vnet() -> None:
+    assert "appServicePlanName:" not in MAIN.split("module controlPlane", 1)[1].split(
+        "module controlPlaneApimRbac", 1
+    )[0]
+    assert "resourcePrefix: resourcePrefix" in MAIN
     assert "virtualNetworkName: 'vnet-${resourcePrefix}-${suffix}'" in MAIN
     assert "apimGatewayUrl: effectiveGatewayApiPath" in MAIN
     assert "var storageName = 'stturnstilecp${take(suffix, 11)}'" in CONTROL_PLANE
-    assert "var functionName = 'func-turnstile-control-${suffix}'" in CONTROL_PLANE
+    assert "var functionName = 'func-${resourcePrefix}-control-${suffix}'" in CONTROL_PLANE
+    assert "var planName = 'plan-${resourcePrefix}-control-${suffix}'" in CONTROL_PLANE
     assert "plan-finops" not in CONTROL_PLANE
     assert "vnet-finops" not in CONTROL_PLANE
 

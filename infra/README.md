@@ -8,8 +8,9 @@
 - Event Hubs namespace and usage event hub;
 - Key Vault;
 - Application Insights and Log Analytics;
-- a Linux Web App for the API and frontend;
-- a telemetry Function App;
+- a Linux Web App for the API and frontend on its own App Service Plan;
+- telemetry and control-plane Function Apps, each on its own Flex Consumption plan;
+- a separately deployed observer on its own App Service Plan;
 - a dedicated Entra-only Table Storage budget ledger;
 - optional control-plane Function and least-privilege APIM roles.
 
@@ -32,6 +33,8 @@ Copy `main.parameters.example.json` to an ignored `*.parameters.json` file and r
 - `apimProbeSubscriptionKey`
 
 Do not store those values in a checked-in parameter file.
+
+To reuse an existing APIM service while creating the rest of the environment from scratch, set `existingApimName`, `existingApimResourceGroupName`, `existingApimPrincipalId`, and `existingApimGatewayUrl`. Leave all four empty to provision a new APIM service. Shared APIM resources are isolated by `resourcePrefix`.
 
 ## Preview and deploy
 

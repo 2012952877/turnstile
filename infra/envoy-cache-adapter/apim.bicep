@@ -1,6 +1,7 @@
 targetScope = 'resourceGroup'
 
 param apimName string
+param adapterKeyNamedValueName string = 'turnstile-envoy-adapter-key'
 
 @secure()
 param adapterSharedKey string
@@ -11,9 +12,9 @@ resource apim 'Microsoft.ApiManagement/service@2024-05-01' existing = {
 
 resource adapterNamedValue 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = {
   parent: apim
-  name: 'turnstile-envoy-adapter-key'
+  name: adapterKeyNamedValueName
   properties: {
-    displayName: 'turnstile-envoy-adapter-key'
+    displayName: adapterKeyNamedValueName
     secret: true
     value: adapterSharedKey
   }

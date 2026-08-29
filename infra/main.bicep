@@ -216,10 +216,6 @@ resource platformResourceGroup 'Microsoft.Resources/resourceGroups@2024-11-01' =
 
 var effectiveApimResourceGroupName = provisionApimService ? platformResourceGroup.name : existingApimResourceGroupName
 
-resource effectiveApimResourceGroup 'Microsoft.Resources/resourceGroups@2024-11-01' existing = {
-  name: effectiveApimResourceGroupName
-}
-
 module apim 'modules/apim-service.bicep' = if (provisionApimService) {
   name: 'turnstile-apim'
   scope: platformResourceGroup
@@ -272,7 +268,7 @@ module dataPlane 'modules/data-plane.bicep' = {
 
 module apimIntegration 'modules/apim-integration.bicep' = if (deployApimBootstrap) {
   name: 'turnstile-apim-integration-${take(suffix, 13)}'
-  scope: effectiveApimResourceGroup
+  scope: resourceGroup(effectiveApimResourceGroupName)
   params: {
     apimName: effectiveApimName
     apiId: apimApiId
@@ -339,7 +335,7 @@ module controlPlane 'modules/control-plane-function.bicep' = if (provisionContro
 
 module controlPlaneApimRbac 'modules/control-plane-apim-rbac.bicep' = if (provisionControlPlane) {
   name: 'turnstile-control-plane-apim-rbac-${take(suffix, 13)}'
-  scope: effectiveApimResourceGroup
+  scope: resourceGroup(effectiveApimResourceGroupName)
   params: {
     apimName: effectiveApimName
     controlPlanePrincipalId: controlPlane!.outputs.principalId
@@ -348,7 +344,7 @@ module controlPlaneApimRbac 'modules/control-plane-apim-rbac.bicep' = if (provis
 
 module applicationKeyManagementRbac 'modules/application-key-management-rbac.bicep' = if (gatewayApplicationKeyManagementEnabled) {
   name: 'turnstile-application-key-management-rbac-${take(suffix, 13)}'
-  scope: effectiveApimResourceGroup
+  scope: resourceGroup(effectiveApimResourceGroupName)
   params: {
     apimName: effectiveApimName
     apiPrincipalIds: [

@@ -74,7 +74,8 @@ def test_shared_apim_resources_are_environment_isolated() -> None:
     assert "displayName: '${apiId} | Turnstile AI Gateway'" in APIM_INTEGRATION
     assert "displayName: '${productId} | Turnstile AI'" in APIM_INTEGRATION
     assert "param existingApimResourceGroupName string = ''" in MAIN
-    assert "scope: effectiveApimResourceGroup" in MAIN
+    assert "resource effectiveApimResourceGroup" not in MAIN
+    assert MAIN.count("scope: resourceGroup(effectiveApimResourceGroupName)") == 3
 
 
 def test_fresh_apim_creates_its_azure_monitor_logger() -> None:

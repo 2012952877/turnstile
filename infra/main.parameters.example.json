@@ -14,6 +14,12 @@
     "postgresLocation": {
       "value": "eastus2"
     },
+    "observerPlanSkuName": {
+      "value": "P0v3"
+    },
+    "observerPlanWorkerCount": {
+      "value": 1
+    },
     "apimPublisherEmail": {
       "value": "platform-operations@example.com"
     },

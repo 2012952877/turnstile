@@ -2,6 +2,16 @@ targetScope = 'resourceGroup'
 
 param location string
 param appServicePlanName string
+@allowed([
+  'P0v3'
+  'P1v3'
+  'P2v3'
+  'P3v3'
+])
+param appServicePlanSkuName string = 'P0v3'
+@minValue(1)
+@maxValue(30)
+param appServicePlanWorkerCount int = 1
 param webAppName string
 param image string
 param acrLoginServer string
@@ -21,10 +31,10 @@ resource plan 'Microsoft.Web/serverfarms@2024-11-01' = {
   location: location
   kind: 'linux'
   sku: {
-    name: 'B1'
-    tier: 'Basic'
-    size: 'B1'
-    capacity: 1
+    name: appServicePlanSkuName
+    tier: 'PremiumV3'
+    size: appServicePlanSkuName
+    capacity: appServicePlanWorkerCount
   }
   properties: {
     reserved: true

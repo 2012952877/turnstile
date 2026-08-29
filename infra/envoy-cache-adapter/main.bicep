@@ -4,6 +4,16 @@ param resourceGroupName string
 param apimResourceGroupName string = resourceGroupName
 param location string
 param appServicePlanName string
+@allowed([
+  'P0v3'
+  'P1v3'
+  'P2v3'
+  'P3v3'
+])
+param appServicePlanSkuName string = 'P0v3'
+@minValue(1)
+@maxValue(30)
+param appServicePlanWorkerCount int = 1
 param webAppName string
 param acrName string
 param provisionAcr bool = true
@@ -46,6 +56,8 @@ module app 'app.bicep' = {
   params: {
     location: location
     appServicePlanName: appServicePlanName
+    appServicePlanSkuName: appServicePlanSkuName
+    appServicePlanWorkerCount: appServicePlanWorkerCount
     webAppName: webAppName
     image: image
     acrLoginServer: acrLoginServer
@@ -80,6 +92,8 @@ module apimIntegration 'apim.bicep' = {
 output webAppUrl string = app.outputs.webAppUrl
 output webAppName string = webAppName
 output observerAppServicePlanName string = appServicePlanName
+output observerAppServicePlanSkuName string = appServicePlanSkuName
+output observerAppServicePlanWorkerCount int = appServicePlanWorkerCount
 output webAppPrincipalId string = app.outputs.principalId
 output adapterKeyNamedValueName string = apimIntegration.outputs.namedValueName
 output acrName string = acrName

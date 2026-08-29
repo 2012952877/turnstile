@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.31.92.45157",
-      "templateHash": "18423598595475034462"
+      "templateHash": "4503493975325900743"
     }
   },
   "parameters": {
@@ -21,6 +21,22 @@
     },
     "appServicePlanName": {
       "type": "string"
+    },
+    "appServicePlanSkuName": {
+      "type": "string",
+      "defaultValue": "P0v3",
+      "allowedValues": [
+        "P0v3",
+        "P1v3",
+        "P2v3",
+        "P3v3"
+      ]
+    },
+    "appServicePlanWorkerCount": {
+      "type": "int",
+      "defaultValue": 1,
+      "minValue": 1,
+      "maxValue": 30
     },
     "webAppName": {
       "type": "string"
@@ -3922,6 +3938,12 @@
           "appServicePlanName": {
             "value": "[parameters('appServicePlanName')]"
           },
+          "appServicePlanSkuName": {
+            "value": "[parameters('appServicePlanSkuName')]"
+          },
+          "appServicePlanWorkerCount": {
+            "value": "[parameters('appServicePlanWorkerCount')]"
+          },
           "webAppName": {
             "value": "[parameters('webAppName')]"
           },
@@ -3948,7 +3970,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.31.92.45157",
-              "templateHash": "3682172452101423133"
+              "templateHash": "13735497111236891126"
             }
           },
           "parameters": {
@@ -3957,6 +3979,22 @@
             },
             "appServicePlanName": {
               "type": "string"
+            },
+            "appServicePlanSkuName": {
+              "type": "string",
+              "defaultValue": "P0v3",
+              "allowedValues": [
+                "P0v3",
+                "P1v3",
+                "P2v3",
+                "P3v3"
+              ]
+            },
+            "appServicePlanWorkerCount": {
+              "type": "int",
+              "defaultValue": 1,
+              "minValue": 1,
+              "maxValue": 30
             },
             "webAppName": {
               "type": "string"
@@ -3988,10 +4026,10 @@
               "location": "[parameters('location')]",
               "kind": "linux",
               "sku": {
-                "name": "B1",
-                "tier": "Basic",
-                "size": "B1",
-                "capacity": 1
+                "name": "[parameters('appServicePlanSkuName')]",
+                "tier": "PremiumV3",
+                "size": "[parameters('appServicePlanSkuName')]",
+                "capacity": "[parameters('appServicePlanWorkerCount')]"
               },
               "properties": {
                 "reserved": true
@@ -4210,6 +4248,14 @@
     "observerAppServicePlanName": {
       "type": "string",
       "value": "[parameters('appServicePlanName')]"
+    },
+    "observerAppServicePlanSkuName": {
+      "type": "string",
+      "value": "[parameters('appServicePlanSkuName')]"
+    },
+    "observerAppServicePlanWorkerCount": {
+      "type": "int",
+      "value": "[parameters('appServicePlanWorkerCount')]"
     },
     "webAppPrincipalId": {
       "type": "string",

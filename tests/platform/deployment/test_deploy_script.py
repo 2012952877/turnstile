@@ -96,6 +96,27 @@ def test_public_parameter_file_rejects_secure_values(tmp_path: Path) -> None:
         DeploymentInputs.load("subscription", path)
 
 
+@pytest.mark.parametrize(
+    ("name", "value", "message"),
+    (
+        ("observerPlanSkuName", "B1", "must be one of"),
+        ("observerPlanWorkerCount", 0, "must be between 1 and 30"),
+        ("observerPlanWorkerCount", 31, "must be between 1 and 30"),
+        ("observerPlanWorkerCount", "2", "must be an integer"),
+    ),
+)
+def test_observer_plan_parameters_are_validated_before_deployment(
+    tmp_path: Path, name: str, value: object, message: str
+) -> None:
+    path = _parameters(tmp_path / "parameters.json")
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["parameters"][name] = {"value": value}
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(DeploymentError, match=message):
+        DeploymentInputs.load("subscription", path)
+
+
 def test_postgres_preflight_rejects_restricted_region(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -433,6 +454,8 @@ def test_observer_parameters_reuse_apps_but_isolate_the_observer_plan(
         == observer_plan_name(inputs)
     )
     assert document["parameters"]["appServicePlanName"]["value"] != "plan-turnstile-test"
+    assert document["parameters"]["appServicePlanSkuName"]["value"] == "P0v3"
+    assert document["parameters"]["appServicePlanWorkerCount"]["value"] == 1
     assert document["parameters"]["provisionAcr"]["value"] is False
 
 

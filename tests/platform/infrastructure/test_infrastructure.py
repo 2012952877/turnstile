@@ -14,6 +14,12 @@ APIM_INTEGRATION = (ROOT / "infra/modules/apim-integration.bicep").read_text(
 CONTROL_PLANE = (ROOT / "infra/modules/control-plane-function.bicep").read_text(
     encoding="utf-8"
 )
+OBSERVER_APP = (ROOT / "infra/envoy-cache-adapter/app.bicep").read_text(
+    encoding="utf-8"
+)
+OBSERVER_MAIN = (ROOT / "infra/envoy-cache-adapter/main.bicep").read_text(
+    encoding="utf-8"
+)
 CONTROL_PLANE_APIM_RBAC = (
     ROOT / "infra/modules/control-plane-apim-rbac.bicep"
 ).read_text(encoding="utf-8")
@@ -155,6 +161,16 @@ def test_functions_use_separate_flex_consumption_plans() -> None:
             "FUNCTIONS_WORKER_RUNTIME",
         ):
             assert incompatible not in template
+
+
+def test_observer_uses_a_configurable_premium_v3_plan() -> None:
+    assert "param appServicePlanSkuName string = 'P0v3'" in OBSERVER_APP
+    assert "param appServicePlanWorkerCount int = 1" in OBSERVER_APP
+    assert "name: appServicePlanSkuName" in OBSERVER_APP
+    assert "tier: 'PremiumV3'" in OBSERVER_APP
+    assert "capacity: appServicePlanWorkerCount" in OBSERVER_APP
+    assert "appServicePlanSkuName: appServicePlanSkuName" in OBSERVER_MAIN
+    assert "appServicePlanWorkerCount: appServicePlanWorkerCount" in OBSERVER_MAIN
 
 
 def test_flex_functions_have_isolated_network_and_deployment_storage() -> None:

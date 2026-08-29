@@ -56,6 +56,13 @@ POSTGRES_VERSION = "16"
 POSTGRES_AVAILABILITY_ZONE = "1"
 DEFAULT_POSTGRES_SKU_NAME = "Standard_B1ms"
 DEFAULT_POSTGRES_TIER = "Burstable"
+DEFAULT_OBSERVER_PLAN_SKU_NAME = "P0v3"
+DEFAULT_OBSERVER_PLAN_WORKER_COUNT = 1
+OBSERVER_PLAN_SKU_NAMES = frozenset({"P0v3", "P1v3", "P2v3", "P3v3"})
+OBSERVER_ORCHESTRATOR_PARAMETERS = {
+    "observerPlanSkuName",
+    "observerPlanWorkerCount",
+}
 
 
 class DeploymentError(RuntimeError):
@@ -73,6 +80,8 @@ class DeploymentInputs:
     postgres_location: str
     postgres_sku_name: str
     postgres_tier: str
+    observer_plan_sku_name: str
+    observer_plan_worker_count: int
     owner_email: str
     state_path: Path
 
@@ -109,6 +118,21 @@ class DeploymentInputs:
         postgres_tier = _string_parameter(
             parameters, "postgresTier", DEFAULT_POSTGRES_TIER
         )
+        observer_plan_sku_name = _string_parameter(
+            parameters, "observerPlanSkuName", DEFAULT_OBSERVER_PLAN_SKU_NAME
+        )
+        if observer_plan_sku_name not in OBSERVER_PLAN_SKU_NAMES:
+            raise DeploymentError(
+                "Parameter observerPlanSkuName must be one of: "
+                + ", ".join(sorted(OBSERVER_PLAN_SKU_NAMES))
+            )
+        observer_plan_worker_count = _integer_parameter(
+            parameters,
+            "observerPlanWorkerCount",
+            DEFAULT_OBSERVER_PLAN_WORKER_COUNT,
+            minimum=1,
+            maximum=30,
+        )
         owner_email = _required_string(parameters, "bootstrapOwnerEmail").strip().lower()
         if "@" not in owner_email:
             raise DeploymentError("bootstrapOwnerEmail must be an email address")
@@ -128,6 +152,8 @@ class DeploymentInputs:
             postgres_location=postgres_location,
             postgres_sku_name=postgres_sku_name,
             postgres_tier=postgres_tier,
+            observer_plan_sku_name=observer_plan_sku_name,
+            observer_plan_worker_count=observer_plan_worker_count,
             owner_email=owner_email,
             state_path=resolved_state,
         )
@@ -234,6 +260,24 @@ def _string_parameter(parameters: Mapping[str, Any], name: str, default: str) ->
     return value.strip()
 
 
+def _integer_parameter(
+    parameters: Mapping[str, Any],
+    name: str,
+    default: int,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    value = parameters.get(name, default)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise DeploymentError(f"Parameter {name} must be an integer")
+    if value < minimum or value > maximum:
+        raise DeploymentError(
+            f"Parameter {name} must be between {minimum} and {maximum}"
+        )
+    return value
+
+
 def _read_owner_password(read_password: PasswordReader) -> str:
     password = read_password("Initial Owner password: ")
     if password != read_password("Repeat Initial Owner password: "):
@@ -316,6 +360,8 @@ def deployment_parameters(
     resume_existing_environment: bool = False,
 ) -> JsonObject:
     values = dict(inputs.parameters)
+    for name in OBSERVER_ORCHESTRATOR_PARAMETERS:
+        values.pop(name, None)
     if existing_core is not None and not resume_existing_environment:
         isolated_apim_defaults = {
             "apimApiId": f"{inputs.resource_prefix}-llm",
@@ -960,6 +1006,8 @@ def observer_parameters(
             "apimResourceGroupName": apim_resource_group_name,
             "location": inputs.location,
             "appServicePlanName": observer_plan_name(inputs),
+            "appServicePlanSkuName": inputs.observer_plan_sku_name,
+            "appServicePlanWorkerCount": inputs.observer_plan_worker_count,
             "webAppName": web_app_name,
             "acrName": acr_name,
             "provisionAcr": existing_observer is None,

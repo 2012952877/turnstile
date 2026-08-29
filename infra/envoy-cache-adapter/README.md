@@ -28,5 +28,9 @@ internal header upstream.
 The observer handles OpenAI-compatible SSE, native Anthropic Messages SSE, and
 synchronous JSON usage returned by buffered providers such as Bedrock.
 
+The dedicated App Service Plan defaults to one `P0v3` worker. Use
+`appServicePlanSkuName` and `appServicePlanWorkerCount` to select a larger Premium v3
+worker or scale out. A single worker provides no instance redundancy.
+
 The image uses Envoy 1.38.0's work-in-progress `sse_to_metadata` filter. This is an
 experiment, not a production recommendation.

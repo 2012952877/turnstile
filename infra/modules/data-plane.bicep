@@ -47,6 +47,8 @@ var virtualNetworkName = 'vnet-${resourcePrefix}-${suffix}'
 var functionSubnetName = 'snet-functions'
 var privateEndpointSubnetName = 'snet-private-endpoints'
 var blobPrivateDnsZoneName = 'privatelink.blob.${environment().suffixes.storage}'
+var queuePrivateDnsZoneName = 'privatelink.queue.${environment().suffixes.storage}'
+var tablePrivateDnsZoneName = 'privatelink.table.${environment().suffixes.storage}'
 var postgresConnectionString = 'postgresql://${postgresAdministratorLogin}:${postgresAdministratorPassword}@${postgresServerName}.postgres.database.azure.com:5432/${databaseName}?sslmode=require'
 var logAnalyticsReaderRoleDefinitionId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
@@ -326,6 +328,40 @@ resource blobPrivateDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLin
   }
 }
 
+resource queuePrivateDnsZone 'Microsoft.Network/privateDnsZones@2024-06-01' = {
+  name: queuePrivateDnsZoneName
+  location: 'global'
+}
+
+resource queuePrivateDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
+  parent: queuePrivateDnsZone
+  name: 'finops-vnet'
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: virtualNetwork.id
+    }
+  }
+}
+
+resource tablePrivateDnsZone 'Microsoft.Network/privateDnsZones@2024-06-01' = {
+  name: tablePrivateDnsZoneName
+  location: 'global'
+}
+
+resource tablePrivateDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
+  parent: tablePrivateDnsZone
+  name: 'finops-vnet'
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: virtualNetwork.id
+    }
+  }
+}
+
 resource storageBlobPrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = {
   name: 'pe-${storageName}-blob'
   location: location
@@ -356,6 +392,78 @@ resource storageBlobPrivateDnsZoneGroup 'Microsoft.Network/privateEndpoints/priv
         name: 'blob'
         properties: {
           privateDnsZoneId: blobPrivateDnsZone.id
+        }
+      }
+    ]
+  }
+}
+
+resource storageQueuePrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = {
+  name: 'pe-${storageName}-queue'
+  location: location
+  properties: {
+    subnet: {
+      id: privateEndpointSubnet.id
+    }
+    privateLinkServiceConnections: [
+      {
+        name: 'storage-queue'
+        properties: {
+          privateLinkServiceId: storage.id
+          groupIds: [
+            'queue'
+          ]
+        }
+      }
+    ]
+  }
+}
+
+resource storageQueuePrivateDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = {
+  parent: storageQueuePrivateEndpoint
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'queue'
+        properties: {
+          privateDnsZoneId: queuePrivateDnsZone.id
+        }
+      }
+    ]
+  }
+}
+
+resource storageTablePrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = {
+  name: 'pe-${storageName}-table'
+  location: location
+  properties: {
+    subnet: {
+      id: privateEndpointSubnet.id
+    }
+    privateLinkServiceConnections: [
+      {
+        name: 'storage-table'
+        properties: {
+          privateLinkServiceId: storage.id
+          groupIds: [
+            'table'
+          ]
+        }
+      }
+    ]
+  }
+}
+
+resource storageTablePrivateDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = {
+  parent: storageTablePrivateEndpoint
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'table'
+        properties: {
+          privateDnsZoneId: tablePrivateDnsZone.id
         }
       }
     ]
@@ -463,6 +571,8 @@ resource functionApp 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'AzureWebJobsFeatureFlags', value: 'EnableWorkerIndexing' }
         { name: 'AzureWebJobsStorage__accountName', value: storage.name }
         { name: 'AzureWebJobsStorage__blobServiceUri', value: storage.properties.primaryEndpoints.blob }
+        { name: 'AzureWebJobsStorage__queueServiceUri', value: storage.properties.primaryEndpoints.queue }
+        { name: 'AzureWebJobsStorage__tableServiceUri', value: storage.properties.primaryEndpoints.table }
         { name: 'AzureWebJobsStorage__credential', value: 'managedidentity' }
         { name: 'SCM_DO_BUILD_DURING_DEPLOYMENT', value: 'false' }
         { name: 'ENABLE_ORYX_BUILD', value: 'false' }
@@ -494,6 +604,26 @@ resource functionStorageBlobOwner 'Microsoft.Authorization/roleAssignments@2022-
     principalId: functionApp.identity.principalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b')
+  }
+}
+
+resource functionStorageQueueContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storage.id, functionApp.id, 'storage-queue-data-contributor')
+  scope: storage
+  properties: {
+    principalId: functionApp.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')
+  }
+}
+
+resource functionStorageTableContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storage.id, functionApp.id, 'storage-table-data-contributor')
+  scope: storage
+  properties: {
+    principalId: functionApp.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')
   }
 }
 

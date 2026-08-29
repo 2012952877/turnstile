@@ -97,6 +97,21 @@ def test_functions_allow_vnet_cold_start_to_complete() -> None:
     assert startup_limit in CONTROL_PLANE
 
 
+def test_telemetry_host_storage_is_fully_reachable_over_private_links() -> None:
+    for service in ("blob", "queue", "table"):
+        assert f"privatelink.{service}.${{environment().suffixes.storage}}" in DATA_PLANE
+        assert f"name: 'pe-${{storageName}}-{service}'" in DATA_PLANE
+        assert f"'{service}'" in DATA_PLANE
+    for setting in (
+        "AzureWebJobsStorage__blobServiceUri",
+        "AzureWebJobsStorage__queueServiceUri",
+        "AzureWebJobsStorage__tableServiceUri",
+    ):
+        assert setting in DATA_PLANE
+    assert "resource functionStorageQueueContributor" in DATA_PLANE
+    assert "resource functionStorageTableContributor" in DATA_PLANE
+
+
 def test_api_and_apim_share_the_same_gateway_path() -> None:
     assert "var gatewayApiRelativePath = 'turnstile/llm'" in MAIN
     assert (

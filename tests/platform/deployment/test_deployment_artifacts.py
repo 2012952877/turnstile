@@ -126,6 +126,14 @@ def test_repository_contains_every_staging_source() -> None:
         assert (REPOSITORY_ROOT / relative).is_file(), relative
 
 
+def test_observer_registry_accepts_managed_identity_arm_tokens() -> None:
+    template = (
+        REPOSITORY_ROOT / "infra/envoy-cache-adapter/main.bicep"
+    ).read_text(encoding="utf-8")
+
+    assert "azureADAuthenticationAsArmPolicyStatus: 'enabled'" in template
+
+
 def test_api_staging_contains_runtime_contract(tmp_path: Path, staging_root: Path) -> None:
     destination = tmp_path / "api"
     stage_deployment("api", destination, root=staging_root)

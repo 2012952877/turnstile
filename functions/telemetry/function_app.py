@@ -2,32 +2,20 @@ import json
 import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Any, List  # noqa: UP035 - required by the Azure Functions worker
+from typing import TYPE_CHECKING, Any, List  # noqa: UP035 - required by the Azure Functions worker
 
 import azure.functions as func
 
-from backend.config import get_settings
-from backend.ingestion.processor import CoefficientResolver, UsageProcessor
-from backend.integrations.ledger import (
-    ROLL_FORWARD_ACTOR,
-    LedgerSyncService,
-    TableStorageLedger,
-    period_start_for,
-)
-from backend.integrations.reconciliation import (
-    CacheReadSyncService,
-    LogAnalyticsCacheReadLog,
-    LogAnalyticsGatewayUsageLog,
-    ReconciliationService,
-)
-from backend.persistence.factory import create_repository
+if TYPE_CHECKING:
+    from backend.ingestion.processor import UsageProcessor
 
 app = func.FunctionApp()
 logger = logging.getLogger(__name__)
 
 
 @app.route(route="health", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
-def telemetry_health(_request: func.HttpRequest) -> func.HttpResponse:
+def telemetry_health(req: func.HttpRequest) -> func.HttpResponse:
+    del req
     return func.HttpResponse(
         json.dumps({"status": "ok"}),
         status_code=200,
@@ -35,7 +23,11 @@ def telemetry_health(_request: func.HttpRequest) -> func.HttpResponse:
     )
 
 
-def _processor() -> UsageProcessor:
+def _processor() -> "UsageProcessor":
+    from backend.config import get_settings
+    from backend.ingestion.processor import CoefficientResolver, UsageProcessor
+    from backend.persistence.factory import create_repository
+
     settings = get_settings()
     repository = create_repository(settings)
     return UsageProcessor(repository, CoefficientResolver(settings.model_coefficients))
@@ -69,6 +61,15 @@ def process_usage_events(events: List[func.EventHubEvent]) -> None:  # noqa: UP0
 )
 def reconcile_stream_usage(timer: func.TimerRequest) -> None:
     """Fills in token counts that streamed responses could not report inside the APIM policy."""
+    from backend.config import get_settings
+    from backend.integrations.reconciliation import (
+        CacheReadSyncService,
+        LogAnalyticsCacheReadLog,
+        LogAnalyticsGatewayUsageLog,
+        ReconciliationService,
+    )
+    from backend.persistence.factory import create_repository
+
     settings = get_settings()
     if not settings.reconciliation_enabled:
         return
@@ -114,6 +115,15 @@ def sync_budget_ledger(timer: func.TimerRequest) -> None:
     a late or failed run costs precision, never correctness: an unsynced person is
     simply covered by their still-present reservation rows.
     """
+    from backend.config import get_settings
+    from backend.integrations.ledger import (
+        ROLL_FORWARD_ACTOR,
+        LedgerSyncService,
+        TableStorageLedger,
+        period_start_for,
+    )
+    from backend.persistence.factory import create_repository
+
     settings = get_settings()
     repository = create_repository(settings)
 

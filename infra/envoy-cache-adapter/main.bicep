@@ -35,6 +35,7 @@ module registry 'br/public:avm/res/container-registry/registry:0.13.0' = if (pro
     location: location
     acrSku: 'Basic'
     acrAdminUserEnabled: false
+    azureADAuthenticationAsArmPolicyStatus: 'enabled'
   }
 }
 

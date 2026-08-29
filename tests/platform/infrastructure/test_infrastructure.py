@@ -66,6 +66,20 @@ def test_employee_token_policy_defaults_to_the_login_tenant_and_client() -> None
     assert "param employeeAudience string = entraClientId" in MAIN
 
 
+def test_employee_token_policy_is_disabled_without_entra_configuration() -> None:
+    assert PARAMETERS["entraClientId"]["value"] == ""
+    assert (
+        "var employeeTokenEnabled = !empty(trim(employeeClientId)) "
+        "&& !empty(trim(employeeAudience))"
+    ) in APIM_INTEGRATION
+    assert "employeeTokenEnabled ? 'true' : 'false'" in APIM_INTEGRATION
+    assert "employeeTokenEnabled ? trim(employeeClientId)" in APIM_INTEGRATION
+    assert "employeeTokenEnabled ? trim(employeeAudience)" in APIM_INTEGRATION
+    assert "@(__EMPLOYEE_TOKEN_ENABLED__ &amp;&amp;" in (
+        ROOT / "infra/policies/foundry-finops-policy.xml"
+    ).read_text(encoding="utf-8")
+
+
 def test_templates_create_platform_resources_without_foundry_projects_or_models() -> None:
     for resource in (
         "Microsoft.DBforPostgreSQL/flexibleServers@",

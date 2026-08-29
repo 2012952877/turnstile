@@ -9,7 +9,7 @@
     <set-variable name="isResponsesOperation" value="@((bool)context.Variables[&quot;isResponsesCreateOperation&quot;] || (bool)context.Variables[&quot;isResponsesCompactOperation&quot;])" />
     <set-variable name="isInferenceOperation" value="@(context.Operation.Id == &quot;anthropic-messages&quot; || context.Operation.Id == &quot;chat-completions&quot; || (bool)context.Variables[&quot;isResponsesOperation&quot;])" />
     <set-variable name="providerName" value="@(context.Variables.GetValueOrDefault&lt;string&gt;(&quot;selectedProviderName&quot;, &quot;unattributed&quot;))" />
-    <set-variable name="hasEmployeeToken" value="@(!string.IsNullOrWhiteSpace(context.Request.Headers.GetValueOrDefault(&quot;Authorization&quot;, &quot;&quot;)))" />
+    <set-variable name="hasEmployeeToken" value="@(__EMPLOYEE_TOKEN_ENABLED__ &amp;&amp; !string.IsNullOrWhiteSpace(context.Request.Headers.GetValueOrDefault(&quot;Authorization&quot;, &quot;&quot;)))" />
     <set-variable name="apimSubscriptionId" value="@{
       var id = context.Subscription?.Id ?? &quot;&quot;;
       var separator = id.LastIndexOf('/');

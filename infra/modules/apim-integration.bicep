@@ -108,6 +108,10 @@ param appInsightsResourceGroupName string
 var policy = loadTextContent('../policies/foundry-finops-policy.xml')
 var observerEnabled = usageObserver.mode == 'enabled'
 var legacyObserverEnabled = preserveLegacyProviderRouting && observerEnabled && legacyObserverRoutingEnabled
+var employeeTokenEnabled = !empty(trim(employeeClientId)) && !empty(trim(employeeAudience))
+var disabledEmployeeApplicationId = '00000000-0000-0000-0000-000000000000'
+var effectiveEmployeeClientId = employeeTokenEnabled ? trim(employeeClientId) : disabledEmployeeApplicationId
+var effectiveEmployeeAudience = employeeTokenEnabled ? trim(employeeAudience) : disabledEmployeeApplicationId
 
 resource apim 'Microsoft.ApiManagement/service@2024-05-01' existing = {
   name: apimName
@@ -545,6 +549,7 @@ resource apiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-05-01' = 
       replace(
       replace(
       replace(
+      replace(
         replace(
           replace(
             replace(
@@ -561,20 +566,23 @@ resource apiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-05-01' = 
                                 '__LEGACY_PROVIDER_ROUTING__',
                                 preserveLegacyProviderRouting ? legacyProviderRouting : ''
                               ),
-                              '__LOGGER_ID__',
-                              logger.name
+                              '__EMPLOYEE_TOKEN_ENABLED__',
+                              employeeTokenEnabled ? 'true' : 'false'
                             ),
-                            '__TOKENS_PER_MINUTE__',
-                            string(tokensPerMinute)
+                            '__LOGGER_ID__',
+                            logger.name
+                          ),
+                          '__TOKENS_PER_MINUTE__',
+                          string(tokensPerMinute)
                         ),
                         '__EMPLOYEE_TENANT_ID__',
                         employeeTenantId
                       ),
                       '__EMPLOYEE_CLIENT_ID__',
-                      employeeClientId
+                      effectiveEmployeeClientId
                     ),
                     '__EMPLOYEE_AUDIENCE__',
-                    employeeAudience
+                    effectiveEmployeeAudience
                   ),
                   '__EMPLOYEE_TOKENS_PER_MINUTE__',
                   string(employeeTokensPerMinute)

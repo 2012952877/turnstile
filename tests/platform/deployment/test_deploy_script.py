@@ -507,7 +507,7 @@ def test_frontend_asset_reads_the_hashed_entrypoint(tmp_path: Path) -> None:
     assert frontend_asset(index) == "assets/index-Ab_12-c.js"
 
 
-def test_runtime_release_explicitly_restarts_updated_apps(
+def test_runtime_release_recycles_updated_apps_without_stale_api_health(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     inputs = DeploymentInputs.load(
@@ -534,10 +534,12 @@ def test_runtime_release_explicitly_restarts_updated_apps(
     )
 
     assert [command[:3] for command in commands] == [
-        ["az", "webapp", "restart"],
+        ["az", "webapp", "stop"],
+        ["az", "webapp", "start"],
         ["az", "functionapp", "restart"],
     ]
     assert [command[command.index("--name") + 1] for command in commands] == [
+        "api-turnstile-test",
         "api-turnstile-test",
         "func-turnstile-control-test",
     ]

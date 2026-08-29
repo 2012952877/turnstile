@@ -780,23 +780,34 @@ def restart_runtime_apps(
     outputs: Mapping[str, Any],
 ) -> None:
     resource_group = _output_string(outputs, "resourceGroupName")
-    for resource_type, output_name in (
-        ("webapp", "apiName"),
-        ("functionapp", "controlPlaneFunctionName"),
-    ):
+    api_name = _output_string(outputs, "apiName")
+    for action in ("stop", "start"):
         runner.run(
             [
                 "az",
-                resource_type,
-                "restart",
+                "webapp",
+                action,
                 "--subscription",
                 inputs.subscription,
                 "--resource-group",
                 resource_group,
                 "--name",
-                _output_string(outputs, output_name),
+                api_name,
             ]
         )
+    runner.run(
+        [
+            "az",
+            "functionapp",
+            "restart",
+            "--subscription",
+            inputs.subscription,
+            "--resource-group",
+            resource_group,
+            "--name",
+            _output_string(outputs, "controlPlaneFunctionName"),
+        ]
+    )
 
 
 def _output_string(outputs: Mapping[str, Any], name: str) -> str:

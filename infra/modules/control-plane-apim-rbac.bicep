@@ -3,6 +3,8 @@ targetScope = 'resourceGroup'
 param apimName string
 param controlPlanePrincipalId string
 
+var roleNameSuffix = uniqueString(resourceGroup().id)
+
 resource apim 'Microsoft.ApiManagement/service@2024-05-01' existing = {
   name: apimName
 }
@@ -10,7 +12,7 @@ resource apim 'Microsoft.ApiManagement/service@2024-05-01' existing = {
 resource publisherRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
   name: guid(resourceGroup().id, 'turnstile-apim-publisher')
   properties: {
-    roleName: 'Turnstile APIM Publisher'
+    roleName: 'Turnstile APIM Publisher ${roleNameSuffix}'
     description: 'Publishes Turnstile API resources and provisions governed APIM subscriptions.'
     type: 'CustomRole'
     permissions: [

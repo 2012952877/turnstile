@@ -231,9 +231,15 @@ def test_control_plane_role_has_no_subscription_or_resource_group_scope() -> Non
     assert "resourceGroup().id" in CONTROL_PLANE_APIM_RBAC
 
 
-def test_custom_roles_use_product_specific_names() -> None:
-    assert "roleName: 'Turnstile APIM Publisher'" in CONTROL_PLANE_APIM_RBAC
-    assert "roleName: 'Turnstile APIM Subscription Key Operator'" in APPLICATION_KEY_MANAGEMENT_RBAC
+def test_custom_roles_use_installation_specific_names() -> None:
+    for template in (CONTROL_PLANE_APIM_RBAC, APPLICATION_KEY_MANAGEMENT_RBAC):
+        assert "var roleNameSuffix = uniqueString(resourceGroup().id)" in template
+        assert "${roleNameSuffix}'" in template
+    assert "roleName: 'Turnstile APIM Publisher ${roleNameSuffix}'" in CONTROL_PLANE_APIM_RBAC
+    assert (
+        "roleName: 'Turnstile APIM Subscription Key Operator ${roleNameSuffix}'"
+        in APPLICATION_KEY_MANAGEMENT_RBAC
+    )
     assert "roleName: 'FinOps" not in CONTROL_PLANE_APIM_RBAC
     assert "roleName: 'FinOps" not in APPLICATION_KEY_MANAGEMENT_RBAC
 

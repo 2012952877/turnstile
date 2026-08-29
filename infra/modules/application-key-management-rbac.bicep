@@ -3,6 +3,8 @@ targetScope = 'resourceGroup'
 param apimName string
 param apiPrincipalIds array
 
+var roleNameSuffix = uniqueString(resourceGroup().id)
+
 resource apim 'Microsoft.ApiManagement/service@2024-05-01' existing = {
   name: apimName
 }
@@ -10,7 +12,7 @@ resource apim 'Microsoft.ApiManagement/service@2024-05-01' existing = {
 resource keyOperatorRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
   name: guid(resourceGroup().id, 'turnstile-apim-subscription-key-operator')
   properties: {
-    roleName: 'Turnstile APIM Subscription Key Operator'
+    roleName: 'Turnstile APIM Subscription Key Operator ${roleNameSuffix}'
     description: 'Allows the Turnstile API to reveal and rotate keys for governed APIM subscriptions.'
     type: 'CustomRole'
     permissions: [

@@ -170,6 +170,21 @@ def test_flex_functions_have_isolated_network_and_deployment_storage() -> None:
     )
 
 
+def test_vnet_subnets_are_created_serially() -> None:
+    telemetry_subnet = DATA_PLANE.split("resource telemetryFunctionSubnet", 1)[1].split(
+        "resource controlFunctionSubnet", 1
+    )[0]
+    control_subnet = DATA_PLANE.split("resource controlFunctionSubnet", 1)[1].split(
+        "resource privateEndpointSubnet", 1
+    )[0]
+    private_endpoint_subnet = DATA_PLANE.split("resource privateEndpointSubnet", 1)[
+        1
+    ].split("resource blobPrivateDnsZone", 1)[0]
+    assert "virtualNetwork" in telemetry_subnet.split("dependsOn:", 1)[1]
+    assert "telemetryFunctionSubnet" in control_subnet.split("dependsOn:", 1)[1]
+    assert "controlFunctionSubnet" in private_endpoint_subnet.split("dependsOn:", 1)[1]
+
+
 def test_telemetry_host_storage_is_fully_reachable_over_private_links() -> None:
     for service in ("blob", "queue", "table"):
         assert f"privatelink.{service}.${{environment().suffixes.storage}}" in DATA_PLANE

@@ -317,6 +317,9 @@ resource telemetryFunctionSubnet 'Microsoft.Network/virtualNetworks/subnets@2024
       }
     ]
   }
+  dependsOn: [
+    virtualNetwork
+  ]
 }
 
 resource controlFunctionSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
@@ -333,6 +336,9 @@ resource controlFunctionSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-0
       }
     ]
   }
+  dependsOn: [
+    telemetryFunctionSubnet
+  ]
 }
 
 resource privateEndpointSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
@@ -342,6 +348,9 @@ resource privateEndpointSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-0
     addressPrefix: '10.42.2.0/24'
     privateEndpointNetworkPolicies: 'Disabled'
   }
+  dependsOn: [
+    controlFunctionSubnet
+  ]
 }
 
 resource blobPrivateDnsZone 'Microsoft.Network/privateDnsZones@2024-06-01' = {

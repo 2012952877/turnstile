@@ -735,6 +735,31 @@ def deploy_packages(
         )
 
 
+def restart_runtime_apps(
+    runner: CommandRunner,
+    inputs: DeploymentInputs,
+    outputs: Mapping[str, Any],
+) -> None:
+    resource_group = _output_string(outputs, "resourceGroupName")
+    for resource_type, output_name in (
+        ("webapp", "apiName"),
+        ("functionapp", "controlPlaneFunctionName"),
+    ):
+        runner.run(
+            [
+                "az",
+                resource_type,
+                "restart",
+                "--subscription",
+                inputs.subscription,
+                "--resource-group",
+                resource_group,
+                "--name",
+                _output_string(outputs, output_name),
+            ]
+        )
+
+
 def _output_string(outputs: Mapping[str, Any], name: str) -> str:
     value = outputs.get(name)
     if not isinstance(value, str) or not value:
@@ -1187,8 +1212,9 @@ def execute(args: argparse.Namespace, runner: CommandRunner) -> None:
         f"{inputs.resource_prefix}-runtime-release",
     )
     final_outputs = platform_outputs
+    restart_runtime_apps(runner, inputs, final_outputs)
     api_url = _output_string(final_outputs, "apiUrl")
-    wait_for_health(api_url)
+    wait_for_health(api_url, timeout_seconds=1800)
     verify_frontend_asset(api_url, expected_asset)
     if secrets_.owner_password is None:
         raise DeploymentError("Initial Owner password is required for verification")

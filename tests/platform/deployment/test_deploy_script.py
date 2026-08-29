@@ -26,6 +26,7 @@ from scripts.deploy import (
     observer_parameters,
     owner_credentials_password,
     pip_linux_dependency_command,
+    restart_runtime_apps,
     runtime_release_parameters,
     temporary_parameter_file,
     validate_postgres_capabilities,
@@ -460,6 +461,42 @@ def test_frontend_asset_reads_the_hashed_entrypoint(tmp_path: Path) -> None:
     )
 
     assert frontend_asset(index) == "assets/index-Ab_12-c.js"
+
+
+def test_runtime_release_explicitly_restarts_updated_apps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = DeploymentInputs.load(
+        "subscription",
+        _parameters(tmp_path / "parameters.json"),
+        tmp_path / "state.json",
+    )
+    runner = CommandRunner()
+    commands: list[Sequence[str]] = []
+
+    def run(command: Sequence[str], **_kwargs: object) -> None:
+        commands.append(command)
+
+    monkeypatch.setattr(runner, "run", run)
+
+    restart_runtime_apps(
+        runner,
+        inputs,
+        {
+            "resourceGroupName": "turnstile-test",
+            "apiName": "api-turnstile-test",
+            "controlPlaneFunctionName": "func-turnstile-control-test",
+        },
+    )
+
+    assert [command[:3] for command in commands] == [
+        ["az", "webapp", "restart"],
+        ["az", "functionapp", "restart"],
+    ]
+    assert [command[command.index("--name") + 1] for command in commands] == [
+        "api-turnstile-test",
+        "func-turnstile-control-test",
+    ]
 
 
 def test_repository_parameter_example_and_generated_documents_match_bicep(

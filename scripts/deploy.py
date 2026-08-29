@@ -52,6 +52,10 @@ EXPECTED_FUNCTIONS = {
     },
 }
 FIXED_ZIP_TIMESTAMP = (2020, 1, 1, 0, 0, 0)
+POSTGRES_VERSION = "16"
+POSTGRES_AVAILABILITY_ZONE = "1"
+DEFAULT_POSTGRES_SKU_NAME = "Standard_B1ms"
+DEFAULT_POSTGRES_TIER = "Burstable"
 
 
 class DeploymentError(RuntimeError):
@@ -66,6 +70,9 @@ class DeploymentInputs:
     resource_group_name: str
     resource_prefix: str
     location: str
+    postgres_location: str
+    postgres_sku_name: str
+    postgres_tier: str
     owner_email: str
     state_path: Path
 
@@ -95,6 +102,13 @@ class DeploymentInputs:
             )
         resource_prefix = _required_string(parameters, "resourcePrefix")
         location = _required_string(parameters, "location")
+        postgres_location = _string_parameter(parameters, "postgresLocation", location)
+        postgres_sku_name = _string_parameter(
+            parameters, "postgresSkuName", DEFAULT_POSTGRES_SKU_NAME
+        )
+        postgres_tier = _string_parameter(
+            parameters, "postgresTier", DEFAULT_POSTGRES_TIER
+        )
         owner_email = _required_string(parameters, "bootstrapOwnerEmail").strip().lower()
         if "@" not in owner_email:
             raise DeploymentError("bootstrapOwnerEmail must be an email address")
@@ -111,6 +125,9 @@ class DeploymentInputs:
             resource_group_name=resource_group_name,
             resource_prefix=resource_prefix,
             location=location,
+            postgres_location=postgres_location,
+            postgres_sku_name=postgres_sku_name,
+            postgres_tier=postgres_tier,
             owner_email=owner_email,
             state_path=resolved_state,
         )
@@ -177,6 +194,13 @@ def _required_string(parameters: Mapping[str, Any], name: str) -> str:
     value = parameters.get(name)
     if not isinstance(value, str) or not value.strip():
         raise DeploymentError(f"Parameter {name} is required")
+    return value.strip()
+
+
+def _string_parameter(parameters: Mapping[str, Any], name: str, default: str) -> str:
+    value = parameters.get(name, default)
+    if not isinstance(value, str) or not value.strip():
+        raise DeploymentError(f"Parameter {name} must be a non-empty string")
     return value.strip()
 
 
@@ -334,6 +358,65 @@ def require_prerequisites(runner: CommandRunner, subscription: str) -> None:
         ["az", "account", "show", "--subscription", subscription, "--output", "json"]
     )
     runner.run(["az", "bicep", "version"], capture=True)
+
+
+def validate_postgres_capabilities(
+    runner: CommandRunner, inputs: DeploymentInputs
+) -> None:
+    if inputs.parameters.get("provisionPostgres", True) is False:
+        return
+    capabilities = runner.run_json(
+        [
+            "az",
+            "postgres",
+            "flexible-server",
+            "list-skus",
+            "--subscription",
+            inputs.subscription,
+            "--location",
+            inputs.postgres_location,
+            "--query",
+            (
+                "[0].{reason:reason,versions:supportedServerVersions[].name,"
+                "editions:supportedServerEditions[].{name:name,"
+                "skus:supportedServerSkus[].{name:name,zones:supportedZones}}}"
+            ),
+            "--output",
+            "json",
+        ]
+    )
+    versions = capabilities.get("versions")
+    if not isinstance(versions, list) or POSTGRES_VERSION not in versions:
+        reason = capabilities.get("reason")
+        detail = f": {reason}" if isinstance(reason, str) and reason else ""
+        raise DeploymentError(
+            f"PostgreSQL {POSTGRES_VERSION} is unavailable in "
+            f"{inputs.postgres_location}{detail}"
+        )
+
+    combination_supported = False
+    editions = capabilities.get("editions")
+    if isinstance(editions, list):
+        for edition in editions:
+            if not isinstance(edition, dict) or edition.get("name") != inputs.postgres_tier:
+                continue
+            skus = edition.get("skus")
+            if not isinstance(skus, list):
+                continue
+            for sku in skus:
+                if not isinstance(sku, dict) or sku.get("name") != inputs.postgres_sku_name:
+                    continue
+                zones = sku.get("zones")
+                combination_supported = (
+                    isinstance(zones, list) and POSTGRES_AVAILABILITY_ZONE in zones
+                )
+                if combination_supported:
+                    break
+    if not combination_supported:
+        raise DeploymentError(
+            f"PostgreSQL {inputs.postgres_tier}/{inputs.postgres_sku_name} in zone "
+            f"{POSTGRES_AVAILABILITY_ZONE} is unavailable in {inputs.postgres_location}"
+        )
 
 
 def _deployment_command(
@@ -958,6 +1041,9 @@ def execute(args: argparse.Namespace, runner: CommandRunner) -> None:
     require_prerequisites(runner, inputs.subscription)
     if not args.allow_dirty:
         validate_source_snapshot(REPOSITORY_ROOT)
+    saved_outputs = load_saved_outputs(inputs)
+    if saved_outputs is None:
+        validate_postgres_capabilities(runner, inputs)
     password_reader: PasswordReader = getpass.getpass
     if args.owner_credentials is not None:
         configured_password = owner_credentials_password(
@@ -973,7 +1059,6 @@ def execute(args: argparse.Namespace, runner: CommandRunner) -> None:
         read_password=password_reader,
         require_owner_password=args.action == "deploy",
     )
-    saved_outputs = load_saved_outputs(inputs)
     existing_core = (
         ExistingCore.from_outputs(saved_outputs) if saved_outputs is not None else None
     )

@@ -27,6 +27,7 @@ from scripts.deploy import (
     pip_linux_dependency_command,
     runtime_release_parameters,
     temporary_parameter_file,
+    validate_postgres_capabilities,
     wait_for_health,
     what_if,
 )
@@ -84,6 +85,63 @@ def test_public_parameter_file_rejects_secure_values(tmp_path: Path) -> None:
 
     with pytest.raises(DeploymentError, match="Keep secure parameters out"):
         DeploymentInputs.load("subscription", path)
+
+
+def test_postgres_preflight_rejects_restricted_region(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = DeploymentInputs.load(
+        "subscription",
+        _parameters(tmp_path / "parameters.json"),
+        tmp_path / "state.json",
+    )
+    runner = CommandRunner()
+    monkeypatch.setattr(
+        runner,
+        "run_json",
+        lambda *_args, **_kwargs: {
+            "reason": "Subscriptions are restricted from provisioning in this region.",
+            "versions": [],
+            "editions": [],
+        },
+    )
+
+    with pytest.raises(DeploymentError, match="PostgreSQL 16 is unavailable in eastus2"):
+        validate_postgres_capabilities(runner, inputs)
+
+
+def test_postgres_preflight_accepts_requested_sku_and_zone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = DeploymentInputs.load(
+        "subscription",
+        _parameters(tmp_path / "parameters.json"),
+        tmp_path / "state.json",
+    )
+    runner = CommandRunner()
+    commands: list[Sequence[str]] = []
+
+    def run_json(command: Sequence[str], **_kwargs: object) -> dict[str, object]:
+        commands.append(command)
+        return {
+            "reason": None,
+            "versions": ["16"],
+            "editions": [
+                {
+                    "name": "Burstable",
+                    "skus": [
+                        {"name": "Standard_B1ms", "zones": ["1", "2", "3"]}
+                    ],
+                }
+            ],
+        }
+
+    monkeypatch.setattr(runner, "run_json", run_json)
+
+    validate_postgres_capabilities(runner, inputs)
+
+    assert commands[0][:4] == ["az", "postgres", "flexible-server", "list-skus"]
+    assert commands[0][commands[0].index("--location") + 1] == "eastus2"
 
 
 def test_owner_credentials_are_private_and_match_public_email(tmp_path: Path) -> None:

@@ -41,6 +41,8 @@ uv run python -m scripts.deploy plan \
 
 The first preview asks for the initial Owner password twice and stores only its scrypt hash. It also creates independent random platform secrets in `.turnstile/deployments/<resource-group>.json` with mode `0600`. Repeated previews and deployments reuse that state.
 
+Before creating deployment state, the command verifies that the selected PostgreSQL region currently supports PostgreSQL 16 and the configured SKU and availability zone. If the subscription is restricted in that region, choose another `postgresLocation` and run the preview again.
+
 Review all creates, updates, unsupported previews, role assignments, and network settings. The script refuses every what-if containing a Delete change.
 
 ## Deploy

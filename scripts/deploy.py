@@ -578,6 +578,15 @@ def source_version(runner: CommandRunner) -> str:
     return result.stdout.strip()
 
 
+def observer_source_version(runner: CommandRunner) -> str:
+    result = runner.run(
+        ["git", "rev-parse", "--short=12", "HEAD:infra/envoy-cache-adapter"],
+        cwd=REPOSITORY_ROOT,
+        capture=True,
+    )
+    return result.stdout.strip()
+
+
 def deterministic_zip(source: Path, destination: Path) -> None:
     with zipfile.ZipFile(
         destination, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9
@@ -825,6 +834,13 @@ def observer_names(inputs: DeploymentInputs) -> tuple[str, str]:
     return f"cr{compact_prefix}{digest}"[:50], f"obs-{compact_prefix}-{digest}"[:60]
 
 
+def observer_plan_name(inputs: DeploymentInputs) -> str:
+    digest = hashlib.sha256(
+        f"{inputs.subscription}:{inputs.resource_group_name}".encode()
+    ).hexdigest()[:12]
+    return f"plan-obs-{digest}"
+
+
 def observer_parameters(
     inputs: DeploymentInputs,
     platform_outputs: Mapping[str, Any],
@@ -837,11 +853,6 @@ def observer_parameters(
     else:
         acr_name = _output_string(existing_observer, "acrName")
         web_app_name = _output_string(existing_observer, "webAppName")
-    observer_plan_name = (
-        _output_string(existing_observer, "observerAppServicePlanName")
-        if existing_observer is not None
-        else _output_string(platform_outputs, "appServicePlanName")
-    )
     return _arm_parameter_document(
         {
             "resourceGroupName": _output_string(platform_outputs, "resourceGroupName"),
@@ -849,7 +860,7 @@ def observer_parameters(
                 platform_outputs, "resourceGroupName"
             ),
             "location": inputs.location,
-            "appServicePlanName": observer_plan_name,
+            "appServicePlanName": observer_plan_name(inputs),
             "webAppName": web_app_name,
             "acrName": acr_name,
             "provisionAcr": existing_observer is None,
@@ -930,6 +941,29 @@ def build_and_start_observer(
     acr_name = _output_string(observer_outputs, "acrName")
     image = _output_string(observer_outputs, "image")
     image_repository_and_tag = image.split("/", maxsplit=1)[1]
+    try:
+        runner.run(
+            [
+                "az",
+                "acr",
+                "repository",
+                "show",
+                "--subscription",
+                inputs.subscription,
+                "--name",
+                acr_name,
+                "--image",
+                image_repository_and_tag,
+                "--output",
+                "none",
+            ],
+            capture=True,
+        )
+    except subprocess.CalledProcessError:
+        pass
+    else:
+        print(f"Observer image already exists: {image_repository_and_tag} ({version})")
+        return
     runner.run(
         [
             "az",
@@ -1202,6 +1236,7 @@ def execute(args: argparse.Namespace, runner: CommandRunner) -> None:
             return
         _confirm_deployment(args.yes)
     version = source_version(runner)
+    observer_version = observer_source_version(runner)
     packages = build_packages(runner, inputs, version)
     expected_asset = frontend_asset()
     deploy_packages(runner, inputs, platform_outputs, packages)
@@ -1210,7 +1245,7 @@ def execute(args: argparse.Namespace, runner: CommandRunner) -> None:
         inputs,
         platform_outputs,
         secrets_,
-        version,
+        observer_version,
         existing_observer=platform_outputs if saved_outputs is not None else None,
     )
     observer_template = REPOSITORY_ROOT / "infra" / "envoy-cache-adapter" / "main.bicep"
@@ -1229,7 +1264,7 @@ def execute(args: argparse.Namespace, runner: CommandRunner) -> None:
         f"{inputs.resource_prefix}-observer",
     )
     observer_outputs = deployment_outputs(observer_result)
-    build_and_start_observer(runner, inputs, observer_outputs, version)
+    build_and_start_observer(runner, inputs, observer_outputs, observer_version)
     wait_for_observer_health(_output_string(observer_outputs, "webAppUrl"))
 
     api_settings = current_app_settings(

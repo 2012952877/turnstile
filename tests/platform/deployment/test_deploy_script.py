@@ -16,6 +16,7 @@ from scripts.deploy import (
     DeploymentError,
     DeploymentInputs,
     ExistingCore,
+    build_and_start_observer,
     deploy_packages,
     deployment_parameters,
     deterministic_zip,
@@ -25,6 +26,8 @@ from scripts.deploy import (
     load_or_create_secret_material,
     observer_names,
     observer_parameters,
+    observer_plan_name,
+    observer_source_version,
     owner_credentials_password,
     pip_linux_dependency_command,
     restart_runtime_apps,
@@ -281,9 +284,13 @@ def test_observer_names_are_stable_and_azure_safe(tmp_path: Path) -> None:
     assert acr_name == observer_names(inputs)[0]
     assert acr_name.isalnum() and acr_name.islower() and len(acr_name) <= 50
     assert web_app_name.startswith("obs-turnstile-") and len(web_app_name) <= 60
+    assert observer_plan_name(inputs).startswith("plan-obs-")
+    assert len(observer_plan_name(inputs)) <= 40
 
 
-def test_observer_parameters_reuse_saved_resource_names(tmp_path: Path) -> None:
+def test_observer_parameters_reuse_apps_but_isolate_the_observer_plan(
+    tmp_path: Path,
+) -> None:
     inputs = DeploymentInputs.load(
         "subscription",
         _parameters(tmp_path / "parameters.json"),
@@ -316,8 +323,9 @@ def test_observer_parameters_reuse_saved_resource_names(tmp_path: Path) -> None:
     assert document["parameters"]["webAppName"]["value"] == "observer-existing"
     assert (
         document["parameters"]["appServicePlanName"]["value"]
-        == "plan-observer-existing"
+        == observer_plan_name(inputs)
     )
+    assert document["parameters"]["appServicePlanName"]["value"] != "plan-turnstile-test"
     assert document["parameters"]["provisionAcr"]["value"] is False
 
 
@@ -335,6 +343,63 @@ def test_deterministic_zip_has_stable_bytes_and_order(tmp_path: Path) -> None:
     assert first.read_bytes() == second.read_bytes()
     with zipfile.ZipFile(first) as archive:
         assert archive.namelist() == ["a.txt", "b.txt"]
+
+
+def test_observer_version_is_scoped_to_its_source_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = CommandRunner()
+    commands: list[Sequence[str]] = []
+
+    def run(
+        command: Sequence[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="ee355910a942\n")
+
+    monkeypatch.setattr(runner, "run", run)
+
+    assert observer_source_version(runner) == "ee355910a942"
+    assert commands == [
+        ["git", "rev-parse", "--short=12", "HEAD:infra/envoy-cache-adapter"]
+    ]
+
+
+def test_existing_observer_image_skips_rebuild_and_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = DeploymentInputs.load(
+        "subscription",
+        _parameters(tmp_path / "parameters.json"),
+        tmp_path / "state.json",
+    )
+    runner = CommandRunner()
+    commands: list[Sequence[str]] = []
+
+    def run(
+        command: Sequence[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(runner, "run", run)
+
+    build_and_start_observer(
+        runner,
+        inputs,
+        {
+            "acrName": "acrexisting",
+            "image": (
+                "acrexisting.azurecr.io/turnstile/"
+                "envoy-cache-adapter:ee355910a942"
+            ),
+            "webAppName": "observer-existing",
+        },
+        "ee355910a942",
+    )
+
+    assert len(commands) == 1
+    assert commands[0][:4] == ["az", "acr", "repository", "show"]
 
 
 def test_api_deployment_uses_turnstile_health_gate(monkeypatch: pytest.MonkeyPatch) -> None:

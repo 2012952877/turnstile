@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import stat
+import urllib.error
 import zipfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -28,6 +29,7 @@ from scripts.deploy import (
     runtime_release_parameters,
     temporary_parameter_file,
     validate_postgres_capabilities,
+    verify_owner_login,
     wait_for_health,
     what_if,
 )
@@ -372,6 +374,37 @@ def test_health_gate_accepts_successful_empty_response(
     monkeypatch.setattr("scripts.deploy._open_without_proxy", lambda *_: b"")
 
     assert wait_for_health("https://observer.example.test") == ""
+
+
+def test_owner_login_retries_transient_http_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses: list[object] = [
+        urllib.error.URLError("app restarting"),
+        json.dumps(
+            {
+                "email": "owner@example.com",
+                "role": "owner",
+                "method": "password",
+            }
+        ).encode(),
+    ]
+
+    def open_request(*_: object) -> bytes:
+        response = responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        assert isinstance(response, bytes)
+        return response
+
+    monkeypatch.setattr("scripts.deploy._open_without_proxy", open_request)
+    monkeypatch.setattr("scripts.deploy.time.sleep", lambda _: None)
+
+    verify_owner_login(
+        "https://api.example.test", "owner@example.com", "secret", timeout_seconds=10
+    )
+
+    assert responses == []
 
 
 def test_linux_dependency_command_uses_pinned_target_platform(tmp_path: Path) -> None:

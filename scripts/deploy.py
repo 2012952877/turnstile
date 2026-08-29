@@ -913,25 +913,34 @@ def wait_for_health(api_url: str, timeout_seconds: int = 180) -> str:
     raise DeploymentError(f"API health check did not recover: {last_error}")
 
 
-def verify_owner_login(api_url: str, email: str, password: str) -> None:
+def verify_owner_login(
+    api_url: str, email: str, password: str, timeout_seconds: int = 180
+) -> None:
     payload = json.dumps({"email": email, "password": password}).encode()
-    request = urllib.request.Request(
-        f"{api_url.rstrip('/')}/api/v1/auth/login",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        response = json.loads(_open_without_proxy(request, 30))
-    except (OSError, urllib.error.URLError, json.JSONDecodeError) as error:
-        raise DeploymentError("Initial Owner password login failed") from error
-    if (
-        response.get("email") != email
-        or response.get("role") != "owner"
-        or response.get("method") != "password"
-    ):
-        raise DeploymentError("Initial Owner login returned an unexpected identity")
-    print(f"Initial Owner verified: {email} (role=owner, method=password)")
+    deadline = time.monotonic() + timeout_seconds
+    last_error = "no response"
+    while time.monotonic() < deadline:
+        request = urllib.request.Request(
+            f"{api_url.rstrip('/')}/api/v1/auth/login",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            response = json.loads(_open_without_proxy(request, 30))
+            if (
+                isinstance(response, dict)
+                and response.get("email") == email
+                and response.get("role") == "owner"
+                and response.get("method") == "password"
+            ):
+                print(f"Initial Owner verified: {email} (role=owner, method=password)")
+                return
+            last_error = "unexpected identity response"
+        except (OSError, urllib.error.URLError, json.JSONDecodeError) as error:
+            last_error = str(error)
+        time.sleep(3)
+    raise DeploymentError(f"Initial Owner password login failed: {last_error}")
 
 
 def frontend_asset(index_path: Path = REPOSITORY_ROOT / "frontend" / "dist" / "index.html") -> str:

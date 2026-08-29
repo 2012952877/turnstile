@@ -34,7 +34,7 @@ Copy `main.parameters.example.json` to an ignored `*.parameters.json` file and r
 
 Do not store those values in a checked-in parameter file.
 
-To reuse an existing APIM service while creating the rest of the environment from scratch, set `existingApimName`, `existingApimResourceGroupName`, `existingApimPrincipalId`, and `existingApimGatewayUrl`. Leave all four empty to provision a new APIM service. Shared APIM resources are isolated by `resourcePrefix`.
+To reuse an existing APIM service while creating the rest of the environment from scratch, set `existingApimName`, `existingApimResourceGroupName`, `existingApimPrincipalId`, and `existingApimGatewayUrl`. Leave all four empty to provision a new capacity-one `StandardV2` APIM service. Shared APIM resources are isolated by `resourcePrefix`.
 
 ## Preview and deploy
 

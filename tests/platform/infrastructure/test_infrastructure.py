@@ -43,6 +43,11 @@ def test_main_creates_the_platform_resource_group_and_apim() -> None:
     assert "publisherEmail: publisherEmail" in APIM_SERVICE
 
 
+def test_new_apim_defaults_to_standard_v2() -> None:
+    assert "param apimSkuName string = 'StandardV2'" in MAIN
+    assert PARAMETERS["apimSkuName"]["value"] == "StandardV2"
+
+
 def test_apim_exposes_the_turnstile_gateway_path() -> None:
     assert "param apimApiId string = 'turnstile-llm'" in MAIN
     assert "param gatewayApiRelativePath string = 'turnstile/llm'" in MAIN

@@ -48,7 +48,7 @@ param apimPublisherName string = 'Turnstile'
   'BasicV2'
   'StandardV2'
 ])
-param apimSkuName string = 'Developer'
+param apimSkuName string = 'StandardV2'
 
 @minValue(1)
 param apimCapacity int = 1

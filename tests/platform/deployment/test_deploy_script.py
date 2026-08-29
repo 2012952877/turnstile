@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import stat
+import subprocess
 import urllib.error
 import zipfile
 from collections.abc import Mapping, Sequence
@@ -368,6 +369,49 @@ def test_api_deployment_uses_turnstile_health_gate(monkeypatch: pytest.MonkeyPat
     assert "--track-status" in commands[0]
     assert commands[0][commands[0].index("--track-status") + 1] == "false"
     assert health_calls == [("https://api.example.test", 1800)]
+
+
+def test_function_package_deployment_restarts_and_retries_after_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+    failed = False
+
+    class Runner:
+        def run(self, command: Sequence[str], **_: object) -> None:
+            nonlocal failed
+            commands.append(list(command))
+            if "config-zip" in command and not failed:
+                failed = True
+                raise subprocess.CalledProcessError(1, command)
+
+    monkeypatch.setattr("scripts.deploy.wait_for_health", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("scripts.deploy.time.sleep", lambda _: None)
+    deploy_packages(
+        Runner(),  # type: ignore[arg-type]
+        type("Inputs", (), {"subscription": "sub", "resource_group_name": "rg"})(),
+        {
+            "resourceGroupName": "rg",
+            "apiName": "api",
+            "apiUrl": "https://api.example.test",
+            "telemetryFunctionName": "telemetry",
+            "controlPlaneFunctionName": "control",
+        },
+        {
+            "api": Path("api.zip"),
+            "telemetry": Path("telemetry.zip"),
+            "control-plane": Path("control-plane.zip"),
+        },
+    )
+
+    function_commands = [command for command in commands if command[:2] == ["az", "functionapp"]]
+    assert [command[2] for command in function_commands] == [
+        "deployment",
+        "restart",
+        "deployment",
+        "deployment",
+    ]
+    assert function_commands[1][function_commands[1].index("--name") + 1] == "telemetry"
 
 
 def test_health_gate_accepts_successful_empty_response(

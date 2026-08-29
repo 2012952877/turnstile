@@ -712,27 +712,66 @@ def deploy_packages(
         ("controlPlaneFunctionName", "control-plane"),
     ):
         function_name = _output_string(outputs, output_name)
-        runner.run(
-            [
-                "az",
-                "functionapp",
-                "deployment",
-                "source",
-                "config-zip",
-                "--subscription",
-                inputs.subscription,
-                "--resource-group",
-                resource_group,
-                "--name",
-                function_name,
-                "--src",
-                str(packages[package_name]),
-                "--build-remote",
-                "false",
-                "--output",
-                "json",
-            ]
+        deploy_function_package(
+            runner,
+            inputs,
+            resource_group,
+            function_name,
+            packages[package_name],
         )
+
+
+def deploy_function_package(
+    runner: CommandRunner,
+    inputs: DeploymentInputs,
+    resource_group: str,
+    function_name: str,
+    package: Path,
+) -> None:
+    command = [
+        "az",
+        "functionapp",
+        "deployment",
+        "source",
+        "config-zip",
+        "--subscription",
+        inputs.subscription,
+        "--resource-group",
+        resource_group,
+        "--name",
+        function_name,
+        "--src",
+        str(package),
+        "--build-remote",
+        "false",
+        "--output",
+        "json",
+    ]
+    for attempt in range(1, 4):
+        try:
+            runner.run(command)
+            return
+        except subprocess.CalledProcessError:
+            if attempt == 3:
+                raise
+            print(
+                f"Function package deployment failed for {function_name}; "
+                f"restarting before retry {attempt + 1}/3."
+            )
+            runner.run(
+                [
+                    "az",
+                    "functionapp",
+                    "restart",
+                    "--subscription",
+                    inputs.subscription,
+                    "--resource-group",
+                    resource_group,
+                    "--name",
+                    function_name,
+                ]
+            )
+            time.sleep(15)
 
 
 def restart_runtime_apps(

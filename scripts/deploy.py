@@ -913,6 +913,10 @@ def wait_for_health(api_url: str, timeout_seconds: int = 180) -> str:
     raise DeploymentError(f"API health check did not recover: {last_error}")
 
 
+def wait_for_observer_health(observer_url: str) -> str:
+    return wait_for_health(observer_url, timeout_seconds=1800)
+
+
 def verify_owner_login(
     api_url: str, email: str, password: str, timeout_seconds: int = 180
 ) -> None:
@@ -1151,7 +1155,7 @@ def execute(args: argparse.Namespace, runner: CommandRunner) -> None:
     )
     observer_outputs = deployment_outputs(observer_result)
     build_and_start_observer(runner, inputs, observer_outputs, version)
-    wait_for_health(_output_string(observer_outputs, "webAppUrl"))
+    wait_for_observer_health(_output_string(observer_outputs, "webAppUrl"))
 
     api_settings = current_app_settings(
         runner, inputs, _output_string(platform_outputs, "apiName")

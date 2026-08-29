@@ -31,6 +31,7 @@ from scripts.deploy import (
     validate_postgres_capabilities,
     verify_owner_login,
     wait_for_health,
+    wait_for_observer_health,
     what_if,
 )
 from scripts.stage_deployment import REPOSITORY_ROOT
@@ -374,6 +375,21 @@ def test_health_gate_accepts_successful_empty_response(
     monkeypatch.setattr("scripts.deploy._open_without_proxy", lambda *_: b"")
 
     assert wait_for_health("https://observer.example.test") == ""
+
+
+def test_observer_health_gate_allows_slow_container_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, int]] = []
+
+    def wait_for_health(url: str, timeout_seconds: int = 180) -> str:
+        calls.append((url, timeout_seconds))
+        return "ok"
+
+    monkeypatch.setattr("scripts.deploy.wait_for_health", wait_for_health)
+
+    assert wait_for_observer_health("https://observer.example.test") == "ok"
+    assert calls == [("https://observer.example.test", 1800)]
 
 
 def test_owner_login_retries_transient_http_failure(

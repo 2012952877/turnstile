@@ -41,7 +41,7 @@ def test_apim_exposes_the_turnstile_gateway_path() -> None:
     assert "param apimApiId string = 'turnstile-llm'" in MAIN
     assert "param gatewayApiRelativePath string = 'turnstile/llm'" in MAIN
     assert "name: apiId" in APIM_INTEGRATION
-    assert "displayName: 'Turnstile AI Gateway'" in APIM_INTEGRATION
+    assert "displayName: '${apiId} | Turnstile AI Gateway'" in APIM_INTEGRATION
     assert "param apiPath string" in APIM_INTEGRATION
     assert "path: apiPath" in APIM_INTEGRATION
     assert "path: 'finops/llm'" not in APIM_INTEGRATION
@@ -59,6 +59,9 @@ def test_shared_apim_resources_are_environment_isolated() -> None:
     ):
         assert f"param {parameter} string" in APIM_INTEGRATION
         assert f"name: {resource_name}" in APIM_INTEGRATION
+
+    assert "displayName: '${apiId} | Turnstile AI Gateway'" in APIM_INTEGRATION
+    assert "displayName: '${productId} | Turnstile AI'" in APIM_INTEGRATION
     assert "param existingApimResourceGroupName string = ''" in MAIN
     assert "scope: effectiveApimResourceGroup" in MAIN
 

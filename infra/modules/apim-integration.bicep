@@ -265,7 +265,7 @@ resource api 'Microsoft.ApiManagement/service/apis@2024-05-01' = {
   name: apiId
   properties: {
     apiType: 'http'
-    displayName: 'Turnstile AI Gateway'
+    displayName: '${apiId} | Turnstile AI Gateway'
     description: 'Provider-neutral APIM model access, token controls, and metadata-only usage collection.'
     path: apiPath
     protocols: [
@@ -283,7 +283,7 @@ resource product 'Microsoft.ApiManagement/service/products@2024-05-01' = {
   parent: apim
   name: productId
   properties: {
-    displayName: 'Turnstile AI'
+    displayName: '${productId} | Turnstile AI'
     description: 'Product-scoped access to governed model provider integrations.'
     approvalRequired: false
     subscriptionRequired: true

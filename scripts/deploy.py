@@ -734,7 +734,10 @@ def deterministic_zip(source: Path, destination: Path) -> None:
             relative = path.relative_to(source).as_posix()
             info = zipfile.ZipInfo(relative, FIXED_ZIP_TIMESTAMP)
             info.compress_type = zipfile.ZIP_DEFLATED
-            info.external_attr = (path.stat().st_mode & 0xFFFF) << 16
+            source_mode = path.stat().st_mode
+            archive_permissions = 0o755 if source_mode & 0o111 else 0o644
+            info.create_system = 3
+            info.external_attr = (stat.S_IFREG | archive_permissions) << 16
             archive.writestr(info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED)
 
 

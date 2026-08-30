@@ -464,6 +464,8 @@ def test_deterministic_zip_has_stable_bytes_and_order(tmp_path: Path) -> None:
     source.mkdir()
     (source / "b.txt").write_text("b", encoding="utf-8")
     (source / "a.txt").write_text("a", encoding="utf-8")
+    (source / "b.txt").chmod(0o600)
+    (source / "a.txt").chmod(0o700)
     first = tmp_path / "first.zip"
     second = tmp_path / "second.zip"
 
@@ -473,6 +475,8 @@ def test_deterministic_zip_has_stable_bytes_and_order(tmp_path: Path) -> None:
     assert first.read_bytes() == second.read_bytes()
     with zipfile.ZipFile(first) as archive:
         assert archive.namelist() == ["a.txt", "b.txt"]
+        assert stat.S_IMODE(archive.getinfo("a.txt").external_attr >> 16) == 0o755
+        assert stat.S_IMODE(archive.getinfo("b.txt").external_attr >> 16) == 0o644
 
 
 def test_observer_version_is_scoped_to_its_source_tree(

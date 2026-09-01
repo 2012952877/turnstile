@@ -824,6 +824,51 @@ def build_packages(
     return packages
 
 
+def deploy_webapp_package(
+    runner: CommandRunner,
+    inputs: DeploymentInputs,
+    app_name: str,
+    package: Path,
+) -> None:
+    token_result = runner.run_json(
+        [
+            "az",
+            "account",
+            "get-access-token",
+            "--subscription",
+            inputs.subscription,
+            "--resource",
+            "https://management.azure.com/",
+            "--query",
+            "{accessToken:accessToken}",
+            "--output",
+            "json",
+        ]
+    )
+    access_token = _output_string(token_result, "accessToken")
+    publish_url = (
+        f"https://{app_name}.scm.azurewebsites.net/api/publish"
+        "?type=zip&clean=true&restart=true"
+    )
+    try:
+        payload = package.read_bytes()
+        request = urllib.request.Request(
+            publish_url,
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/zip",
+            },
+            method="POST",
+        )
+        print(f"$ POST {publish_url} (Microsoft Entra authentication)")
+        _open_without_proxy(request, 1800)
+    except (OSError, urllib.error.URLError) as error:
+        raise DeploymentError(
+            f"Microsoft Entra package deployment failed for {app_name}: {error}"
+        ) from error
+
+
 def deploy_packages(
     runner: CommandRunner,
     inputs: DeploymentInputs,
@@ -832,31 +877,7 @@ def deploy_packages(
 ) -> None:
     resource_group = _output_string(outputs, "resourceGroupName")
     api_name = _output_string(outputs, "apiName")
-    runner.run(
-        [
-            "az",
-            "webapp",
-            "deploy",
-            "--subscription",
-            inputs.subscription,
-            "--resource-group",
-            resource_group,
-            "--name",
-            api_name,
-            "--src-path",
-            str(packages["api"]),
-            "--type",
-            "zip",
-            "--clean",
-            "true",
-            "--restart",
-            "true",
-            "--track-status",
-            "false",
-            "--output",
-            "json",
-        ]
-    )
+    deploy_webapp_package(runner, inputs, api_name, packages["api"])
     wait_for_health(_output_string(outputs, "apiUrl"), timeout_seconds=1800)
     for output_name, package_name in (
         ("telemetryFunctionName", "telemetry"),

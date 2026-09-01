@@ -18,6 +18,7 @@ from scripts.deploy import (
     ExistingCore,
     build_and_start_observer,
     deploy_packages,
+    deploy_webapp_package,
     deployment_parameters,
     deterministic_zip,
     frontend_asset,
@@ -536,8 +537,11 @@ def test_existing_observer_image_skips_rebuild_and_restart(
     assert commands[0][:4] == ["az", "acr", "repository", "show"]
 
 
-def test_api_deployment_uses_turnstile_health_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_api_deployment_uses_entra_publish_and_turnstile_health_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     commands: list[list[str]] = []
+    api_deployments: list[tuple[str, Path]] = []
     health_calls: list[tuple[str, int]] = []
 
     class Runner:
@@ -547,6 +551,12 @@ def test_api_deployment_uses_turnstile_health_gate(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(
         "scripts.deploy.wait_for_health",
         lambda url, timeout_seconds=180: health_calls.append((url, timeout_seconds)),
+    )
+    monkeypatch.setattr(
+        "scripts.deploy.deploy_webapp_package",
+        lambda _runner, _inputs, app_name, package: api_deployments.append(
+            (app_name, package)
+        ),
     )
     deploy_packages(
         Runner(),  # type: ignore[arg-type]
@@ -565,9 +575,65 @@ def test_api_deployment_uses_turnstile_health_gate(monkeypatch: pytest.MonkeyPat
         },
     )
 
-    assert "--track-status" in commands[0]
-    assert commands[0][commands[0].index("--track-status") + 1] == "false"
+    assert api_deployments == [("api", Path("api.zip"))]
     assert health_calls == [("https://api.example.test", 1800)]
+
+
+def test_webapp_package_deployment_uses_entra_without_logging_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    commands: list[list[str]] = []
+    requests: list[tuple[urllib.request.Request, float]] = []
+    package = tmp_path / "api.zip"
+    package.write_bytes(b"package-bytes")
+
+    class Runner:
+        def run_json(self, command: Sequence[str], **_: object) -> dict[str, str]:
+            commands.append(list(command))
+            return {"accessToken": "secret-token"}
+
+    def capture_request(request: urllib.request.Request, timeout: float) -> bytes:
+        requests.append((request, timeout))
+        return b"{}"
+
+    monkeypatch.setattr(
+        "scripts.deploy._open_without_proxy",
+        capture_request,
+    )
+
+    deploy_webapp_package(
+        Runner(),  # type: ignore[arg-type]
+        type("Inputs", (), {"subscription": "sub"})(),
+        "api",
+        package,
+    )
+
+    assert commands == [
+        [
+            "az",
+            "account",
+            "get-access-token",
+            "--subscription",
+            "sub",
+            "--resource",
+            "https://management.azure.com/",
+            "--query",
+            "{accessToken:accessToken}",
+            "--output",
+            "json",
+        ]
+    ]
+    request, timeout = requests[0]
+    assert request.full_url == (
+        "https://api.scm.azurewebsites.net/api/publish"
+        "?type=zip&clean=true&restart=true"
+    )
+    assert request.get_header("Authorization") == "Bearer secret-token"
+    assert request.data == b"package-bytes"
+    assert timeout == 1800
+    assert "secret-token" not in capsys.readouterr().out
 
 
 def test_function_package_deployment_restarts_and_retries_after_failure(
@@ -585,6 +651,7 @@ def test_function_package_deployment_restarts_and_retries_after_failure(
                 raise subprocess.CalledProcessError(1, command)
 
     monkeypatch.setattr("scripts.deploy.wait_for_health", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("scripts.deploy.deploy_webapp_package", lambda *_args: None)
     monkeypatch.setattr("scripts.deploy.time.sleep", lambda _: None)
     deploy_packages(
         Runner(),  # type: ignore[arg-type]

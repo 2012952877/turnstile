@@ -45,6 +45,9 @@ resource webApp 'Microsoft.Web/sites@2024-11-01' = {
   name: webAppName
   location: location
   kind: 'app,linux,container'
+  tags: {
+    SecurityControl: 'Ignore'
+  }
   identity: {
     type: 'SystemAssigned'
   }

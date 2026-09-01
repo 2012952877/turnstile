@@ -260,6 +260,9 @@ resource functionDeploymentContainer 'Microsoft.Storage/storageAccounts/blobServ
 resource ledgerStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: ledgerStorageName
   location: location
+  tags: {
+    SecurityControl: 'Ignore'
+  }
   sku: {
     name: 'Standard_LRS'
   }
@@ -553,12 +556,16 @@ resource api 'Microsoft.Web/sites@2024-11-01' = {
   name: apiName
   location: location
   kind: 'app,linux'
+  tags: {
+    SecurityControl: 'Ignore'
+  }
   identity: {
     type: 'SystemAssigned'
   }
   properties: {
     serverFarmId: apiPlan.id
     httpsOnly: true
+    publicNetworkAccess: 'Enabled'
     clientAffinityEnabled: false
     siteConfig: {
       linuxFxVersion: 'PYTHON|3.11'
@@ -604,12 +611,16 @@ resource functionApp 'Microsoft.Web/sites@2024-11-01' = {
   name: functionName
   location: location
   kind: 'functionapp,linux'
+  tags: {
+    SecurityControl: 'Ignore'
+  }
   identity: {
     type: 'SystemAssigned'
   }
   properties: {
     serverFarmId: telemetryPlan.id
     httpsOnly: true
+    publicNetworkAccess: 'Enabled'
     functionAppConfig: {
       deployment: {
         storage: {

@@ -195,6 +195,21 @@ def test_flex_functions_have_isolated_network_and_deployment_storage() -> None:
     )
 
 
+def test_public_runtime_resources_are_exempt_from_network_modify_policy() -> None:
+    for template, resource_name in (
+        (DATA_PLANE, "ledgerStorage"),
+        (DATA_PLANE, "api"),
+        (DATA_PLANE, "functionApp"),
+        (CONTROL_PLANE, "functionApp"),
+        (OBSERVER_APP, "webApp"),
+    ):
+        resource = template.split(f"resource {resource_name} ", 1)[1].split(
+            "\nresource ", 1
+        )[0]
+        assert "SecurityControl: 'Ignore'" in resource
+        assert "publicNetworkAccess: 'Enabled'" in resource
+
+
 def test_vnet_subnets_are_created_serially() -> None:
     telemetry_subnet = DATA_PLANE.split("resource telemetryFunctionSubnet", 1)[1].split(
         "resource controlFunctionSubnet", 1

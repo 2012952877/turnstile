@@ -99,12 +99,16 @@ resource functionApp 'Microsoft.Web/sites@2024-11-01' = {
   name: functionName
   location: location
   kind: 'functionapp,linux'
+  tags: {
+    SecurityControl: 'Ignore'
+  }
   identity: {
     type: 'SystemAssigned'
   }
   properties: {
     serverFarmId: plan.id
     httpsOnly: true
+    publicNetworkAccess: 'Enabled'
     clientAffinityEnabled: false
     functionAppConfig: {
       deployment: {

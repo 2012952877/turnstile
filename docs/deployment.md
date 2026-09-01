@@ -63,7 +63,7 @@ The command runs these phases in order:
 2. Provision the platform with publication and release workers disabled.
 3. Build the frontend with the configured public Entra client ID.
 4. Install exact Linux x86-64/Python 3.11 dependencies and create deterministic API, telemetry Function, and control-plane Function ZIPs.
-5. Deploy the API package with short-lived Microsoft Entra authentication and publish both Function packages through Flex One Deploy. SCM basic publishing credentials remain disabled.
+5. Deploy the API and Function packages with short-lived Microsoft Entra authentication. Flex Functions use One Deploy, and SCM basic publishing credentials remain disabled.
 6. Provision a Basic ACR and observer App Service on its own Premium v3 plan, build the image remotely, and restart the observer. The default is one `P0v3` worker; set `observerPlanSkuName` and `observerPlanWorkerCount` in the deployment parameters when additional compute or horizontal capacity is required.
 7. Run another no-delete what-if and enable the workers with the observer URL and APIM Named Value.
 8. Verify API health, Function indexing, and real password Owner login.

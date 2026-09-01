@@ -575,7 +575,11 @@ def test_api_deployment_uses_entra_publish_and_turnstile_health_gate(
         },
     )
 
-    assert api_deployments == [("api", Path("api.zip"))]
+    assert api_deployments == [
+        ("api", Path("api.zip")),
+        ("telemetry", Path("telemetry.zip")),
+        ("control", Path("control-plane.zip")),
+    ]
     assert health_calls == [("https://api.example.test", 1800)]
 
 
@@ -640,18 +644,23 @@ def test_function_package_deployment_restarts_and_retries_after_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     commands: list[list[str]] = []
-    failed = False
+    deployments: list[tuple[str, Path]] = []
 
     class Runner:
         def run(self, command: Sequence[str], **_: object) -> None:
-            nonlocal failed
             commands.append(list(command))
-            if "config-zip" in command and not failed:
-                failed = True
-                raise subprocess.CalledProcessError(1, command)
+
+    def deploy_package(
+        _runner: object, _inputs: object, app_name: str, package: Path
+    ) -> None:
+        if app_name == "api":
+            return
+        deployments.append((app_name, package))
+        if len(deployments) == 1:
+            raise DeploymentError("transient deployment failure")
 
     monkeypatch.setattr("scripts.deploy.wait_for_health", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr("scripts.deploy.deploy_webapp_package", lambda *_args: None)
+    monkeypatch.setattr("scripts.deploy.deploy_webapp_package", deploy_package)
     monkeypatch.setattr("scripts.deploy.time.sleep", lambda _: None)
     deploy_packages(
         Runner(),  # type: ignore[arg-type]
@@ -670,14 +679,14 @@ def test_function_package_deployment_restarts_and_retries_after_failure(
         },
     )
 
-    function_commands = [command for command in commands if command[:2] == ["az", "functionapp"]]
-    assert [command[2] for command in function_commands] == [
-        "deployment",
-        "restart",
-        "deployment",
-        "deployment",
+    assert deployments == [
+        ("telemetry", Path("telemetry.zip")),
+        ("telemetry", Path("telemetry.zip")),
+        ("control", Path("control-plane.zip")),
     ]
-    assert function_commands[1][function_commands[1].index("--name") + 1] == "telemetry"
+    assert len(commands) == 1
+    assert commands[0][:3] == ["az", "functionapp", "restart"]
+    assert commands[0][commands[0].index("--name") + 1] == "telemetry"
 
 
 def test_health_gate_accepts_successful_empty_response(

@@ -900,30 +900,11 @@ def deploy_function_package(
     function_name: str,
     package: Path,
 ) -> None:
-    command = [
-        "az",
-        "functionapp",
-        "deployment",
-        "source",
-        "config-zip",
-        "--subscription",
-        inputs.subscription,
-        "--resource-group",
-        resource_group,
-        "--name",
-        function_name,
-        "--src",
-        str(package),
-        "--build-remote",
-        "false",
-        "--output",
-        "json",
-    ]
     for attempt in range(1, 4):
         try:
-            runner.run(command)
+            deploy_webapp_package(runner, inputs, function_name, package)
             return
-        except subprocess.CalledProcessError:
+        except DeploymentError:
             if attempt == 3:
                 raise
             print(

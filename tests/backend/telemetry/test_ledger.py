@@ -8,13 +8,13 @@ from uuid import UUID
 import httpx
 import pytest
 
-from backend.domain.application_access import (
+from turnstile_core.domain.application_access import (
     GatewayApplicationDiscovery,
     GatewayApplicationDiscoveryItem,
     UsageApplicationAttribution,
 )
-from backend.domain.models import TokenUsageRecord
-from backend.integrations.ledger import (
+from turnstile_core.domain.models import TokenUsageRecord
+from turnstile_core.integrations.ledger import (
     RESERVATION_PREFIX,
     ROLL_FORWARD_ACTOR,
     LedgerReservation,
@@ -27,8 +27,8 @@ from backend.integrations.ledger import (
     period_start_for,
     reservation_row_key,
 )
-from backend.persistence.in_memory import InMemoryRepository
-from backend.services.application_access import ApplicationAccessService
+from turnstile_core.persistence.in_memory import InMemoryRepository
+from turnstile_core.services.application_access import ApplicationAccessService
 
 PERIOD_START = datetime(2026, 7, 1, tzinfo=UTC)
 USER = "test.user01@contoso.com"

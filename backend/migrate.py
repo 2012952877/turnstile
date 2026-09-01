@@ -5,7 +5,7 @@ from pathlib import Path
 
 import psycopg
 
-from .config import get_settings
+from turnstile_core.config import get_settings
 
 CREATE_MIGRATION_TABLE = """
 CREATE TABLE IF NOT EXISTS schema_migration (

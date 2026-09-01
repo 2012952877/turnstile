@@ -4,13 +4,13 @@ import inspect
 from contextlib import contextmanager
 from typing import Any
 
-from backend.persistence.repository import PostgreSqlOpsDbProxy, QueryRepository
+from turnstile_core.persistence.repository import PostgreSqlOpsDbProxy, QueryRepository
 
 UNREACHABLE = "postgresql://nobody@127.0.0.1:1/does-not-exist"
 
 
 def test_postgresql_repository_preserves_the_public_contract() -> None:
-    assert PostgreSqlOpsDbProxy.__module__ == "backend.persistence.repository"
+    assert PostgreSqlOpsDbProxy.__module__ == "turnstile_core.persistence.repository"
     assert not inspect.isabstract(PostgreSqlOpsDbProxy)
     assert all(
         callable(getattr(PostgreSqlOpsDbProxy, method_name))

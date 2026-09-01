@@ -4,14 +4,14 @@ import inspect
 
 import pytest
 
-from backend.config import Settings
-from backend.persistence.factory import create_repository
-from backend.persistence.in_memory import InMemoryRepository
-from backend.persistence.repository import PostgreSqlOpsDbProxy, QueryRepository
+from turnstile_core.config import Settings
+from turnstile_core.persistence.factory import create_repository
+from turnstile_core.persistence.in_memory import InMemoryRepository
+from turnstile_core.persistence.repository import PostgreSqlOpsDbProxy, QueryRepository
 
 
 def test_in_memory_repository_preserves_the_public_contract() -> None:
-    assert InMemoryRepository.__module__ == "backend.persistence.in_memory"
+    assert InMemoryRepository.__module__ == "turnstile_core.persistence.in_memory"
     assert not inspect.isabstract(InMemoryRepository)
     assert all(
         callable(getattr(InMemoryRepository, method_name))

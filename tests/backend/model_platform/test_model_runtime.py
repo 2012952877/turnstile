@@ -13,9 +13,10 @@ from cryptography.fernet import Fernet
 from fastapi import HTTPException
 from pydantic import SecretStr
 
-from backend.config import Settings
-from backend.domain.models import TokenUsageRecord
-from backend.domain.runtime_models import (
+from backend.services.runtime_service import ModelRuntimeService
+from turnstile_core.config import Settings
+from turnstile_core.domain.models import TokenUsageRecord
+from turnstile_core.domain.runtime_models import (
     AuthType,
     ChatMessage,
     GatewayKind,
@@ -29,16 +30,15 @@ from backend.domain.runtime_models import (
     RuntimeKind,
     RuntimeWrite,
 )
-from backend.integrations.gateway import (
+from turnstile_core.integrations.gateway import (
     AnthropicMessagesGatewayAdapter,
     CliGatewayAdapter,
     GatewayInvocationError,
     GatewayRouter,
     OpenAICompatibleGatewayAdapter,
 )
-from backend.persistence.in_memory import InMemoryRepository
-from backend.security import CredentialCipher
-from backend.services.runtime_service import ModelRuntimeService
+from turnstile_core.persistence.in_memory import InMemoryRepository
+from turnstile_core.security import CredentialCipher
 
 
 def request(*, model: str = "gpt-4.1", runtime: str = "Foundry Test") -> ModelInvocationRequest:
@@ -973,14 +973,14 @@ def test_cli_adapter_reports_timeout_as_504(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(
-        "backend.integrations.gateway.shutil.which", lambda _: "/usr/bin/fake-cli"
+        "turnstile_core.integrations.gateway.shutil.which", lambda _: "/usr/bin/fake-cli"
     )
 
     def time_out(*args: Any, **kwargs: Any) -> Any:
         assert kwargs["timeout"] == 1.25
         raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"])
 
-    monkeypatch.setattr("backend.integrations.gateway.subprocess.run", time_out)
+    monkeypatch.setattr("turnstile_core.integrations.gateway.subprocess.run", time_out)
     route = {
         "runtime_config": {
             "command": "fake-cli",

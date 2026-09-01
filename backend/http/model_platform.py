@@ -5,8 +5,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from ..config import get_settings
-from ..domain.control_plane import (
+from turnstile_core.config import get_settings
+from turnstile_core.domain.control_plane import (
     GatewayBackendPoolConfig,
     GatewayBackendPoolWrite,
     GatewayCredentialRotation,
@@ -26,7 +26,7 @@ from ..domain.control_plane import (
     GatewayReleaseRollbackPreview,
     GatewayReleaseRollbackRequest,
 )
-from ..domain.runtime_models import (
+from turnstile_core.domain.runtime_models import (
     GatewayProfileWrite,
     ManagedModelWrite,
     ModelConnectionCreate,
@@ -41,11 +41,12 @@ from ..domain.runtime_models import (
     TrafficGenerationRequest,
     TrafficGenerationResult,
 )
-from ..services.control_plane import (
+from turnstile_core.services.control_plane import (
     ControlPlaneConflictError,
     ControlPlaneNotFoundError,
     ControlPlaneUnavailableError,
 )
+
 from ..services.traffic import TrafficGenerator
 from .publication_auth import PublicationOwner
 from .service_dependencies import (

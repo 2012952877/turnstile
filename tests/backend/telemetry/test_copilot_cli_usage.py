@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
-from backend.ingestion.copilot_cli_usage import (
+from turnstile_core.ingestion.copilot_cli_usage import (
     CopilotAttribution,
     merge_sources,
     parse_log,

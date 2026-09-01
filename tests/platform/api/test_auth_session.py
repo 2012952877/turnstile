@@ -9,10 +9,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.api import app, get_entra_verifier
-from backend.config import Settings, get_settings
 from backend.http.session import get_auth_store
 from backend.services.auth_service import EntraIdentity, hash_password
 from tests.support.paths import REPOSITORY_ROOT
+from turnstile_core.config import Settings, get_settings
 
 client = TestClient(app)
 USER_ID = UUID("00000000-0000-4000-8000-000000000001")
@@ -112,7 +112,7 @@ def test_default_session_policy_is_fixed_and_role_based() -> None:
 
 
 def test_auth_store_uses_only_absolute_expiry_and_revokes_on_password_update() -> None:
-    source = (REPOSITORY_ROOT / "backend/persistence/auth_store.py").read_text(
+    source = (REPOSITORY_ROOT / "turnstile_core/persistence/auth_store.py").read_text(
         encoding="utf-8"
     )
 

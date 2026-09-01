@@ -8,8 +8,20 @@ from cryptography.fernet import Fernet
 from fastapi import HTTPException
 from pydantic import HttpUrl, SecretStr
 
-from backend.config import Settings
-from backend.domain.control_plane import (
+from backend.http.publication_auth import require_publication_owner
+from tests.backend.model_platform.control_plane_support import (
+    APIM_ID,
+    FakeApimClient,
+    GatewayControlPlaneService,
+    GatewayPublicationWorker,
+    PublicationAuthStore,
+    bedrock_publication,
+    external_tenant_foundry_publication,
+    foundry_publication,
+    publication_request,
+)
+from turnstile_core.config import Settings
+from turnstile_core.domain.control_plane import (
     ApiFormat,
     AuthStrategy,
     GatewayBackendFailureStatusCodeRange,
@@ -25,27 +37,15 @@ from backend.domain.control_plane import (
     ModelCreateTarget,
     RuntimeTarget,
 )
-from backend.domain.runtime_models import ProviderTarget
-from backend.http.publication_auth import require_publication_owner
-from backend.integrations.apim_control_plane import (
+from turnstile_core.domain.runtime_models import ProviderTarget
+from turnstile_core.integrations.apim_control_plane import (
     ApimPolicyCompiler,
     BackendPoolResource,
 )
-from backend.persistence.in_memory import InMemoryRepository
-from backend.security import CredentialCipher
-from backend.services.control_plane import (
+from turnstile_core.persistence.in_memory import InMemoryRepository
+from turnstile_core.security import CredentialCipher
+from turnstile_core.services.control_plane import (
     ControlPlaneConflictError,
-)
-from tests.backend.model_platform.control_plane_support import (
-    APIM_ID,
-    FakeApimClient,
-    GatewayControlPlaneService,
-    GatewayPublicationWorker,
-    PublicationAuthStore,
-    bedrock_publication,
-    external_tenant_foundry_publication,
-    foundry_publication,
-    publication_request,
 )
 
 

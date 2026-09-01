@@ -4,8 +4,8 @@ from collections.abc import Mapping
 from typing import Any
 from uuid import UUID
 
-from ..domain.models import AnomalyRule, AnomalyRuleListResponse, AnomalyRuleWrite
-from ..persistence.repository import QueryRepository
+from turnstile_core.domain.models import AnomalyRule, AnomalyRuleListResponse, AnomalyRuleWrite
+from turnstile_core.persistence.repository import QueryRepository
 
 
 class AnomalyRuleConflictError(ValueError):

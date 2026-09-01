@@ -1,8 +1,8 @@
 from datetime import UTC, datetime
 from xml.etree import ElementTree
 
-from backend.integrations.ledger import ledger_stamp
 from tests.support.paths import REPOSITORY_ROOT
+from turnstile_core.integrations.ledger import ledger_stamp
 
 ROOT = REPOSITORY_ROOT
 POLICY_PATH = ROOT / "infra" / "policies" / "foundry-finops-policy.xml"

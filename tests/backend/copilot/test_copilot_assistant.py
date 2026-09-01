@@ -7,7 +7,6 @@ from uuid import UUID, uuid4
 
 import httpx
 
-from backend.config import Settings
 from backend.data_sources.github_copilot.assistant import (
     COPILOT_AGENT_ID,
     COPILOT_OWNER_PREFIX,
@@ -20,10 +19,11 @@ from backend.data_sources.github_copilot.contracts import (
     CopilotDashboard,
     CopilotStatus,
 )
-from backend.domain.assistant_models import AssistantAskRequest
-from backend.integrations.gateway import GatewayRouter
-from backend.persistence.in_memory import InMemoryRepository
 from backend.services.runtime_service import ModelRuntimeService
+from turnstile_core.config import Settings
+from turnstile_core.domain.assistant_models import AssistantAskRequest
+from turnstile_core.integrations.gateway import GatewayRouter
+from turnstile_core.persistence.in_memory import InMemoryRepository
 
 USER_ID = uuid4()
 USER_EMAIL = "member@example.com"

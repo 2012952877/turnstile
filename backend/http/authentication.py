@@ -7,8 +7,9 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from ..config import Settings, get_settings
-from ..persistence.auth_store import AuthStore
+from turnstile_core.config import Settings, get_settings
+from turnstile_core.persistence.auth_store import AuthStore
+
 from ..services.auth_service import (
     AuthError,
     EntraTokenVerifier,

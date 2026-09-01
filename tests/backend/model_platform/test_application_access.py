@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import httpx
 import pytest
 
-from backend.domain.application_access import (
+from tests.backend.model_platform.control_plane_support import (
+    APIM_ID,
+    StubTokenProvider,
+    publisher_settings,
+)
+from tests.platform.api.api_support import _usage_record
+from turnstile_core.domain.application_access import (
     GatewayApplicationAvatarUpdate,
     GatewayApplicationDiscovery,
     GatewayApplicationDiscoveryItem,
@@ -18,19 +24,13 @@ from backend.domain.application_access import (
     application_subscription_id_for,
     decode_application_avatar_data_url,
 )
-from backend.integrations.apim_control_plane import (
+from turnstile_core.integrations.apim_control_plane import (
     AzureApimPublisherClient,
     AzureApimSubscriptionKeyClient,
 )
-from backend.persistence.in_memory import InMemoryRepository
-from backend.persistence.repository_applications import _json_value
-from backend.services.application_access import ApplicationAccessService
-from tests.backend.model_platform.control_plane_support import (
-    APIM_ID,
-    StubTokenProvider,
-    publisher_settings,
-)
-from tests.platform.api.api_support import _usage_record
+from turnstile_core.persistence.in_memory import InMemoryRepository
+from turnstile_core.persistence.repository_applications import _json_value
+from turnstile_core.services.application_access import ApplicationAccessService
 
 
 def test_application_avatar_accepts_bounded_supported_image() -> None:
@@ -51,10 +51,13 @@ def test_application_avatar_rejects_mismatched_image_type() -> None:
         )
 
 
-def _discovery(*subscription_ids: str) -> GatewayApplicationDiscovery:
+def _discovery(
+    *subscription_ids: str,
+    discovered_at: datetime | None = None,
+) -> GatewayApplicationDiscovery:
     return GatewayApplicationDiscovery(
         gateway_profile_id=APIM_ID,
-        discovered_at=datetime(2026, 8, 26, 2, tzinfo=UTC),
+        discovered_at=discovered_at or datetime(2026, 8, 26, 2, tzinfo=UTC),
         items=[
             GatewayApplicationDiscoveryItem(
                 apim_subscription_id=subscription_id,
@@ -164,8 +167,9 @@ def test_missing_subscription_is_marked_cancelled_and_stale() -> None:
 def test_usage_application_attribution_is_immutable_and_drives_ledger() -> None:
     repository = InMemoryRepository()
     service = ApplicationAccessService(repository, sync_available=True)
+    moment = datetime.now(UTC)
     application = service.sync_discovery(
-        _discovery("outline-assistant"), "worker-a"
+        _discovery("outline-assistant", discovered_at=moment), "worker-a"
     )[0]
     application_id = UUID(str(application["id"]))
     application_name = str(application["display_name"])
@@ -180,7 +184,7 @@ def test_usage_application_attribution_is_immutable_and_drives_ledger() -> None:
     )
     record = _usage_record(
         "application-usage", "Microsoft Foundry via APIM", 125
-    ).model_copy(update={"ts": datetime(2026, 8, 20, tzinfo=UTC)})
+    ).model_copy(update={"ts": moment})
 
     repository.write_token_usage(record, attribution)
     repository.write_token_usage(
@@ -194,8 +198,10 @@ def test_usage_application_attribution_is_immutable_and_drives_ledger() -> None:
     assert view.usage.total_tokens == 125
     assert view.budget is not None
     assert view.budget.remaining_tokens == 99_875
+    period_start = moment.date().replace(day=1)
+    period_end = (period_start.replace(day=28) + timedelta(days=4)).replace(day=1)
     assert repository.gateway_application_ledger_snapshot(
-        datetime(2026, 8, 1).date(), datetime(2026, 9, 1).date()
+        period_start, period_end
     )[0]["confirmed_tokens"] == 125
 
     with pytest.raises(ValueError, match="immutable"):
@@ -208,8 +214,9 @@ def test_usage_application_attribution_is_immutable_and_drives_ledger() -> None:
 def test_application_detail_aggregates_people_and_service_users() -> None:
     repository = InMemoryRepository()
     service = ApplicationAccessService(repository, sync_available=True)
+    moment = datetime.now(UTC)
     application = service.sync_discovery(
-        _discovery("outline-assistant"), "worker-a"
+        _discovery("outline-assistant", discovered_at=moment), "worker-a"
     )[0]
     application_id = UUID(str(application["id"]))
     subscription = repository.gateway_application_subscriptions[0]
@@ -238,7 +245,7 @@ def test_application_detail_aggregates_people_and_service_users() -> None:
             usage_id, "Microsoft Foundry via APIM", tokens, status_code=status_code
         ).model_copy(
             update={
-                "ts": datetime(2026, 8, 20, tzinfo=UTC),
+                "ts": moment,
                 "user": "Alice" if attribution.actor_type == "person" else "Service",
                 "user_id": attribution.person_id or "unattributed",
             }

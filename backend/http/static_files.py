@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..config import Settings
+from turnstile_core.config import Settings
 
 
 def validate_production_web_dist(settings: Settings) -> None:

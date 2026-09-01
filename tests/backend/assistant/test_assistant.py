@@ -9,21 +9,21 @@ import httpx
 import pytest
 from fastapi import HTTPException
 
-from backend.config import Settings
-from backend.domain.assistant_models import (
+from backend.services.assistant import AssistantService
+from backend.services.assistant_shared import clean_title
+from backend.services.assistant_tools import REGISTRY, TimeScopedArguments, resolve_range
+from backend.services.runtime_service import ModelRuntimeService
+from turnstile_core.config import Settings
+from turnstile_core.domain.assistant_models import (
     AssistantAskRequest,
     AssistantSettingsWrite,
     ChartSpec,
     PinnedChartWrite,
     PinnedReportLayout,
 )
-from backend.domain.models import TokenUsageRecord
-from backend.integrations.gateway import GatewayRouter
-from backend.persistence.in_memory import InMemoryRepository
-from backend.services.assistant import AssistantService
-from backend.services.assistant_shared import clean_title
-from backend.services.assistant_tools import REGISTRY, TimeScopedArguments, resolve_range
-from backend.services.runtime_service import ModelRuntimeService
+from turnstile_core.domain.models import TokenUsageRecord
+from turnstile_core.integrations.gateway import GatewayRouter
+from turnstile_core.persistence.in_memory import InMemoryRepository
 
 USER = "test.user01@contoso.com"
 SEED_TIMESTAMP = (datetime.now(UTC) - timedelta(days=1)).isoformat()

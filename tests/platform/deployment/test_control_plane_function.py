@@ -3,8 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from backend.security import CredentialCipher
 from functions.control_plane import function_app
+from turnstile_core.security import CredentialCipher
 
 
 def test_disabled_publication_timer_does_not_build_dependencies(monkeypatch: Any) -> None:

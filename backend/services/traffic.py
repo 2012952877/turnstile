@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from fastapi import HTTPException
 
-from ..config import Settings
-from ..domain.enterprise import enterprise_catalog
-from ..domain.models import EnterpriseEntity
-from ..domain.runtime_models import (
+from turnstile_core.config import Settings
+from turnstile_core.domain.enterprise import enterprise_catalog
+from turnstile_core.domain.models import EnterpriseEntity
+from turnstile_core.domain.runtime_models import (
     ChatMessage,
     InvocationMetadata,
     ModelInvocationRequest,
@@ -15,6 +15,7 @@ from ..domain.runtime_models import (
     TrafficGenerationResult,
     TrafficPlanItem,
 )
+
 from .runtime_service import ModelRuntimeService
 
 PROMPTS = (

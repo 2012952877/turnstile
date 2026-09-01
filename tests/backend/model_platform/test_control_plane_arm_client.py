@@ -8,29 +8,6 @@ import httpx
 import pytest
 from pydantic import HttpUrl, SecretStr
 
-from backend.domain.control_plane import (
-    GatewayBackendPoolConfig,
-    GatewayBackendPoolMember,
-    GatewayPublication,
-    GatewayPublicationCreate,
-    GatewayRateLimitCircuitBreaker,
-    GatewayRateLimitResilience,
-    ModelCreateTarget,
-    RuntimeTarget,
-)
-from backend.domain.runtime_models import ProviderTarget
-from backend.integrations.apim_control_plane import (
-    ApimPolicyCompiler,
-    AzureApimPublisherClient,
-    BackendCircuitBreakerResource,
-    BackendPoolMemberResource,
-    BackendPoolResource,
-    BackendResource,
-    NamedValueResource,
-    PolicyCompilationError,
-    RetryablePublicationError,
-)
-from backend.persistence.in_memory import InMemoryRepository
 from tests.backend.model_platform.control_plane_support import (
     APIM_ID,
     ROOT,
@@ -42,6 +19,29 @@ from tests.backend.model_platform.control_plane_support import (
     foundry_publication,
     publisher_settings,
 )
+from turnstile_core.domain.control_plane import (
+    GatewayBackendPoolConfig,
+    GatewayBackendPoolMember,
+    GatewayPublication,
+    GatewayPublicationCreate,
+    GatewayRateLimitCircuitBreaker,
+    GatewayRateLimitResilience,
+    ModelCreateTarget,
+    RuntimeTarget,
+)
+from turnstile_core.domain.runtime_models import ProviderTarget
+from turnstile_core.integrations.apim_control_plane import (
+    ApimPolicyCompiler,
+    AzureApimPublisherClient,
+    BackendCircuitBreakerResource,
+    BackendPoolMemberResource,
+    BackendPoolResource,
+    BackendResource,
+    NamedValueResource,
+    PolicyCompilationError,
+    RetryablePublicationError,
+)
+from turnstile_core.persistence.in_memory import InMemoryRepository
 
 
 def test_arm_client_accepts_redacted_existing_backend_headers() -> None:

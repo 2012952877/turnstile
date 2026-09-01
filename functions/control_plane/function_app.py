@@ -6,16 +6,16 @@ from pathlib import Path
 
 import azure.functions as func
 
-from backend.config import get_settings
-from backend.domain.control_plane import GatewayReleaseRetentionPolicy
-from backend.integrations.apim_control_plane import (
+from turnstile_core.config import get_settings
+from turnstile_core.domain.control_plane import GatewayReleaseRetentionPolicy
+from turnstile_core.integrations.apim_control_plane import (
     ApimPolicyCompiler,
     AzureApimPublisherClient,
 )
-from backend.persistence.factory import create_repository
-from backend.security import CredentialCipher
-from backend.services.gateway_publication_worker import GatewayPublicationWorker
-from backend.services.gateway_release_operation_worker import (
+from turnstile_core.persistence.factory import create_repository
+from turnstile_core.security import CredentialCipher
+from turnstile_core.services.gateway_publication_worker import GatewayPublicationWorker
+from turnstile_core.services.gateway_release_operation_worker import (
     GatewayReleaseOperationWorker,
 )
 

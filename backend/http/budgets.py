@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from ..domain.models import (
+from turnstile_core.domain.models import (
     DepartmentEnforcementWrite,
     PeopleBudgetFilter,
     TokenBudgetBulkResult,
@@ -13,6 +13,7 @@ from ..domain.models import (
     TokenBudgetResponse,
     TokenBudgetWrite,
 )
+
 from ..services.budget_service import BudgetConflictError, BudgetNotFoundError
 from .service_dependencies import TokenBudgetServiceDependency
 from .session import OwnerSession, require_allowed_write_origin, require_authenticated_session

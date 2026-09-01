@@ -25,8 +25,8 @@ from uuid import UUID, uuid4
 
 from fastapi import HTTPException
 
-from ..config import Settings
-from ..domain.assistant_models import (
+from turnstile_core.config import Settings
+from turnstile_core.domain.assistant_models import (
     AssistantAskRequest,
     AssistantModelChoice,
     AssistantReply,
@@ -40,20 +40,21 @@ from ..domain.assistant_models import (
     PinnedReport,
     PinnedReportLayout,
 )
-from ..domain.enterprise import (
+from turnstile_core.domain.enterprise import (
     enterprise_catalog,
     merge_application_owners,
     merge_observed_users,
 )
-from ..domain.models import EnterpriseEntityCatalog
-from ..domain.runtime_models import (
+from turnstile_core.domain.models import EnterpriseEntityCatalog
+from turnstile_core.domain.runtime_models import (
     ChatMessage,
     InvocationMetadata,
     ModelInvocationRequest,
     ToolCall,
 )
-from ..integrations.gateway import elapsed_ms, supports_tool_calling
-from ..persistence.repository import QueryRepository
+from turnstile_core.integrations.gateway import elapsed_ms, supports_tool_calling
+from turnstile_core.persistence.repository import QueryRepository
+
 from .assistant_shared import (
     ANSWER_LANGUAGE,
     HISTORY_LIMIT,

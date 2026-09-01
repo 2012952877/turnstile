@@ -7,15 +7,15 @@ import pytest
 from backend.api import (
     app,
 )
-from backend.domain.models import (
-    TokenUsageRecord,
-)
 from backend.http.dependencies import get_repository
-from backend.persistence.in_memory import InMemoryRepository
 from tests.platform.api.api_support import (
     _usage_record,
     client,
 )
+from turnstile_core.domain.models import (
+    TokenUsageRecord,
+)
+from turnstile_core.persistence.in_memory import InMemoryRepository
 
 pytest_plugins = ("tests.platform.api.api_fixtures",)
 

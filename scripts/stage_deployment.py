@@ -59,6 +59,7 @@ def _stage_api(root: Path, destination: Path) -> None:
         raise RuntimeError("Migration chain is missing from the repository")
 
     _copy_tree(root, "backend", destination)
+    _copy_tree(root, "turnstile_core", destination)
     _copy_tree(root, "migrations", destination)
     (destination / "frontend").mkdir()
     shutil.copytree(root / "frontend/dist", destination / "frontend/dist")
@@ -71,7 +72,7 @@ def _stage_function(root: Path, destination: Path, project: str) -> None:
     _copy_file(root, f"{source}/function_app.py", destination, "function_app.py")
     _copy_file(root, f"{source}/host.json", destination)
     _copy_file(root, f"{source}/requirements.txt", destination)
-    _copy_tree(root, "backend", destination)
+    _copy_tree(root, "turnstile_core", destination)
 
     if project == "control_plane":
         policy_dir = destination / "policies"

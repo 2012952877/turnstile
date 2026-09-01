@@ -7,20 +7,20 @@ import pytest
 from backend.api import (
     app,
 )
-from backend.domain.enterprise import enterprise_catalog, merge_observed_users
-from backend.domain.models import (
-    EnterpriseEntity,
-    EnterpriseEntityCatalog,
-    TokenUsageRecord,
-)
 from backend.http.dependencies import get_repository
-from backend.persistence.in_memory import InMemoryRepository
 from backend.services import budget_service
 from tests.platform.api.api_support import (
     MEMBER_SESSION,
     OWNER_SESSION,
     client,
 )
+from turnstile_core.domain.enterprise import enterprise_catalog, merge_observed_users
+from turnstile_core.domain.models import (
+    EnterpriseEntity,
+    EnterpriseEntityCatalog,
+    TokenUsageRecord,
+)
+from turnstile_core.persistence.in_memory import InMemoryRepository
 
 pytest_plugins = ("tests.platform.api.api_fixtures",)
 

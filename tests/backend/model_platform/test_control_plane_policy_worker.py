@@ -7,22 +7,6 @@ import httpx
 import pytest
 from pydantic import SecretStr
 
-from backend.domain.control_plane import (
-    GatewayPublicationCreate,
-    GatewayPublicationRetry,
-    ModelCreateTarget,
-    RuntimeTarget,
-)
-from backend.domain.runtime_models import ProviderTarget
-from backend.integrations.apim_control_plane import (
-    ApimPolicyCompiler,
-    AuthorizationRequiredError,
-    AzureApimPublisherClient,
-    BackendResource,
-    PolicyCompilationError,
-    RetryablePublicationError,
-)
-from backend.persistence.in_memory import InMemoryRepository
 from tests.backend.model_platform.control_plane_support import (
     APIM_ID,
     ROOT,
@@ -34,6 +18,22 @@ from tests.backend.model_platform.control_plane_support import (
     foundry_publication,
     publisher_settings,
 )
+from turnstile_core.domain.control_plane import (
+    GatewayPublicationCreate,
+    GatewayPublicationRetry,
+    ModelCreateTarget,
+    RuntimeTarget,
+)
+from turnstile_core.domain.runtime_models import ProviderTarget
+from turnstile_core.integrations.apim_control_plane import (
+    ApimPolicyCompiler,
+    AuthorizationRequiredError,
+    AzureApimPublisherClient,
+    BackendResource,
+    PolicyCompilationError,
+    RetryablePublicationError,
+)
+from turnstile_core.persistence.in_memory import InMemoryRepository
 
 
 def test_compiler_sets_trusted_metadata_before_parent_admission() -> None:

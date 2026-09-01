@@ -1,37 +1,40 @@
-"""Guards the layering the package was reorganised into.
+"""Guards the layering the Python runtime packages are organised into.
 
 The rule is only real if something fails when it is broken. A dependency that points the
 wrong way does not break a test or a type check -- it just quietly makes the next move
 harder -- so it is asserted here instead of living in a comment nobody re-reads.
 
-`domain` sits at the bottom because `persistence.repository` evaluates anomaly rules while
-reading; putting that engine in `services` would have pointed persistence upwards, which
-is the mistake this test exists to catch.
+`turnstile_core` owns reusable runtime code and may never import the FastAPI `backend`
+package. The two Function composition roots may import the core package but not the
+backend package.
 """
 
 from __future__ import annotations
 
 import ast
 import re
+from pathlib import Path
 
-from tests.support.paths import BACKEND_ROOT, FRONTEND_SOURCE
+from tests.support.paths import BACKEND_ROOT, CORE_ROOT, FRONTEND_SOURCE, REPOSITORY_ROOT
 
-PACKAGE = BACKEND_ROOT
+FUNCTIONS_ROOT = REPOSITORY_ROOT / "functions"
 
 # A layer may import from itself and from anything listed here, nothing else.
-ALLOWED: dict[str, set[str]] = {
+CORE_ALLOWED: dict[str, set[str]] = {
     "domain": set(),
     "persistence": {"domain"},
     "integrations": {"domain", "persistence"},
     "ingestion": {"domain", "persistence", "integrations"},
     "services": {"domain", "persistence", "integrations"},
-    "http": {"domain", "persistence", "integrations", "services"},
-    "data_sources": {"domain", "persistence", "integrations", "services", "http"},
 }
 
-# Cross-cutting modules at the package root. They carry settings and credential handling,
-# which every layer needs and which depend on nothing in return.
-ROOT_MODULES = {"config", "security"}
+BACKEND_ALLOWED: dict[str, set[str]] = {
+    "services": set(),
+    "http": {"services"},
+    "data_sources": {"services", "http"},
+}
+
+CORE_ROOT_MODULES = {"config", "security"}
 
 # Entry points, which compose everything and are therefore exempt. `api` and `migrate` are
 # additionally pinned by the App Service start command, so they cannot move without a cloud
@@ -41,10 +44,24 @@ ROOT_MODULES = {"config", "security"}
 ENTRY_POINTS = {"api", "bootstrap", "migrate", "accounts"}
 DEPLOYMENT_ENTRY_POINTS = {"api", "bootstrap", "migrate"}
 
-LAYERS = set(ALLOWED)
+def _imports_package(source: str, package: str) -> bool:
+    for node in ast.walk(ast.parse(source)):
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.level == 0
+            and node.module
+            and (node.module == package or node.module.startswith(f"{package}."))
+        ):
+            return True
+        if isinstance(node, ast.Import) and any(
+                alias.name == package or alias.name.startswith(f"{package}.")
+                for alias in node.names
+        ):
+            return True
+    return False
 
 
-def _imported_layers(source: str, own_layer: str) -> set[str]:
+def _imported_layers(source: str, own_layer: str, layers: set[str]) -> set[str]:
     """The layers a module reaches into, resolved from its relative imports."""
     found: set[str] = set()
     for node in ast.walk(ast.parse(source)):
@@ -55,52 +72,106 @@ def _imported_layers(source: str, own_layer: str) -> set[str]:
             continue
         if node.level >= 2 and node.module:
             head = node.module.split(".")[0]
-            if head in LAYERS and head != own_layer:
+            if head in layers and head != own_layer:
                 found.add(head)
     return found
 
 
-def test_no_layer_imports_a_layer_above_it() -> None:
+def _layer_violations(package: Path, allowed_layers: dict[str, set[str]]) -> list[str]:
     violations: list[str] = []
-    for layer, allowed in ALLOWED.items():
-        for path in sorted((PACKAGE / layer).rglob("*.py")):
-            reached = _imported_layers(path.read_text(encoding="utf-8"), layer)
+    layers = set(allowed_layers)
+    for layer, allowed in allowed_layers.items():
+        for path in sorted((package / layer).rglob("*.py")):
+            reached = _imported_layers(path.read_text(encoding="utf-8"), layer, layers)
             for target in sorted(reached - allowed):
                 violations.append(f"{layer}/{path.name} imports {target}")
+    return violations
+
+
+def test_no_core_layer_imports_a_layer_above_it() -> None:
+    violations = _layer_violations(CORE_ROOT, CORE_ALLOWED)
     assert not violations, "Layering violated: " + "; ".join(violations)
 
 
-def test_every_module_lives_in_a_layer_or_is_an_entry_point() -> None:
-    """A new module added at the package root would sit outside the structure entirely."""
+def test_no_backend_layer_imports_a_layer_above_it() -> None:
+    violations = _layer_violations(BACKEND_ROOT, BACKEND_ALLOWED)
+    assert not violations, "Backend layering violated: " + "; ".join(violations)
+
+
+def test_core_never_imports_backend() -> None:
+    assert CORE_ROOT.is_dir(), "Shared runtime code must live in turnstile_core"
+    violations = [
+        str(path.relative_to(CORE_ROOT))
+        for path in sorted(CORE_ROOT.rglob("*.py"))
+        if _imports_package(path.read_text(encoding="utf-8"), "backend")
+    ]
+    assert not violations, f"Shared core imports the HTTP backend: {violations}"
+
+
+def test_functions_never_import_backend() -> None:
+    violations = [
+        str(path.relative_to(FUNCTIONS_ROOT))
+        for path in sorted(FUNCTIONS_ROOT.rglob("*.py"))
+        if _imports_package(path.read_text(encoding="utf-8"), "backend")
+    ]
+    assert not violations, f"Function runtime imports the HTTP backend: {violations}"
+
+
+def test_every_core_module_lives_in_a_layer_or_is_cross_cutting() -> None:
     loose = {
         path.stem
-        for path in PACKAGE.glob("*.py")
+        for path in CORE_ROOT.glob("*.py")
         if path.stem != "__init__"
     }
-    assert loose == ROOT_MODULES | ENTRY_POINTS, (
-        "Modules at the package root must be an entry point or a declared cross-cutting "
+    assert loose == CORE_ROOT_MODULES, (
+        "Core modules at the package root must be a declared cross-cutting "
         f"concern; found {sorted(loose)}"
     )
+
+
+def test_every_core_package_is_a_declared_layer() -> None:
+    packages = {
+        path.name
+        for path in CORE_ROOT.iterdir()
+        if path.is_dir() and path.name != "__pycache__"
+    }
+    assert packages == set(CORE_ALLOWED), (
+        "Core packages must be declared architecture layers; "
+        f"expected {sorted(CORE_ALLOWED)}, found {sorted(packages)}"
+    )
+
+
+def test_every_backend_module_is_an_entry_point() -> None:
+    loose = {
+        path.stem
+        for path in BACKEND_ROOT.glob("*.py")
+        if path.stem != "__init__"
+    }
+    assert loose == ENTRY_POINTS
 
 
 def test_every_backend_package_is_a_declared_layer() -> None:
     packages = {
         path.name
-        for path in PACKAGE.iterdir()
+        for path in BACKEND_ROOT.iterdir()
         if path.is_dir() and path.name != "__pycache__"
     }
-    assert packages == LAYERS, (
+    assert packages == set(BACKEND_ALLOWED), (
         "Backend packages must be declared architecture layers; "
-        f"expected {sorted(LAYERS)}, found {sorted(packages)}"
+        f"expected {sorted(BACKEND_ALLOWED)}, found {sorted(packages)}"
     )
 
 
-def test_backend_runtime_never_imports_repository_tests() -> None:
+def test_python_runtimes_never_import_repository_tests() -> None:
     violations: list[str] = []
-    for path in sorted(PACKAGE.rglob("*.py")):
-        source = path.read_text(encoding="utf-8")
-        if re.search(r"(?m)^\s*(?:from\s+tests(?:\.|\s)|import\s+tests(?:\.|\s|$))", source):
-            violations.append(str(path.relative_to(PACKAGE)))
+    for package in (BACKEND_ROOT, CORE_ROOT):
+        for path in sorted(package.rglob("*.py")):
+            source = path.read_text(encoding="utf-8")
+            if re.search(
+                r"(?m)^\s*(?:from\s+tests(?:\.|\s)|import\s+tests(?:\.|\s|$))",
+                source,
+            ):
+                violations.append(str(path.relative_to(REPOSITORY_ROOT)))
     assert not violations, f"Runtime modules import repository tests: {violations}"
 
 
@@ -111,7 +182,7 @@ def test_the_deployment_entry_points_keep_their_import_paths() -> None:
     coupling is asserted here rather than discovered when a deployment fails to start.
     """
     for name in DEPLOYMENT_ENTRY_POINTS:
-        assert (PACKAGE / f"{name}.py").is_file(), (
+        assert (BACKEND_ROOT / f"{name}.py").is_file(), (
             f"backend.{name} is referenced by the App Service start "
             "command and must stay at the package root"
         )
@@ -119,9 +190,10 @@ def test_the_deployment_entry_points_keep_their_import_paths() -> None:
 
 def test_the_layers_document_their_own_rule() -> None:
     """Each layer's `__init__` says what it may depend on, so the rule is readable in place."""
-    for layer in ALLOWED:
-        text = (PACKAGE / layer / "__init__.py").read_text(encoding="utf-8")
-        assert re.search(r'^\s*"""', text), f"{layer}/__init__.py needs a docstring"
+    for package, layers in ((BACKEND_ROOT, BACKEND_ALLOWED), (CORE_ROOT, CORE_ALLOWED)):
+        for layer in layers:
+            text = (package / layer / "__init__.py").read_text(encoding="utf-8")
+            assert re.search(r'^\s*"""', text), f"{layer}/__init__.py needs a docstring"
 
 
 def test_frontend_never_asserts_an_application_identity_header() -> None:

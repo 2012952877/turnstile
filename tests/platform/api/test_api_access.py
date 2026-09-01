@@ -11,7 +11,6 @@ from backend.api import (
     protected,
     runtime_service,
 )
-from backend.config import Settings, get_settings
 from backend.data_sources.github_copilot.router import (
     copilot_service,
 )
@@ -21,8 +20,6 @@ from backend.data_sources.github_copilot.router import (
 from backend.data_sources.github_copilot.router import (
     router as copilot_router,
 )
-from backend.domain.assistant_models import PinnedReport, PinnedReportLayout
-from backend.domain.runtime_models import ModelInvocationRequest
 from backend.http.assistant import title_router as assistant_title_router
 from backend.http.dependencies import get_repository
 from backend.http.model_platform import publication_router
@@ -32,12 +29,15 @@ from backend.http.session import (
     require_authenticated_session,
     require_owner_session,
 )
-from backend.persistence.in_memory import InMemoryRepository
 from tests.platform.api.api_support import (
     MEMBER_SESSION,
     OWNER_SESSION,
     client,
 )
+from turnstile_core.config import Settings, get_settings
+from turnstile_core.domain.assistant_models import PinnedReport, PinnedReportLayout
+from turnstile_core.domain.runtime_models import ModelInvocationRequest
+from turnstile_core.persistence.in_memory import InMemoryRepository
 
 pytest_plugins = ("tests.platform.api.api_fixtures",)
 

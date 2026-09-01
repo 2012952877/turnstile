@@ -11,12 +11,12 @@ from cryptography.fernet import Fernet
 from fastapi import Request
 from pydantic import HttpUrl, SecretStr
 
-from backend.config import Settings
-from backend.domain.application_access import (
+from turnstile_core.config import Settings
+from turnstile_core.domain.application_access import (
     GatewayApplicationDiscovery,
     GatewayApplicationSubscriptionProvisionSpec,
 )
-from backend.domain.control_plane import (
+from turnstile_core.domain.control_plane import (
     GatewayPublication,
     GatewayPublicationCreate,
     GatewayReleaseDependencies,
@@ -24,18 +24,18 @@ from backend.domain.control_plane import (
     ModelCreateTarget,
     RuntimeTarget,
 )
-from backend.domain.runtime_models import ProviderTarget
-from backend.integrations.apim_control_plane import (
+from turnstile_core.domain.runtime_models import ProviderTarget
+from turnstile_core.integrations.apim_control_plane import (
     BackendResource,
     NamedValueResource,
     ReleaseGcPlanEvidence,
 )
-from backend.persistence.in_memory import InMemoryRepository
-from backend.security import CredentialCipher
-from backend.services.control_plane import (
+from turnstile_core.persistence.in_memory import InMemoryRepository
+from turnstile_core.security import CredentialCipher
+from turnstile_core.services.control_plane import (
     GatewayControlPlaneService as BaseGatewayControlPlaneService,
 )
-from backend.services.gateway_publication_worker import (
+from turnstile_core.services.gateway_publication_worker import (
     GatewayPublicationWorker as BaseGatewayPublicationWorker,
 )
 

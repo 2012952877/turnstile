@@ -16,16 +16,16 @@ from backend.api import (
     control_plane_service,
     runtime_service,
 )
-from backend.config import Settings
-from backend.domain.control_plane import GatewayPublication, GatewayPublicationCreate
 from backend.http.dependencies import get_repository
 from backend.http.publication_auth import require_publication_owner
 from backend.http.session import SessionIdentity, require_authenticated_session
-from backend.integrations.apim_control_plane import ApimPolicyCompiler
-from backend.persistence.in_memory import InMemoryRepository
-from backend.security import CredentialCipher
-from backend.services.control_plane import GatewayControlPlaneService
 from backend.services.runtime_service import ModelRuntimeService
+from turnstile_core.config import Settings
+from turnstile_core.domain.control_plane import GatewayPublication, GatewayPublicationCreate
+from turnstile_core.integrations.apim_control_plane import ApimPolicyCompiler
+from turnstile_core.persistence.in_memory import InMemoryRepository
+from turnstile_core.security import CredentialCipher
+from turnstile_core.services.control_plane import GatewayControlPlaneService
 
 client = TestClient(app)
 

@@ -16,6 +16,17 @@ Turnstile separates the inference data plane from management and analytics.
 | Key Vault | Stores deployment and provider credentials. |
 | Application Insights and Log Analytics | Host operational telemetry and reconciliation inputs. |
 
+## Python runtime boundary
+
+`turnstile_core` owns runtime code shared by the FastAPI application and background Functions,
+including domain models, persistence, provider integrations, ingestion, and worker services. It
+does not import the FastAPI `backend` package. `backend` owns the web composition root, HTTP routes,
+web-only services, and data-source adapters.
+
+The API artifact contains both packages. Telemetry and Control-plane Function artifacts contain
+`turnstile_core` and their own `function_app.py`, but exclude `backend`. Architecture and staging
+tests enforce these dependency and packaging boundaries.
+
 ## Request flow
 
 1. A client calls the Turnstile APIM endpoint.

@@ -4,7 +4,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..domain.models import AnomalyRule, AnomalyRuleListResponse, AnomalyRuleWrite
+from turnstile_core.domain.models import AnomalyRule, AnomalyRuleListResponse, AnomalyRuleWrite
+
 from ..services.anomaly_service import AnomalyRuleConflictError, AnomalyRuleNotFoundError
 from .service_dependencies import AnomalyRuleServiceDependency
 from .session import OwnerSession, require_allowed_write_origin, require_authenticated_session

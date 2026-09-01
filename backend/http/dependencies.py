@@ -3,9 +3,9 @@ from typing import Annotated
 
 from fastapi import Depends
 
-from ..config import get_settings
-from ..persistence.factory import create_repository
-from ..persistence.repository import QueryRepository
+from turnstile_core.config import get_settings
+from turnstile_core.persistence.factory import create_repository
+from turnstile_core.persistence.repository import QueryRepository
 
 
 @lru_cache

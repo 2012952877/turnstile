@@ -43,4 +43,4 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-packages = ["backend", "scripts", "tests"]
+packages = ["backend", "turnstile_core", "scripts", "tests"]

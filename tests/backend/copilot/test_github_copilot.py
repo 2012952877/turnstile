@@ -24,7 +24,7 @@ from backend.data_sources.github_copilot.contracts import (
 )
 from backend.data_sources.github_copilot.csv_import import parse_copilot_csv
 from backend.data_sources.github_copilot.service import CopilotPermissionError, CopilotService
-from backend.security import CredentialCipher
+from turnstile_core.security import CredentialCipher
 
 
 def test_report_download_does_not_forward_the_github_token() -> None:

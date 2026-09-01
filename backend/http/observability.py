@@ -6,12 +6,12 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from ..domain.enterprise import (
+from turnstile_core.domain.enterprise import (
     enterprise_catalog,
     merge_application_owners,
     merge_observed_users,
 )
-from ..domain.models import (
+from turnstile_core.domain.models import (
     AuditFinding,
     AuditFindingListResponse,
     AuditFindingUpdate,
@@ -33,7 +33,8 @@ from ..domain.models import (
     UsageRequestListResponse,
     UsageRequestSummary,
 )
-from ..persistence.repository import UsageFilters
+from turnstile_core.persistence.repository import UsageFilters
+
 from .dependencies import Repository
 from .session import (
     OwnerSession,

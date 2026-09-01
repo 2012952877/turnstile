@@ -5,8 +5,8 @@ from __future__ import annotations
 import sys
 from typing import Protocol
 
-from .config import Settings, get_settings
-from .persistence.auth_store import AuthStore
+from turnstile_core.config import Settings, get_settings
+from turnstile_core.persistence.auth_store import AuthStore
 
 
 class InitialOwnerStore(Protocol):

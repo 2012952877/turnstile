@@ -69,7 +69,8 @@ Turnstile separates the inference data plane from its management plane. Clients 
 ## Repository layout
 
 ```text
-backend/          FastAPI API, domain services, persistence, integrations
+backend/          FastAPI entry points, HTTP routes, and web-only services
+turnstile_core/   Shared domain, persistence, integrations, and worker services
 frontend/         React, TypeScript, Vite web application
 functions/        Azure Functions for telemetry and control-plane work
 infra/            Bicep modules, APIM policies, and deployment templates
@@ -145,8 +146,8 @@ Never reuse secrets across environments. Keep `CONTROL_PLANE_ENABLED`, publicati
 ## Development and testing
 
 ```bash
-uv run ruff check backend scripts tests functions/telemetry/function_app.py functions/control_plane/function_app.py
-uv run mypy backend scripts tests
+uv run ruff check backend turnstile_core scripts tests functions/telemetry/function_app.py functions/control_plane/function_app.py
+uv run mypy backend turnstile_core scripts tests
 uv run pytest -q
 npm --prefix frontend run build
 az bicep build --file infra/main.bicep

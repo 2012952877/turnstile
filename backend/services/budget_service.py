@@ -5,12 +5,12 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime, time
 from typing import Any, cast
 
-from ..domain.enterprise import (
+from turnstile_core.domain.enterprise import (
     enterprise_catalog,
     merge_application_owners,
     merge_observed_users,
 )
-from ..domain.models import (
+from turnstile_core.domain.models import (
     BudgetScopeType,
     DepartmentEnforcementWrite,
     EnterpriseEntity,
@@ -22,7 +22,7 @@ from ..domain.models import (
     TokenBudgetResponse,
     TokenBudgetWrite,
 )
-from ..persistence.repository import BudgetConstraintViolation, QueryRepository
+from turnstile_core.persistence.repository import BudgetConstraintViolation, QueryRepository
 
 logger = logging.getLogger(__name__)
 

@@ -9,10 +9,10 @@ from fastapi.testclient import TestClient
 from backend.api import (
     app,
 )
-from backend.domain.models import (
+from backend.services.auth_service import hash_session_token
+from turnstile_core.domain.models import (
     TokenUsageRecord,
 )
-from backend.services.auth_service import hash_session_token
 
 client = TestClient(app)
 

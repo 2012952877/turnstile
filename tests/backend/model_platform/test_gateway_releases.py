@@ -6,13 +6,20 @@ from uuid import UUID
 import pytest
 from cryptography.fernet import Fernet
 
-from backend.domain.application_access import (
+from tests.backend.model_platform.control_plane_support import (
+    APIM_ID,
+    FakeApimClient,
+    GatewayControlPlaneService,
+    GatewayPublicationWorker,
+    bedrock_publication,
+)
+from turnstile_core.domain.application_access import (
     GatewayApplicationDiscovery,
     GatewayApplicationDiscoveryItem,
     GatewayApplicationSubscriptionCreate,
     GatewayApplicationSubscriptionProvisionSpec,
 )
-from backend.domain.control_plane import (
+from turnstile_core.domain.control_plane import (
     GatewayPublication,
     GatewayPublicationCreate,
     GatewayReleaseProtectionWrite,
@@ -22,22 +29,15 @@ from backend.domain.control_plane import (
     ModelCreateTarget,
     RuntimeTarget,
 )
-from backend.domain.runtime_models import ProviderTarget
-from backend.persistence.in_memory import InMemoryRepository
-from backend.security import CredentialCipher
-from backend.services.control_plane import (
+from turnstile_core.domain.runtime_models import ProviderTarget
+from turnstile_core.persistence.in_memory import InMemoryRepository
+from turnstile_core.security import CredentialCipher
+from turnstile_core.services.control_plane import (
     ControlPlaneConflictError,
     ControlPlaneUnavailableError,
 )
-from backend.services.gateway_release_operation_worker import (
+from turnstile_core.services.gateway_release_operation_worker import (
     GatewayReleaseOperationWorker,
-)
-from tests.backend.model_platform.control_plane_support import (
-    APIM_ID,
-    FakeApimClient,
-    GatewayControlPlaneService,
-    GatewayPublicationWorker,
-    bedrock_publication,
 )
 
 

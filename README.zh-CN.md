@@ -69,7 +69,8 @@ Turnstile 将推理数据平面与管理平面分离。客户端调用 Azure API
 ## 仓库结构
 
 ```text
-backend/          FastAPI API、领域服务、持久化与集成
+backend/          FastAPI 入口、HTTP 路由与 Web 专属服务
+turnstile_core/   共享领域模型、持久化、集成与工作进程服务
 frontend/         React、TypeScript、Vite Web 应用
 functions/        用于遥测和控制平面工作的 Azure Functions
 infra/            Bicep 模块、APIM 策略与部署模板
@@ -145,8 +146,8 @@ Vite 服务器会将 `/api` 和 `/health` 代理到 `API_PROXY_TARGET`，其默�
 ## 开发与测试
 
 ```bash
-uv run ruff check backend scripts tests functions/telemetry/function_app.py functions/control_plane/function_app.py
-uv run mypy backend scripts tests
+uv run ruff check backend turnstile_core scripts tests functions/telemetry/function_app.py functions/control_plane/function_app.py
+uv run mypy backend turnstile_core scripts tests
 uv run pytest -q
 npm --prefix frontend run build
 az bicep build --file infra/main.bicep

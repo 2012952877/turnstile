@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from ..domain.assistant_models import ChartSpec
+from turnstile_core.domain.assistant_models import ChartSpec
 
 HISTORY_LIMIT = 50
 TITLE_LENGTH = 60

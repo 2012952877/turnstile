@@ -7,8 +7,8 @@ import pytest
 from backend.api import app
 from backend.http.dependencies import get_repository
 from backend.http.session import get_auth_store
-from backend.persistence.in_memory import InMemoryRepository
 from tests.platform.api.api_support import OWNER_SESSION, StubAuthStore, client
+from turnstile_core.persistence.in_memory import InMemoryRepository
 
 
 @pytest.fixture(autouse=True)

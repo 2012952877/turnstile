@@ -3,8 +3,8 @@ from __future__ import annotations
 from pydantic import SecretStr
 
 from backend.bootstrap import bootstrap_initial_owner
-from backend.config import Settings
 from backend.services.auth_service import hash_password, verify_password
+from turnstile_core.config import Settings
 
 
 class CapturingInitialOwnerStore:

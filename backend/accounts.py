@@ -18,8 +18,9 @@ import argparse
 import getpass
 import sys
 
-from .config import get_settings
-from .persistence.auth_store import AuthStore
+from turnstile_core.config import get_settings
+from turnstile_core.persistence.auth_store import AuthStore
+
 from .services.auth_service import hash_password
 
 

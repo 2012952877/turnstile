@@ -12,7 +12,8 @@ from uuid import UUID
 
 import httpx
 
-from ...security import CredentialCipher, credential_hint
+from turnstile_core.security import CredentialCipher, credential_hint
+
 from .client import (
     COPILOT_REPORT_WINDOW_DAYS,
     GITHUB_API_BASE_URL,

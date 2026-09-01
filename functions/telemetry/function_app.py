@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, List  # noqa: UP035 - required by the Azu
 import azure.functions as func
 
 if TYPE_CHECKING:
-    from backend.ingestion.processor import UsageProcessor
+    from turnstile_core.ingestion.processor import UsageProcessor
 
 app = func.FunctionApp()
 logger = logging.getLogger(__name__)
@@ -24,9 +24,9 @@ def telemetry_health(req: func.HttpRequest) -> func.HttpResponse:
 
 
 def _processor() -> "UsageProcessor":
-    from backend.config import get_settings
-    from backend.ingestion.processor import CoefficientResolver, UsageProcessor
-    from backend.persistence.factory import create_repository
+    from turnstile_core.config import get_settings
+    from turnstile_core.ingestion.processor import CoefficientResolver, UsageProcessor
+    from turnstile_core.persistence.factory import create_repository
 
     settings = get_settings()
     repository = create_repository(settings)
@@ -61,14 +61,14 @@ def process_usage_events(events: List[func.EventHubEvent]) -> None:  # noqa: UP0
 )
 def reconcile_stream_usage(timer: func.TimerRequest) -> None:
     """Fills in token counts that streamed responses could not report inside the APIM policy."""
-    from backend.config import get_settings
-    from backend.integrations.reconciliation import (
+    from turnstile_core.config import get_settings
+    from turnstile_core.integrations.reconciliation import (
         CacheReadSyncService,
         LogAnalyticsCacheReadLog,
         LogAnalyticsGatewayUsageLog,
         ReconciliationService,
     )
-    from backend.persistence.factory import create_repository
+    from turnstile_core.persistence.factory import create_repository
 
     settings = get_settings()
     if not settings.reconciliation_enabled:
@@ -115,14 +115,14 @@ def sync_budget_ledger(timer: func.TimerRequest) -> None:
     a late or failed run costs precision, never correctness: an unsynced person is
     simply covered by their still-present reservation rows.
     """
-    from backend.config import get_settings
-    from backend.integrations.ledger import (
+    from turnstile_core.config import get_settings
+    from turnstile_core.integrations.ledger import (
         ROLL_FORWARD_ACTOR,
         LedgerSyncService,
         TableStorageLedger,
         period_start_for,
     )
-    from backend.persistence.factory import create_repository
+    from turnstile_core.persistence.factory import create_repository
 
     settings = get_settings()
     repository = create_repository(settings)

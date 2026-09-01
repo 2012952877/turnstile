@@ -9,8 +9,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 
-from ...config import Settings, get_settings
-from ...domain.assistant_models import (
+from turnstile_core.config import Settings, get_settings
+from turnstile_core.domain.assistant_models import (
     AssistantAskRequest,
     AssistantReply,
     Conversation,
@@ -19,6 +19,8 @@ from ...domain.assistant_models import (
     ConversationSummary,
     ConversationTitleRequest,
 )
+from turnstile_core.security import CredentialCipher
+
 from ...http.dependencies import Repository
 from ...http.session import (
     Config,
@@ -27,7 +29,6 @@ from ...http.session import (
     require_allowed_write_origin,
     require_authenticated_session,
 )
-from ...security import CredentialCipher
 from ...services.runtime_service import ModelRuntimeService
 from .assistant import CopilotAssistantService
 from .client import GitHubCopilotApiError

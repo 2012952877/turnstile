@@ -4,7 +4,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends
 
-from ..domain.assistant_models import (
+from turnstile_core.domain.assistant_models import (
     AssistantAskRequest,
     AssistantReply,
     AssistantSettings,
@@ -22,6 +22,7 @@ from ..domain.assistant_models import (
     PinnedReportList,
     PinnedReportVisibilityWrite,
 )
+
 from .service_dependencies import AssistantServiceDependency
 from .session import (
     CurrentSession,

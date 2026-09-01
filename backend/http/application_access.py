@@ -6,7 +6,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
-from ..domain.application_access import (
+from turnstile_core.domain.application_access import (
     GatewayApplicationAvatar,
     GatewayApplicationAvatarUpdate,
     GatewayApplicationBudgetUpdate,
@@ -17,16 +17,17 @@ from ..domain.application_access import (
     GatewayApplicationSubscriptionKeyRotation,
     GatewayApplicationSubscriptionKeySecret,
 )
-from ..domain.control_plane import (
+from turnstile_core.domain.control_plane import (
     GatewayApplicationSubscriptionProvisionAccepted,
     GatewayReleaseOperationAccepted,
 )
-from ..domain.models import TrendResponse
-from ..services.control_plane import (
+from turnstile_core.domain.models import TrendResponse
+from turnstile_core.services.control_plane import (
     ControlPlaneConflictError,
     ControlPlaneNotFoundError,
     ControlPlaneUnavailableError,
 )
+
 from .service_dependencies import ApplicationAccessServiceDependency, ControlPlaneService
 from .session import (
     CurrentSession,

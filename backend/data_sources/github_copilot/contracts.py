@@ -6,7 +6,7 @@ from uuid import UUID
 
 from pydantic import Field, SecretStr, field_validator
 
-from ...domain.models import StrictModel
+from turnstile_core.domain.models import StrictModel
 
 
 class CopilotConnectionSummary(StrictModel):

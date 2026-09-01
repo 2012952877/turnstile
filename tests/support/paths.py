@@ -3,6 +3,7 @@ from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 BACKEND_ROOT = REPOSITORY_ROOT / "backend"
+CORE_ROOT = REPOSITORY_ROOT / "turnstile_core"
 FRONTEND_SOURCE = REPOSITORY_ROOT / "frontend" / "src"
 INFRA_ROOT = REPOSITORY_ROOT / "infra"
 

@@ -9,7 +9,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .config import get_settings
+from turnstile_core.config import get_settings
+from turnstile_core.security import CredentialCipher
+
 from .data_sources.github_copilot.router import router as github_copilot_router
 from .http.application_access import router as application_access_router
 from .http.assistant import router as assistant_router
@@ -40,7 +42,6 @@ from .http.service_dependencies import (
 )
 from .http.session import require_allowed_write_origin, require_authenticated_session
 from .http.static_files import validate_production_web_dist
-from .security import CredentialCipher
 
 logger = logging.getLogger(__name__)
 

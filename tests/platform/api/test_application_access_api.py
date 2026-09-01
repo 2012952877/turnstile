@@ -13,21 +13,21 @@ from backend.api import (
     application_access_service,
     control_plane_service,
 )
-from backend.domain.application_access import (
+from backend.http.dependencies import get_repository
+from backend.http.session import SessionIdentity, require_authenticated_session
+from tests.backend.model_platform.control_plane_support import APIM_ID
+from tests.platform.api.api_support import _usage_record, client
+from turnstile_core.domain.application_access import (
     GatewayApplicationDiscovery,
     GatewayApplicationDiscoveryItem,
     GatewayApplicationSubscriptionCreate,
     UsageApplicationAttribution,
 )
-from backend.http.dependencies import get_repository
-from backend.http.session import SessionIdentity, require_authenticated_session
-from backend.integrations.apim_control_plane_contract import ApimSubscriptionKeyClient
-from backend.persistence.in_memory import InMemoryRepository
-from backend.security import CredentialCipher
-from backend.services.application_access import ApplicationAccessService
-from backend.services.control_plane import GatewayControlPlaneService
-from tests.backend.model_platform.control_plane_support import APIM_ID
-from tests.platform.api.api_support import _usage_record, client
+from turnstile_core.integrations.apim_control_plane_contract import ApimSubscriptionKeyClient
+from turnstile_core.persistence.in_memory import InMemoryRepository
+from turnstile_core.security import CredentialCipher
+from turnstile_core.services.application_access import ApplicationAccessService
+from turnstile_core.services.control_plane import GatewayControlPlaneService
 
 pytest_plugins = ("tests.platform.api.api_fixtures",)
 
@@ -35,6 +35,8 @@ pytest_plugins = ("tests.platform.api.api_fixtures",)
 def _seed(
     repository: InMemoryRepository,
     key_client: ApimSubscriptionKeyClient | None = None,
+    *,
+    discovered_at: datetime | None = None,
 ) -> ApplicationAccessService:
     service = ApplicationAccessService(
         repository,
@@ -45,7 +47,7 @@ def _seed(
     service.sync_discovery(
         GatewayApplicationDiscovery(
             gateway_profile_id=APIM_ID,
-            discovered_at=datetime(2026, 8, 26, 2, tzinfo=UTC),
+            discovered_at=discovered_at or datetime(2026, 8, 26, 2, tzinfo=UTC),
             items=[
                 GatewayApplicationDiscoveryItem(
                     apim_subscription_id="outline-assistant",
@@ -101,13 +103,14 @@ class ForbiddenSubscriptionKeyClient(StubSubscriptionKeyClient):
 
 def test_application_access_list_detail_and_owner_sync() -> None:
     repository = InMemoryRepository()
-    read_service = _seed(repository)
+    moment = datetime.now(UTC)
+    read_service = _seed(repository, discovered_at=moment)
     application = repository.gateway_applications[0]
     subscription = repository.gateway_application_subscriptions[0]
     repository.write_token_usage(
         _usage_record("outline-user", "Microsoft Foundry via APIM", 42).model_copy(
             update={
-                "ts": datetime(2026, 8, 20, tzinfo=UTC),
+                "ts": moment,
                 "user": "Alice",
                 "user_id": "person-alice",
             }

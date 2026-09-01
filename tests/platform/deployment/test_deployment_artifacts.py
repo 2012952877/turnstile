@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -63,6 +64,7 @@ def staging_root(tmp_path: Path) -> Path:
     root = tmp_path / "repository"
     for relative in (
         "backend",
+        "turnstile_core",
         "frontend/dist",
         "migrations",
         "functions/telemetry",
@@ -74,7 +76,7 @@ def staging_root(tmp_path: Path) -> Path:
     files = {
         "backend/api.py": "app = object()\n",
         "backend/migrate.py": "def migrate(): return []\n",
-        "backend/config.py": "class Settings: pass\n",
+        "turnstile_core/config.py": "class Settings: pass\n",
         "frontend/dist/index.html": "<!doctype html>\n",
         "migrations/001_token_observability.up.sql": "SELECT 1;\n",
         "migrations/040_latest.up.sql": "SELECT 1;\n",
@@ -94,6 +96,8 @@ def staging_root(tmp_path: Path) -> Path:
         (root / relative).write_text(content, encoding="utf-8")
     (root / "backend/__pycache__").mkdir()
     (root / "backend/__pycache__/api.pyc").write_bytes(b"cache")
+    (root / "turnstile_core/__pycache__").mkdir()
+    (root / "turnstile_core/__pycache__/config.pyc").write_bytes(b"cache")
     return root
 
 
@@ -117,6 +121,7 @@ def test_repository_contains_every_staging_source() -> None:
     for relative in (
         "backend/api.py",
         "backend/migrate.py",
+        "turnstile_core/config.py",
         "frontend/package.json",
             "migrations/001_initial_schema.up.sql",
         "functions/telemetry/function_app.py",
@@ -140,6 +145,7 @@ def test_api_staging_contains_runtime_contract(tmp_path: Path, staging_root: Pat
 
     assert (destination / "backend/api.py").is_file()
     assert (destination / "backend/migrate.py").is_file()
+    assert (destination / "turnstile_core/config.py").is_file()
     assert (destination / "frontend/dist/index.html").is_file()
     assert (destination / "migrations/001_token_observability.up.sql").is_file()
     assert list((destination / "migrations").glob("040_*.up.sql"))
@@ -160,13 +166,52 @@ def test_function_staging_contains_runtime_contract(
     assert (destination / "function_app.py").is_file()
     assert (destination / "host.json").is_file()
     assert (destination / "requirements.txt").is_file()
-    assert (destination / "backend/config.py").is_file()
+    assert (destination / "turnstile_core/config.py").is_file()
+    assert not (destination / "backend").exists()
     if target == "control-plane":
         assert (destination / "policies/foundry-finops-policy.xml").is_file()
         assert not (destination / "infra").exists()
     assert not list(destination.rglob("__pycache__"))
     assert not list(destination.rglob("*.pyc"))
     assert not (destination / "tests").exists()
+
+
+@pytest.mark.parametrize(
+    ("target", "expected_functions"),
+    (("telemetry", 4), ("control-plane", 2)),
+)
+def test_staged_function_indexes_without_backend(
+    tmp_path: Path,
+    target: str,
+    expected_functions: int,
+) -> None:
+    destination = tmp_path / target
+    stage_deployment(target, destination)
+    script = """
+import builtins
+import sys
+
+original_import = builtins.__import__
+
+def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if name == "backend" or name.startswith("backend."):
+        raise AssertionError(f"backend import from staged Function: {name}")
+    return original_import(name, globals, locals, fromlist, level)
+
+builtins.__import__ = guarded_import
+import function_app
+
+assert len(function_app.app.get_functions()) == int(sys.argv[1])
+"""
+
+    subprocess.run(
+        [sys.executable, "-c", script, str(expected_functions)],
+        cwd=destination,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
 
 
 def test_staging_rejects_nonempty_destination(

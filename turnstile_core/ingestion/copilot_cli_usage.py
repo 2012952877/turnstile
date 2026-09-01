@@ -469,7 +469,7 @@ def summarize(records: Sequence[CopilotUsage] | Iterable[CopilotUsage]) -> dict[
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m backend.ingestion.copilot_cli_usage",
+        prog="python -m turnstile_core.ingestion.copilot_cli_usage",
         description="Ingest real GitHub Copilot CLI usage from local logs into token_usage.",
     )
     parser.add_argument("--log-dir", type=Path, default=DEFAULT_LOG_DIR)

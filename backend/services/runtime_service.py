@@ -12,9 +12,9 @@ from uuid import UUID, uuid4
 
 from fastapi import HTTPException
 
-from ..config import Settings
-from ..domain.models import ModelPrice, TokenUsageRecord
-from ..domain.runtime_models import (
+from turnstile_core.config import Settings
+from turnstile_core.domain.models import ModelPrice, TokenUsageRecord
+from turnstile_core.domain.runtime_models import (
     FOUNDRY_INFERENCE_RESOURCE,
     FOUNDRY_INFERENCE_ROLE_ID,
     BrandKey,
@@ -40,9 +40,9 @@ from ..domain.runtime_models import (
     RuntimeWrite,
     foundry_runtime_name,
 )
-from ..integrations.gateway import GatewayInvocationError, GatewayRouter, elapsed_ms
-from ..persistence.repository import QueryRepository
-from ..security import CredentialCipher, credential_hint
+from turnstile_core.integrations.gateway import GatewayInvocationError, GatewayRouter, elapsed_ms
+from turnstile_core.persistence.repository import QueryRepository
+from turnstile_core.security import CredentialCipher, credential_hint
 
 logger = logging.getLogger(__name__)
 

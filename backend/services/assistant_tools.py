@@ -26,7 +26,7 @@ from pydantic import (
     ValidationError,
 )
 
-from ..domain.assistant_models import (
+from turnstile_core.domain.assistant_models import (
     ChartQuery,
     ChartSeries,
     ChartSpec,
@@ -35,8 +35,9 @@ from ..domain.assistant_models import (
     UsageDimension,
     UsageMetric,
 )
-from ..domain.runtime_models import ToolDefinition, ToolFunctionDefinition
-from ..persistence.repository import QueryRepository, UsageFilters
+from turnstile_core.domain.runtime_models import ToolDefinition, ToolFunctionDefinition
+from turnstile_core.persistence.repository import QueryRepository, UsageFilters
+
 from .assistant_shared import ToolOutcome
 
 MAX_ROWS = 50

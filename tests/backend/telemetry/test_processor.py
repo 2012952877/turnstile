@@ -4,18 +4,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
-from backend.domain.application_access import (
+from turnstile_core.domain.application_access import (
     GatewayApplicationDiscovery,
     GatewayApplicationDiscoveryItem,
 )
-from backend.domain.models import ModelIdentity, ModelPrice, TokenUsageRecord
-from backend.ingestion.processor import (
+from turnstile_core.domain.models import ModelIdentity, ModelPrice, TokenUsageRecord
+from turnstile_core.ingestion.processor import (
     CoefficientResolver,
     UsageProcessor,
     calculate_et,
 )
-from backend.persistence.in_memory import InMemoryRepository
-from backend.services.application_access import ApplicationAccessService
+from turnstile_core.persistence.in_memory import InMemoryRepository
+from turnstile_core.services.application_access import ApplicationAccessService
 
 GATEWAY_ID = UUID("10000000-0000-4000-8000-000000000001")
 
@@ -274,7 +274,7 @@ def test_later_apim_exact_event_adds_admission_without_replacing_observer_usage(
 
 def test_postgres_upsert_preserves_exact_observer_usage_when_admission_arrives() -> None:
     source = (
-        Path(__file__).resolve().parents[3] / "backend/persistence/repository.py"
+        Path(__file__).resolve().parents[3] / "turnstile_core/persistence/repository.py"
     ).read_text(encoding="utf-8")
 
     assert "input_tokens = CASE WHEN existing.estimated" in source

@@ -10,22 +10,6 @@ import pytest
 from cryptography.fernet import Fernet
 from pydantic import HttpUrl, SecretStr
 
-from backend.domain.control_plane import (
-    GatewayCredentialRotation,
-    GatewayPublicationCreate,
-    ModelCreateTarget,
-    RuntimeTarget,
-)
-from backend.domain.runtime_models import ProviderTarget
-from backend.integrations.apim_control_plane import (
-    ApimPolicyCompiler,
-    AzureApimPublisherClient,
-)
-from backend.persistence.in_memory import InMemoryRepository
-from backend.security import CredentialCipher
-from backend.services.control_plane import (
-    ControlPlaneConflictError,
-)
 from tests.backend.model_platform.control_plane_support import (
     APIM_ID,
     FakeApimClient,
@@ -34,6 +18,22 @@ from tests.backend.model_platform.control_plane_support import (
     StubTokenProvider,
     bedrock_publication,
     publisher_settings,
+)
+from turnstile_core.domain.control_plane import (
+    GatewayCredentialRotation,
+    GatewayPublicationCreate,
+    ModelCreateTarget,
+    RuntimeTarget,
+)
+from turnstile_core.domain.runtime_models import ProviderTarget
+from turnstile_core.integrations.apim_control_plane import (
+    ApimPolicyCompiler,
+    AzureApimPublisherClient,
+)
+from turnstile_core.persistence.in_memory import InMemoryRepository
+from turnstile_core.security import CredentialCipher
+from turnstile_core.services.control_plane import (
+    ControlPlaneConflictError,
 )
 
 

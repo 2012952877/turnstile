@@ -14,7 +14,7 @@ from uuid import UUID, uuid4
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from ...domain.assistant_models import (
+from turnstile_core.domain.assistant_models import (
     AssistantAskRequest,
     AssistantReply,
     AssistantStep,
@@ -24,7 +24,7 @@ from ...domain.assistant_models import (
     Conversation,
     ConversationSummary,
 )
-from ...domain.runtime_models import (
+from turnstile_core.domain.runtime_models import (
     ChatMessage,
     InvocationMetadata,
     ModelInvocationRequest,
@@ -32,7 +32,8 @@ from ...domain.runtime_models import (
     ToolDefinition,
     ToolFunctionDefinition,
 )
-from ...integrations.gateway import elapsed_ms, supports_tool_calling
+from turnstile_core.integrations.gateway import elapsed_ms, supports_tool_calling
+
 from ...services.assistant_shared import (
     ANSWER_LANGUAGE,
     HISTORY_LIMIT,

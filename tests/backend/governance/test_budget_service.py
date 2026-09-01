@@ -1,12 +1,12 @@
 from datetime import UTC, date, datetime
 
-from backend.domain.models import (
+from backend.services.budget_service import TokenBudgetService
+from turnstile_core.domain.models import (
     BudgetScopeType,
     TokenBudgetWrite,
     TokenUsageRecord,
 )
-from backend.persistence.in_memory import InMemoryRepository
-from backend.services.budget_service import TokenBudgetService
+from turnstile_core.persistence.in_memory import InMemoryRepository
 
 
 def _write_usage(

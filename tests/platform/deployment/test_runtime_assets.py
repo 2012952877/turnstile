@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from backend.config import Settings
 from backend.http.static_files import validate_production_web_dist
+from turnstile_core.config import Settings
 
 
 def test_production_requires_frontend_index(tmp_path: Path) -> None:

@@ -10,8 +10,8 @@ npm --prefix frontend ci
 ## Required checks
 
 ```bash
-uv run ruff check backend scripts tests functions/telemetry/function_app.py functions/control_plane/function_app.py
-uv run mypy backend scripts tests
+uv run ruff check backend turnstile_core scripts tests functions/telemetry/function_app.py functions/control_plane/function_app.py
+uv run mypy backend turnstile_core scripts tests
 uv run pytest -q
 npm --prefix frontend run build
 az bicep build --file infra/main.bicep

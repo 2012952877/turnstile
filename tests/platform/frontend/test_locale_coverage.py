@@ -78,6 +78,18 @@ def test_every_source_phrase_is_covered_by_each_catalog() -> None:
         )
 
 
+def test_assistant_starter_prompts_enter_the_composer_in_the_active_locale() -> None:
+    conversation = (
+        FRONTEND_SRC / "components" / "assistant" / "assistant-conversation.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert 'import { translateForLocale, useLocale } from "../../locales/index"' in conversation
+    assert "const { locale } = useLocale()" in conversation
+    assert "translateForLocale(starter.text, locale)" in conversation
+    assert "setQuestion(translatedPrompt)" in conversation
+    assert "setQuestion(starter.text)" not in conversation
+
+
 def test_standalone_labels_have_exact_catalog_entries() -> None:
     labels = (
         "验证配置",

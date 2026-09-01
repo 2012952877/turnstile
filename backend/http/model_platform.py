@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Annotated
 from uuid import UUID
 
@@ -26,6 +27,12 @@ from turnstile_core.domain.control_plane import (
     GatewayReleaseRollbackPreview,
     GatewayReleaseRollbackRequest,
 )
+from turnstile_core.domain.enterprise import (
+    configured_invocation_tester,
+    enterprise_catalog,
+    merge_application_owners,
+    merge_observed_users,
+)
 from turnstile_core.domain.runtime_models import (
     GatewayProfileWrite,
     ManagedModelWrite,
@@ -48,6 +55,7 @@ from turnstile_core.services.control_plane import (
 )
 
 from ..services.traffic import TrafficGenerator
+from .dependencies import Repository
 from .publication_auth import PublicationOwner
 from .service_dependencies import (
     Authorization,
@@ -55,11 +63,14 @@ from .service_dependencies import (
     RuntimeService,
 )
 from .session import (
+    Config,
     CurrentSession,
     OwnerSession,
     require_allowed_write_origin,
     require_authenticated_session,
 )
+
+logger = logging.getLogger(__name__)
 
 protected_router = APIRouter(
     dependencies=[
@@ -686,15 +697,45 @@ def invoke_model(
     request: ModelInvocationRequest,
     service: RuntimeService,
     identity: CurrentSession,
+    repository: Repository,
+    settings: Config,
 ) -> ModelInvocationResponse:
     if identity.role != "owner":
+        requested_user_id = request.metadata.user_id.casefold()
+        if requested_user_id == identity.email.casefold():
+            effective_user_id = identity.email
+            effective_user_name = identity.name or identity.email
+        else:
+            catalog = merge_application_owners(
+                merge_observed_users(enterprise_catalog(), repository.observed_users()),
+                repository.application_owners(),
+            )
+            tester = configured_invocation_tester(
+                catalog,
+                settings.delegated_invocation_tester_ids,
+                requested_user_id,
+            )
+            if tester is None:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Invocation identity must be the signed-in user or a configured tester",
+                )
+            if tester.parent_id != request.metadata.department_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Invocation tester is not assigned to the selected department",
+                )
+            logger.info(
+                "Delegated tester invocation actor=%s tester=%s",
+                identity.email,
+                tester.id,
+            )
+            effective_user_id = tester.id
+            effective_user_name = tester.name
         request = request.model_copy(
             update={
                 "metadata": request.metadata.model_copy(
-                    update={
-                        "user_id": identity.email,
-                        "user": identity.name or identity.email,
-                    }
+                    update={"user_id": effective_user_id, "user": effective_user_name}
                 )
             }
         )

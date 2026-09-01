@@ -43,14 +43,23 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
   const agents = entities.agents.filter((item) => item.parent_id === projectId);
   const [agentId, setAgentId] = useState(agents[0]?.id ?? "");
   const users = useMemo(() => {
-    if (!sessionUser || entities.users.some((person) => person.id === sessionUser.email)) {
+    if (!sessionUser) return [];
+    if (sessionUser.role === "owner" && entities.users.some((person) => person.id === sessionUser.email)) {
       return entities.users;
     }
+    const sessionIdentity = {
+      id: sessionUser.email,
+      name: sessionUser.name ?? sessionUser.email,
+      parent_id: null,
+    };
+    if (sessionUser.role === "owner") return [sessionIdentity, ...entities.users];
     return [
-      { id: sessionUser.email, name: sessionUser.name ?? sessionUser.email, parent_id: null },
-      ...entities.users,
+      sessionIdentity,
+      ...(entities.invocation_testers ?? []).filter(
+        (person) => person.parent_id === departmentId && person.id !== sessionUser.email,
+      ),
     ];
-  }, [entities.users, sessionUser?.email, sessionUser?.name]);
+  }, [departmentId, entities.invocation_testers, entities.users, sessionUser]);
   const [userId, setUserId] = useState(sessionUser?.email ?? users[0]?.id ?? "");
   useEffect(() => {
     if (users.some((person) => person.id === userId)) return;
@@ -196,6 +205,7 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
             value={userId}
             items={users}
             onChange={selectUser}
+            allowAll={false}
           />
           <div className="invoke-select">
             <span>调用目标</span>

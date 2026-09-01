@@ -14,6 +14,7 @@ from tests.platform.api.api_support import (
     OWNER_SESSION,
     client,
 )
+from turnstile_core.config import Settings, get_settings
 from turnstile_core.domain.enterprise import enterprise_catalog, merge_observed_users
 from turnstile_core.domain.models import (
     EnterpriseEntity,
@@ -51,6 +52,49 @@ def test_enterprise_entities_meet_acceptance_scale() -> None:
         "parent_id": "project-finops",
     } in payload["agents"]
     assert all(user["id"] == user["name"] and "@" in user["id"] for user in payload["users"])
+
+
+def test_enterprise_entities_expose_configured_directory_testers_only() -> None:
+    previous_settings = app.dependency_overrides.get(get_settings)
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        delegated_invocation_tester_ids=[
+            "TEST.USER01@CONTOSO.COM",
+            "missing.user@contoso.com",
+        ]
+    )
+    try:
+        response = client.get("/api/v1/enterprise/entities")
+    finally:
+        if previous_settings is None:
+            app.dependency_overrides.pop(get_settings, None)
+        else:
+            app.dependency_overrides[get_settings] = previous_settings
+
+    assert response.status_code == 200
+    assert response.json()["invocation_testers"] == [
+        {
+            "id": "test.user01@contoso.com",
+            "name": "test.user01@contoso.com",
+            "parent_id": "department-platform",
+        }
+    ]
+
+
+def test_delegated_invocation_tester_config_is_normalized_and_unique() -> None:
+    settings = Settings(
+        delegated_invocation_tester_ids=[" Test.User01@Contoso.com "]
+    )
+
+    assert settings.delegated_invocation_tester_ids == ["test.user01@contoso.com"]
+    with pytest.raises(ValueError, match="must be unique"):
+        Settings(
+            delegated_invocation_tester_ids=[
+                "test.user01@contoso.com",
+                "TEST.USER01@CONTOSO.COM",
+            ]
+        )
+    with pytest.raises(ValueError, match="must be email addresses"):
+        Settings(delegated_invocation_tester_ids=["not-an-email"])
 
 def test_machine_identities_never_become_people() -> None:
     # The runtime health probe used to call as an employee, which tied a runtime's verdict

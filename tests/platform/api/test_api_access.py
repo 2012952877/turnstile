@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from fastapi.routing import APIRoute
@@ -553,7 +554,7 @@ def test_report_layout_write_is_session_bound_and_strictly_bounded() -> None:
     assert invalid.status_code == 422
     assert len(writes) == 1
 
-def test_member_invocation_is_bound_to_session_but_owner_can_impersonate() -> None:
+def test_member_invocation_accepts_self_or_configured_tester_only() -> None:
     captured: list[ModelInvocationRequest] = []
 
     class CapturingRuntimeService:
@@ -572,7 +573,7 @@ def test_member_invocation_is_bound_to_session_but_owner_can_impersonate() -> No
                 "estimated_cost": None,
             }
 
-    payload = {
+    payload: dict[str, Any] = {
         "metadata": {
             "organization_id": "org-contoso-global",
             "organization": "Contoso Global",
@@ -595,20 +596,60 @@ def test_member_invocation_is_bound_to_session_but_owner_can_impersonate() -> No
         "messages": [{"role": "user", "content": "hello"}],
     }
     app.dependency_overrides[runtime_service] = CapturingRuntimeService
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        delegated_invocation_tester_ids=[
+            "test.user01@contoso.com",
+            "test.user02@contoso.com",
+        ]
+    )
     try:
         client.cookies.set("turnstile_session", MEMBER_SESSION)
-        member = client.post("/api/v1/model-gateway/invoke", json=payload)
+        arbitrary_member = client.post("/api/v1/model-gateway/invoke", json=payload)
+        self_payload = {
+            **payload,
+            "metadata": {
+                **payload["metadata"],
+                "user_id": "member@contoso.com",
+                "user": "Forged member name",
+            },
+        }
+        self_member = client.post("/api/v1/model-gateway/invoke", json=self_payload)
+        tester_payload = {
+            **payload,
+            "metadata": {
+                **payload["metadata"],
+                "user_id": "test.user01@contoso.com",
+                "user": "Forged tester name",
+            },
+        }
+        tester_member = client.post("/api/v1/model-gateway/invoke", json=tester_payload)
+        wrong_department_payload = {
+            **tester_payload,
+            "metadata": {
+                **tester_payload["metadata"],
+                "user_id": "test.user02@contoso.com",
+            },
+        }
+        wrong_department = client.post(
+            "/api/v1/model-gateway/invoke", json=wrong_department_payload
+        )
         client.cookies.set("turnstile_session", OWNER_SESSION)
         owner = client.post("/api/v1/model-gateway/invoke", json=payload)
     finally:
         app.dependency_overrides.pop(runtime_service, None)
+        app.dependency_overrides.pop(get_settings, None)
 
-    assert member.status_code == 200
+    assert arbitrary_member.status_code == 403
+    assert self_member.status_code == 200
+    assert tester_member.status_code == 200
+    assert wrong_department.status_code == 422
     assert owner.status_code == 200
     assert captured[0].metadata.user_id == "member@contoso.com"
     assert captured[0].metadata.user == "Member"
-    assert captured[1].metadata.user_id == "victim@contoso.com"
-    assert captured[1].metadata.user == "Victim"
+    assert captured[1].metadata.user_id == "test.user01@contoso.com"
+    assert captured[1].metadata.user == "test.user01@contoso.com"
+    assert captured[2].metadata.user_id == "victim@contoso.com"
+    assert captured[2].metadata.user == "Victim"
 
 def test_unknown_api_route_never_falls_back_to_spa_html() -> None:
     response = client.get("/api/v1/not-a-real-route")

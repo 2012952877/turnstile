@@ -39,6 +39,43 @@ export function getIntlLocale() {
   return locale
 }
 
+type TextTranslator = (input: string) => string
+
+let traditionalTranslatorPromise: Promise<TextTranslator> | undefined
+
+function loadTraditionalTranslator() {
+  traditionalTranslatorPromise ??= Promise.all([
+    import("opencc-js/core"),
+    import("opencc-js/from/cn"),
+    import("opencc-js/to/twp"),
+  ]).then(([core, fromModule, toModule]) => {
+    const convertScript = core.ConverterFactory(fromModule.default, toModule.default)
+    const convertProductTerms = core.CustomConverter([
+      ["賬號", "帳號"],
+      ["工作臺", "工作台"],
+      ["平臺", "平台"],
+      ["執行時", "執行階段"],
+      ["程式碼倉庫", "程式碼儲存庫"],
+      ["儀表盤", "儀表板"],
+      ["用戶", "使用者"],
+      ["自定義", "自訂"],
+      ["默認", "預設"],
+      ["新建呼叫", "新增呼叫"],
+      ["介面協議", "介面協定"],
+    ])
+    return (input: string) => convertProductTerms(convertScript(input))
+  })
+  return traditionalTranslatorPromise
+}
+
+export async function translateForLocale(input: string, locale: LocalePreference) {
+  if (locale === "zh-CN") return input
+  if (locale === "en") return (await import("./en")).translateToEnglish(input)
+  if (locale === "ko") return (await import("./ko")).translateToKorean(input)
+  if (locale === "ja") return (await import("./ja")).translateToJapanese(input)
+  return (await loadTraditionalTranslator())(input)
+}
+
 function walkNodes(root: Node, visitor: (node: Node) => void) {
   visitor(root)
   for (const child of root.childNodes) walkNodes(child, visitor)
@@ -184,28 +221,11 @@ function startJapaneseConversion(root: HTMLElement, isCancelled: () => boolean) 
 }
 
 async function startTraditionalConversion(root: HTMLElement, isCancelled: () => boolean) {
-  const [core, fromModule, toModule] = await Promise.all([
+  const [toTraditional, core] = await Promise.all([
+    loadTraditionalTranslator(),
     import("opencc-js/core"),
-    import("opencc-js/from/cn"),
-    import("opencc-js/to/twp"),
   ])
   if (isCancelled()) return undefined
-
-  const convertScript = core.ConverterFactory(fromModule.default, toModule.default)
-  const convertProductTerms = core.CustomConverter([
-    ["賬號", "帳號"],
-    ["工作臺", "工作台"],
-    ["平臺", "平台"],
-    ["執行時", "執行階段"],
-    ["程式碼倉庫", "程式碼儲存庫"],
-    ["儀表盤", "儀表板"],
-    ["用戶", "使用者"],
-    ["自定義", "自訂"],
-    ["默認", "預設"],
-    ["新建呼叫", "新增呼叫"],
-    ["介面協議", "介面協定"],
-  ])
-  const toTraditional = (text: string) => convertProductTerms(convertScript(text))
   clearOpenCcMetadata(root)
   markIgnoredElements(root)
   const handler = core.HTMLConverter(toTraditional, root, "zh-CN", "zh-TW")

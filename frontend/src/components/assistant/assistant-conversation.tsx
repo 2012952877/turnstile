@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import {
   AlertTriangle,
   ChevronRight,
@@ -12,6 +12,7 @@ import type {
   ChartSpec,
 } from "./types"
 import { ChartCard } from "../charts/chart-card"
+import { translateForLocale, useLocale } from "../../locales/index"
 import { AssistantMarkdown } from "./markdown"
 import type { AssistantController } from "./use-assistant-controller"
 
@@ -65,6 +66,7 @@ export function AssistantConversation({ controller, onPin }: {
   onPin?: (target: { chart: ChartSpec; question: string }) => void
 }) {
   const { exchanges, question, setQuestion, asking, submit, inputRef } = controller
+  const { locale } = useLocale()
   const isCopilot = controller.source === "github-copilot"
   const starters = isCopilot ? COPILOT_STARTERS : STARTERS
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -72,6 +74,13 @@ export function AssistantConversation({ controller, onPin }: {
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" })
   }, [exchanges])
+
+  useLayoutEffect(() => {
+    const input = inputRef.current
+    if (!input) return
+    input.style.height = "auto"
+    input.style.height = `${Math.min(input.scrollHeight, 132)}px`
+  }, [inputRef, question])
 
   return <>
     <div
@@ -100,7 +109,12 @@ export function AssistantConversation({ controller, onPin }: {
           {starters.map((starter) => <button
             type="button"
             key={starter.text}
-            onClick={() => { setQuestion(starter.text); inputRef.current?.focus() }}
+            onClick={() => {
+              void translateForLocale(starter.text, locale).then((translatedPrompt) => {
+                setQuestion(translatedPrompt)
+                inputRef.current?.focus()
+              })
+            }}
           ><span className="assistant-starter-emoji">{starter.emoji}</span><span>{starter.text}</span></button>)}
         </div>
       </div>}

@@ -92,12 +92,18 @@ def test_member_governance_views_hide_owner_only_controls() -> None:
     budget_source = (FRONTEND_SOURCE / "data-sources/apim/pages/budget-page.tsx").read_text(
         encoding="utf-8"
     )
+    finops_styles = (FRONTEND_SOURCE / "styles/finops.css").read_text(encoding="utf-8")
     anomaly_source = (
         FRONTEND_SOURCE / "data-sources/apim/pages/anomaly-rule-management.tsx"
     ).read_text(encoding="utf-8")
 
     assert 'const canManage = user?.role === "owner"' in budget_source
     assert "canManage ? <Switch" in budget_source
+    assert 'className="budget-enforcement-state"' in budget_source
+    assert "data-mode={enforcement.mode}" in budget_source
+    assert 'className="budget-progress-cell" data-label="已使用"' in budget_source
+    assert "minWidths={[180, 100, 140, 100, 110, 94, 88, 52]}" in budget_source
+    assert ".budget-table-row > .budget-status-cell { grid-column: 1 / 3;" in finops_styles
     assert "{canManage && <DropdownMenu>" in budget_source
     assert "{canManage && bulkOpen && people.data" in budget_source
 

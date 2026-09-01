@@ -10,6 +10,7 @@ import {
   ChevronRight,
   CircleGauge,
   CircleSlash2,
+  Eye,
   MoreHorizontal,
   PanelLeft,
   Pencil,
@@ -324,7 +325,7 @@ function BudgetEditor({
 
 function BudgetProgress({ item }: { item: TokenBudgetItem }) {
   const progress = Math.min(100, Math.max(0, item.usage_percent ?? 0))
-  return <div className="budget-progress-cell">
+  return <div className="budget-progress-cell" data-label="已使用">
     <div><strong>{formatFullTokens(item.used_tokens)}</strong><span>{item.usage_percent == null ? "--" : `${item.usage_percent}%`}</span></div>
     <span className="budget-progress-track" data-status={item.status} role="progressbar" aria-label={`${item.scope_name} 已使用`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={item.usage_percent == null ? undefined : progress}><i style={{ width: `${progress}%` }} /></span>
   </div>
@@ -384,7 +385,14 @@ function BudgetRow({
           aria-label={`${item.scope_name} ${enforcement.mode === "block" ? "改为仅告警" : "改为拦截"}`}
           title={enforcement.mode === "block" ? "拦截中：额度用尽的人员会被网关拒绝" : "仅告警：完整记账，不拦截"}
           onCheckedChange={(checked: boolean) => onToggleEnforcement?.(checked ? "block" : "audit")}
-        /> : <span className="budget-enforce-na">{enforcement.mode === "block" ? "拦截" : "仅告警"}</span>
+        /> : <span
+          className="budget-enforcement-state"
+          data-mode={enforcement.mode}
+          title={enforcement.mode === "block" ? "拦截中：额度用尽的人员会被网关拒绝" : "仅告警：完整记账，不拦截"}
+        >
+          {enforcement.mode === "block" ? <CircleSlash2 aria-hidden="true" /> : <Eye aria-hidden="true" />}
+          <span>{enforcement.mode === "block" ? "拦截" : "仅告警"}</span>
+        </span>
         : <span className="budget-enforce-na">--</span>}
     </div>
     <div className="budget-row-actions">
@@ -461,7 +469,7 @@ function BudgetTable({
     </div>
     <section className="finops-panel budget-allocation-panel">
       <div className="budget-table-scroll">
-        <ResizableGridTable className="budget-table" role="table" aria-label="Token 预算层级" headerSelector=".budget-table-head" minWidths={[180, 100, 140, 100, 110, 82, 64, 52]}>
+        <ResizableGridTable className="budget-table" role="table" aria-label="Token 预算层级" headerSelector=".budget-table-head" minWidths={[180, 100, 140, 100, 110, 94, 88, 52]}>
           <div className="budget-table-head" role="row"><span>范围</span><span>预算</span><span>已使用</span><span>剩余</span><span>月底预测</span><span>状态</span><span title="开启后额度用尽的人员会被网关拒绝">拦截</span><span /></div>
           {rows.map(({ item, depth, hasChildren, parentAllocated }) => <BudgetRow
             key={`${item.scope_type}:${item.scope_id}`}

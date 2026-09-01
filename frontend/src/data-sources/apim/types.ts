@@ -187,6 +187,7 @@ export type EnterpriseEntityCatalog = {
   projects: EnterpriseEntity[]
   agents: EnterpriseEntity[]
   users: EnterpriseEntity[]
+  invocation_testers?: EnterpriseEntity[]
 }
 
 export type BudgetScopeType = "organization" | "department" | "user"

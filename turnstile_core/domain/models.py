@@ -246,6 +246,7 @@ class EnterpriseEntityCatalog(StrictModel):
     projects: list[EnterpriseEntity]
     agents: list[EnterpriseEntity]
     users: list[EnterpriseEntity]
+    invocation_testers: list[EnterpriseEntity] = Field(default_factory=list)
 
 
 BudgetScopeType = Literal["organization", "department", "user"]

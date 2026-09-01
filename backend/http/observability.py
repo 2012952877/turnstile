@@ -7,6 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from turnstile_core.domain.enterprise import (
+    configured_invocation_testers,
     enterprise_catalog,
     merge_application_owners,
     merge_observed_users,
@@ -37,6 +38,7 @@ from turnstile_core.persistence.repository import UsageFilters
 
 from .dependencies import Repository
 from .session import (
+    Config,
     OwnerSession,
     require_allowed_write_origin,
     require_authenticated_session,
@@ -76,10 +78,19 @@ UsageFilterSet = Annotated[UsageFilters, Depends(usage_filters)]
 
 
 @router.get("/api/v1/enterprise/entities", response_model=EnterpriseEntityCatalog)
-def get_enterprise_entities(repository: Repository) -> EnterpriseEntityCatalog:
-    return merge_application_owners(
+def get_enterprise_entities(
+    repository: Repository, settings: Config
+) -> EnterpriseEntityCatalog:
+    catalog = merge_application_owners(
         merge_observed_users(enterprise_catalog(), repository.observed_users()),
         repository.application_owners(),
+    )
+    return catalog.model_copy(
+        update={
+            "invocation_testers": configured_invocation_testers(
+                catalog, settings.delegated_invocation_tester_ids
+            )
+        }
     )
 
 

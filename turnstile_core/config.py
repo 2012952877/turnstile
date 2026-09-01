@@ -5,7 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -110,6 +110,8 @@ class Settings(BaseSettings):
     # than being its own switch so a production deployment cannot forget to set it.
     session_cookie_name: str = "turnstile_session"
 
+    delegated_invocation_tester_ids: list[str] = Field(default_factory=list)
+
     traffic_generation_budget_usd: float = Field(default=20.0, gt=0, le=20)
     traffic_max_requests: int = Field(default=500, ge=1, le=5000)
     traffic_max_output_tokens: int = Field(default=64, ge=1, le=512)
@@ -137,6 +139,16 @@ class Settings(BaseSettings):
         if self.control_plane_enabled and not observer_url:
             raise ValueError("The enabled control plane requires an APIM usage observer")
         return self
+
+    @field_validator("delegated_invocation_tester_ids")
+    @classmethod
+    def normalize_delegated_invocation_tester_ids(cls, values: list[str]) -> list[str]:
+        normalized = [value.strip().casefold() for value in values]
+        if any(not value or "@" not in value for value in normalized):
+            raise ValueError("delegated invocation tester IDs must be email addresses")
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("delegated invocation tester IDs must be unique")
+        return normalized
 
     def session_ttl_hours_for(self, role: str) -> int:
         return (

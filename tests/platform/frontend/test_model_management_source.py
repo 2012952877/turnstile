@@ -191,6 +191,14 @@ def test_connections_own_the_runtime_inventory_and_detail_route() -> None:
     assert ">连接</a><ChevronRight" in page
 
 
+def test_gateway_creation_action_stays_hidden() -> None:
+    page = (FRONTEND_SOURCE / "pages/model-management-page.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'activeTab !== "gateways" && <div className="smh-header-actions"' in page
+
+
 def test_apim_native_routes_have_one_dedicated_qualified_surface() -> None:
     app = (FRONTEND_SOURCE / "app.tsx").read_text(encoding="utf-8")
     model_page = (

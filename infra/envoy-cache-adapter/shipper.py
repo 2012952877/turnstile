@@ -28,7 +28,12 @@ def normalize_access_row(row: dict[str, Any]) -> dict[str, Any] | None:
         return None
     prompt_tokens = _number(row, "prompt_tokens")
     output_tokens = _number(row, "output_tokens")
-    cache_read_tokens = _number(row, "cache_read_tokens")
+    cache_read_tokens = _number(
+        row,
+        "cache_read_tokens"
+        if row.get("cache_read_tokens") not in (None, "", "-")
+        else "cache_read_tokens_fallback",
+    )
     cache_write_tokens = _number(row, "cache_write_tokens")
     if prompt_tokens + output_tokens + cache_read_tokens + cache_write_tokens == 0:
         return None
@@ -39,6 +44,9 @@ def normalize_access_row(row: dict[str, Any]) -> dict[str, Any] | None:
         if api_format == "anthropic_messages"
         else max(prompt_tokens - cached_tokens, 0)
     )
+    pool_runtime = _text(row, "pool_runtime", "")
+    if pool_runtime == "unattributed":
+        pool_runtime = ""
     return {
         "id": request_id,
         "request_id": request_id,
@@ -61,7 +69,8 @@ def normalize_access_row(row: dict[str, Any]) -> dict[str, Any] | None:
         "provider": _text(row, "provider", "microsoft_foundry"),
         "model": _text(row, "model"),
         "model_id": _text(row, "model_id"),
-        "runtime": _text(row, "runtime"),
+        "runtime": pool_runtime or _text(row, "runtime"),
+        "runtime_authoritative": bool(pool_runtime),
         "request_source": _text(row, "request_source"),
         "input_tokens": input_tokens,
         "cached_tokens": cached_tokens,

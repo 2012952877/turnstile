@@ -586,6 +586,7 @@ class UsageEvent(StrictModel):
     model: str
     model_id: str = "unattributed"
     runtime: str = "unattributed"
+    runtime_authoritative: bool = False
     request_source: str = "unattributed"
     gateway_profile_id: UUID | None = None
     apim_subscription_id: str | None = Field(default=None, max_length=255)
@@ -637,6 +638,7 @@ class TokenUsageRecord(StrictModel):
     model: str
     model_id: str = "unattributed"
     runtime: str = "unattributed"
+    runtime_authoritative: bool = Field(default=False, exclude=True)
     request_source: str = "unattributed"
     usage_domain: Literal["apim", "github_copilot"] = "apim"
     input_tokens: int

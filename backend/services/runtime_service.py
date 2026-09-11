@@ -30,6 +30,7 @@ from turnstile_core.domain.runtime_models import (
     ModelFamilyKey,
     ModelInvocationRequest,
     ModelInvocationResponse,
+    ModelVendorKey,
     Provider,
     ProviderKind,
     ProviderWrite,
@@ -39,6 +40,9 @@ from turnstile_core.domain.runtime_models import (
     RuntimeKind,
     RuntimeWrite,
     foundry_runtime_name,
+    model_vendor_label,
+    openai_compatible_endpoint_values,
+    openai_compatible_runtime_name,
 )
 from turnstile_core.integrations.gateway import GatewayInvocationError, GatewayRouter, elapsed_ms
 from turnstile_core.persistence.repository import QueryRepository
@@ -112,6 +116,7 @@ class ModelRuntimeService:
         ]
         runtime_ids = {row["id"] for row in runtimes}
         return RegistryResponse(
+            backend_pool_session_affinity_supported=True,
             gateways=[
                 GatewayProfile.model_validate(self._public_secret(row))
                 for row in rows["gateways"]
@@ -233,6 +238,7 @@ class ModelRuntimeService:
         if gateway is None or not gateway["enabled"] or gateway["implementation"] != "apim":
             raise HTTPException(status_code=409, detail="The selected APIM gateway is unavailable")
         provider_values: dict[str, Any] | None = None
+        openai_vendor = write.model_vendor or ModelVendorKey.GENERIC
         if write.provider.existing_id is not None:
             provider = next(
                 (
@@ -248,41 +254,76 @@ class ModelRuntimeService:
                     detail="The selected provider is unavailable",
                 )
             brand = BrandKey(provider.get("brand_key", BrandKey.GENERIC))
+            provider_kind = ProviderKind(provider["provider_kind"])
             provider_id = provider["id"]
+            if provider_kind is ProviderKind.OPENAI_COMPATIBLE:
+                configured_vendor = ModelVendorKey(
+                    str((provider.get("config") or {}).get("model_vendor", "generic"))
+                )
+                if write.model_vendor is not None and configured_vendor not in {
+                    ModelVendorKey.GENERIC, write.model_vendor,
+                }:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="The selected model vendor does not match the provider",
+                    )
+                openai_vendor = write.model_vendor or configured_vendor
         else:
             assert write.provider.template is not None
-            brand = BrandKey(write.provider.template)
+            template = write.provider.template
+            brand = {
+                "amazon_bedrock": BrandKey.AMAZON_BEDROCK,
+                "microsoft_foundry": BrandKey.MICROSOFT_FOUNDRY,
+                "openai_compatible": {
+                    ModelVendorKey.OPENAI: BrandKey.OPENAI,
+                    ModelVendorKey.ANTHROPIC: BrandKey.ANTHROPIC,
+                }.get(openai_vendor, BrandKey.GENERIC),
+            }[template]
+            provider_kind = {
+                "amazon_bedrock": ProviderKind.ANTHROPIC,
+                "microsoft_foundry": ProviderKind.MICROSOFT_FOUNDRY,
+                "openai_compatible": ProviderKind.OPENAI_COMPATIBLE,
+            }[template]
             provider_id = None
             provider_name = (
                 "Microsoft Foundry"
-                if brand is BrandKey.MICROSOFT_FOUNDRY
+                if template == "microsoft_foundry"
                 else "Amazon Bedrock"
+                if template == "amazon_bedrock"
+                else model_vendor_label(openai_vendor)
             )
+            provider_config: dict[str, Any] = {"hosting_platform": template}
+            if template == "openai_compatible":
+                provider_config["model_vendor"] = openai_vendor.value
             provider_values = {
                 "name": provider_name,
-                "provider_kind": (
-                    "microsoft_foundry"
-                    if brand is BrandKey.MICROSOFT_FOUNDRY
-                    else "anthropic"
-                ),
+                "provider_kind": provider_kind,
                 "endpoint_url": None,
                 "auth_type": "none",
                 "credential_ciphertext": None,
                 "credential_hint": None,
                 "enabled": True,
                 "brand_key": brand,
-                "config": {"hosting_platform": brand},
+                "config": provider_config,
             }
         if brand is BrandKey.MICROSOFT_FOUNDRY:
             values = self._foundry_connection_values(write, registry["runtimes"])
         elif brand is BrandKey.AMAZON_BEDROCK:
             values = self._bedrock_connection_values(write, registry["runtimes"])
+        elif provider_kind is ProviderKind.OPENAI_COMPATIBLE:
+            values = self._openai_connection_values(write, registry["runtimes"], openai_vendor)
         else:
             raise HTTPException(
                 status_code=409,
                 detail="This provider does not support managed connection onboarding",
             )
         try:
+            runtime_brand = brand
+            if provider_kind is ProviderKind.OPENAI_COMPATIBLE:
+                runtime_brand = {
+                    ModelVendorKey.OPENAI: BrandKey.OPENAI,
+                    ModelVendorKey.ANTHROPIC: BrandKey.ANTHROPIC,
+                }.get(openai_vendor, BrandKey.GENERIC)
             self._repository.create_connection(
                 provider_id,
                 provider_values,
@@ -290,7 +331,7 @@ class ModelRuntimeService:
                 "gateway_profile_id": gateway["id"],
                 "enabled": True,
                 "is_default": False,
-                "brand_key": brand,
+                "brand_key": runtime_brand,
                 "allowed_roles": ["owner", "admin", "member"],
                 **values,
             },
@@ -528,6 +569,47 @@ class ModelRuntimeService:
                 "credential_provisioned": False,
                 "key_vault_secret_id": None,
                 "managed_identity_resource": None,
+            },
+        }
+
+    def _openai_connection_values(
+        self,
+        write: ModelConnectionCreate,
+        runtimes: Any,
+        model_vendor: ModelVendorKey,
+    ) -> dict[str, Any]:
+        if write.openai_base_url is None:
+            raise HTTPException(status_code=400, detail="OpenAI-compatible Base URL is missing")
+        try:
+            base_url, backend_url, backend_path = openai_compatible_endpoint_values(
+                str(write.openai_base_url)
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        self._ensure_unique_connection(runtimes, write.gateway_profile_id, "base_url", base_url)
+        scope = f"{write.gateway_profile_id}:{base_url.casefold()}"
+        return {
+            "name": openai_compatible_runtime_name(base_url, model_vendor),
+            "runtime_kind": "openai_compatible",
+            "config": {
+                "base_url": base_url,
+                "model_vendor": model_vendor.value,
+                "path": "/chat/completions",
+                "api_format": "openai_chat",
+                "streaming_mode": "native",
+                "control_plane_managed": True,
+                "backend_url": backend_url,
+                "backend_path": backend_path,
+                "auth_strategy": "named_value_bearer",
+                "named_value_name": (
+                    "turnstile-openai-" + hashlib.sha256(scope.encode("utf-8")).hexdigest()[:16]
+                ),
+                "credential_kind": "api_key",
+                "credential_provisioned": False,
+                "key_vault_secret_id": None,
+                "managed_identity_resource": None,
+                "max_tokens_field": "max_tokens",
+                "supports_temperature": True,
             },
         }
 

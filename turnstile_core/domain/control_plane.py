@@ -95,6 +95,7 @@ class RuntimeTarget(StrictModel):
     bedrock_runtime_url: HttpUrl | None = None
     foundry_project_endpoint: HttpUrl | None = None
     foundry_inference_endpoint: HttpUrl | None = None
+    openai_base_url: HttpUrl | None = None
     api_key: SecretStr | None = Field(
         default=None,
         min_length=1,
@@ -107,13 +108,15 @@ class RuntimeTarget(StrictModel):
             self.bedrock_runtime_url is not None
             or self.foundry_project_endpoint is not None
             or self.foundry_inference_endpoint is not None
+            or self.openai_base_url is not None
         ):
             raise ValueError("an existing runtime cannot redefine its connection")
         if self.existing_id is not None:
             return self
         has_bedrock = self.bedrock_runtime_url is not None
         has_foundry = self.foundry_project_endpoint is not None
-        if has_bedrock and has_foundry:
+        has_openai = self.openai_base_url is not None
+        if sum((has_bedrock, has_foundry, has_openai)) > 1:
             raise ValueError("a new runtime must use exactly one provider connection")
         if self.foundry_inference_endpoint is not None and not has_foundry:
             raise ValueError(
@@ -123,7 +126,9 @@ class RuntimeTarget(StrictModel):
             self.bedrock_runtime_url is None or self.api_key is None
         ):
             raise ValueError("a new Bedrock runtime requires its Runtime URL and API key")
-        if not has_bedrock and not has_foundry:
+        if has_openai and self.api_key is None:
+            raise ValueError("a new OpenAI-compatible runtime requires its Base URL and API key")
+        if not has_bedrock and not has_foundry and not has_openai:
             raise ValueError("a new runtime requires a supported provider connection")
         if has_foundry and (self.foundry_inference_endpoint is None) != (
             self.api_key is None
@@ -254,6 +259,7 @@ class GatewayRateLimitResilience(StrictModel):
 class GatewayBackendPoolWrite(StrictModel):
     members: list[GatewayBackendPoolMemberWrite] = Field(min_length=2, max_length=30)
     rate_limit: GatewayRateLimitResilience
+    session_affinity: bool = False
 
     @model_validator(mode="after")
     def validate_members(self) -> GatewayBackendPoolWrite:
@@ -293,6 +299,7 @@ class GatewayBackendPoolConfig(StrictModel):
     schema_version: Literal[1] = 1
     members: list[GatewayBackendPoolMember] = Field(min_length=2, max_length=30)
     rate_limit: GatewayRateLimitResilience
+    session_affinity: bool = False
 
     @model_validator(mode="after")
     def validate_members(self) -> GatewayBackendPoolConfig:
@@ -306,6 +313,7 @@ class GatewayBackendPoolConfig(StrictModel):
                 for member in self.members
             ],
             rate_limit=self.rate_limit,
+            session_affinity=self.session_affinity,
         )
         return self
 
@@ -345,6 +353,19 @@ class GatewayModelBinding(StrictModel):
     runtime_config: dict[str, object] = Field(default_factory=dict)
     model: ModelTarget
 
+    @property
+    def backend_pool(self) -> GatewayBackendPoolConfig | None:
+        raw_pool = self.runtime_config.get("apim_backend_pool")
+        if raw_pool is None:
+            return None
+        pool = GatewayBackendPoolConfig.model_validate(raw_pool)
+        affinity = self.runtime_config.get("apim_backend_pool_session_affinity")
+        if affinity is not None:
+            if not isinstance(affinity, bool):
+                raise ValueError("backend pool session affinity must be a boolean")
+            pool = pool.model_copy(update={"session_affinity": affinity})
+        return pool
+
     @model_validator(mode="after")
     def require_managed_backend_details(self) -> GatewayModelBinding:
         if self.runtime_id is None and self.backend_url is None:
@@ -382,10 +403,9 @@ class GatewayReleaseSpec(StrictModel):
         if set(removed_aliases) & (set(aliases) | set(binding_aliases)):
             raise ValueError("a removed model cannot remain active in the gateway release")
         for binding in self.bindings:
-            raw_pool = binding.runtime_config.get("apim_backend_pool")
-            if raw_pool is None:
+            pool = binding.backend_pool
+            if pool is None:
                 continue
-            pool = GatewayBackendPoolConfig.model_validate(raw_pool)
             if not binding.routing_managed:
                 raise ValueError("only managed routes can use an APIM backend pool")
             if binding.runtime_id is None:
@@ -451,6 +471,54 @@ class GatewayAuthorizationRequirement(StrictModel):
     role_name: str = Field(min_length=1, max_length=120)
 
 
+def publication_materialized_named_values(
+    publication: GatewayPublication,
+    *,
+    provisioning_completed: bool = False,
+) -> list[str]:
+    if publication.publication_kind in {
+        PublicationKind.MODEL_REMOVE,
+        PublicationKind.ROUTE_RECONCILE,
+    }:
+        return []
+    binding = publication.desired_spec.bindings[-1]
+    if (
+        binding.auth_strategy
+        not in {AuthStrategy.NAMED_VALUE_BEARER, AuthStrategy.NAMED_VALUE_API_KEY}
+        or binding.key_vault_secret_id is not None
+        or binding.named_value_name is None
+    ):
+        return []
+    raw_names = publication.resource_manifest.get("named_values")
+    names = (
+        [value for value in raw_names if isinstance(value, str)]
+        if isinstance(raw_names, list)
+        else []
+    )
+    if binding.named_value_name not in names and (
+        publication.apim_revision is not None
+        or provisioning_completed
+        or binding.runtime_config.get("credential_provisioned") is True
+    ):
+        names.append(binding.named_value_name)
+    return names
+
+
+def publication_retry_requires_credential(publication: GatewayPublication) -> bool:
+    if publication.publication_kind in {
+        PublicationKind.MODEL_REMOVE,
+        PublicationKind.ROUTE_RECONCILE,
+    }:
+        return False
+    binding = publication.desired_spec.bindings[-1]
+    return (
+        binding.auth_strategy
+        in {AuthStrategy.NAMED_VALUE_BEARER, AuthStrategy.NAMED_VALUE_API_KEY}
+        and binding.key_vault_secret_id is None
+        and binding.named_value_name not in publication_materialized_named_values(publication)
+    )
+
+
 class GatewayPublicationView(StrictModel):
     id: UUID
     gateway_profile_id: UUID
@@ -495,20 +563,6 @@ class GatewayPublicationView(StrictModel):
                 authorization = GatewayAuthorizationRequirement.model_validate(
                     raw_authorization
                 )
-        retry_requires_credential = False
-        if publication.publication_kind not in {
-            PublicationKind.MODEL_REMOVE,
-            PublicationKind.ROUTE_RECONCILE,
-        }:
-            binding = publication.desired_spec.bindings[-1]
-            retry_requires_credential = (
-                binding.auth_strategy
-                in {
-                    AuthStrategy.NAMED_VALUE_BEARER,
-                    AuthStrategy.NAMED_VALUE_API_KEY,
-                }
-                and binding.key_vault_secret_id is None
-            )
         return cls(
             id=publication.id,
             gateway_profile_id=publication.gateway_profile_id,
@@ -526,7 +580,7 @@ class GatewayPublicationView(StrictModel):
             ),
             error_message=None,
             authorization=authorization,
-            retry_requires_credential=retry_requires_credential,
+            retry_requires_credential=publication_retry_requires_credential(publication),
             attempt_count=publication.attempt_count,
             created_by=publication.created_by,
             created_at=publication.created_at,

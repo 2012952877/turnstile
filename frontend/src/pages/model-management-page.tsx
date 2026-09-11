@@ -94,6 +94,7 @@ import {
   publicationStatusLabel,
 } from "../components/model-management/model-publication-dialog"
 import { ConnectionDialog } from "../components/model-management/connection-dialog"
+import { ModelEditDialog } from "../components/model-management/model-edit-dialog"
 import type {
   GatewayPublication,
   GatewayProfile,
@@ -110,7 +111,7 @@ type RegistryItem = ModelRuntime | ManagedModel | ModelProvider | GatewayProfile
 type Tab = "models" | "connections" | "gateways"
 type ModelTableTab = Tab
 
-const MODEL_TABLE_COLUMN_MIN_WIDTHS = [180, 120, 160, 80, 160] as const
+const MODEL_TABLE_COLUMN_MIN_WIDTHS = [180, 120, 160, 80, 48] as const
 
 const capabilityLabels: Record<string, string> = {
   chat: "对话",
@@ -278,7 +279,8 @@ export function ModelManagementPage({ onToggleSidebar }: { onToggleSidebar: () =
   const client = useQueryClient()
   const { data, isLoading, error } = useQuery(finopsQueries.registry())
   const [tab, setTab] = useState<Tab>(modelManagementTabFromUrl)
-  const [editor, setEditor] = useState<{ kind: RegistryKind; item?: RegistryItem } | null>(null)
+  const [editor, setEditor] = useState<{ kind: Exclude<RegistryKind, "model">; item?: RegistryItem } | null>(null)
+  const [editingModel, setEditingModel] = useState<ManagedModel | null>(null)
   const [consoleOpen, setConsoleOpen] = useState(false)
   const [publicationOpen, setPublicationOpen] = useState(() => Boolean(publicationIdFromUrl()))
   const [publicationId, setPublicationId] = useState<string | null>(publicationIdFromUrl)
@@ -402,6 +404,7 @@ export function ModelManagementPage({ onToggleSidebar }: { onToggleSidebar: () =
     onSuccess: (registry) => {
       client.setQueryData(finopsKeys.registry, registry)
       setEditor(null)
+      setEditingModel(null)
       setNotice({ text: "配置已保存", ok: true })
     },
   })
@@ -513,6 +516,11 @@ export function ModelManagementPage({ onToggleSidebar }: { onToggleSidebar: () =
     save.mutate({ kind: "model", id: model.id, value: modelPayload(model, patch) })
   const updateGateway = (gateway: GatewayProfile, patch: Partial<GatewayProfile>) =>
     save.mutate({ kind: "gateway", id: gateway.id, value: gatewayPayload(gateway, patch) })
+  const openModelEditor = (model: ManagedModel) => {
+    if (save.isPending) return
+    save.reset()
+    setEditingModel(model)
+  }
   const removingModelKey = trackedPublication.data?.publication_kind === "model_remove"
     && !["active", "failed", "rolled_back", "superseded"].includes(trackedPublication.data.status)
     ? trackedPublication.data.model_key
@@ -536,10 +544,15 @@ export function ModelManagementPage({ onToggleSidebar }: { onToggleSidebar: () =
 
   const overlays = <>
     {editor && <RegistryEditor registry={data} kind={editor.kind} item={editor.item} busy={save.isPending} onClose={() => setEditor(null)} onSave={(value) => save.mutate({ kind: editor.kind, id: editor.item?.id, value })} />}
+    {editingModel && <ModelEditDialog key={editingModel.id} registry={data} model={editingModel} busy={save.isPending} error={save.error ? String(save.error) : null} onClose={() => { if (!save.isPending) setEditingModel(null) }} onSave={(value) => save.mutate({ kind: "model", id: editingModel.id, value })} />}
     {consoleOpen && <GatewayConsole registry={data} onClose={() => setConsoleOpen(false)} />}
     {publicationOpen && <ModelPublicationDialog registry={data} publicationId={publicationDialogId} onPublicationQueued={(id) => {
       trackPublication(id)
       void client.invalidateQueries({ queryKey: finopsKeys.gatewayPublications })
+    }} onManageConnections={() => {
+      closePublication()
+      setRuntimeDetailId(null)
+      changeTab("connections")
     }} onClose={closePublication} />}
     {connectionOpen && <ConnectionDialog registry={data} runtime={editingConnection ?? undefined} busy={saveConnection.isPending || updateConnection.isPending} error={(editingConnection ? updateConnection.error : saveConnection.error) ? String(editingConnection ? updateConnection.error : saveConnection.error) : null} onClose={() => { if (!saveConnection.isPending && !updateConnection.isPending) { setConnectionOpen(false); setEditingConnection(null) } }} onCreate={(value) => saveConnection.mutate(value)} onUpdate={(value) => { if (editingConnection) updateConnection.mutate({ runtime: editingConnection, value }) }} />}
     {credentialModel && <CredentialRotationDialog model={credentialModel} busy={rotateCredential.isPending} error={rotateCredential.error ? String(rotateCredential.error) : null} onClose={() => setCredentialModel(null)} onSave={(apiKey) => rotateCredential.mutate({ model: credentialModel, apiKey })} />}
@@ -557,7 +570,7 @@ export function ModelManagementPage({ onToggleSidebar }: { onToggleSidebar: () =
         busy={save.isPending || health.isPending}
         checking={health.isPending}
         onEdit={(runtime) => { setEditingConnection(runtime); setConnectionOpen(true) }}
-        onEditModel={(model) => setEditor({ kind: "model", item: model })}
+        onEditModel={openModelEditor}
         onCheck={(runtime) => health.mutate(runtime)}
         onToggle={(runtime) => updateRuntime(runtime, { enabled: !runtime.enabled })}
         onToggleSidebar={onToggleSidebar}
@@ -595,6 +608,8 @@ export function ModelManagementPage({ onToggleSidebar }: { onToggleSidebar: () =
         if (kind === "runtime") {
           setEditingConnection(item as ModelRuntime)
           setConnectionOpen(true)
+        } else if (kind === "model") {
+          openModelEditor(item as ManagedModel)
         } else {
           setEditor({ kind, item })
         }
@@ -1122,7 +1137,7 @@ function ModelWorkspace({ registry, tab, notice, error, busy, checkingRuntimeId,
     </div>
     {notice && <RegistryNoticeBanner notice={notice} onDismiss={onDismissNotice} onAction={onNoticeAction} />}
     {error && <div className="registry-error smh-notice">保存失败：{String(error)}</div>}
-    <ResizableGridTable className={`model-table ${activeTab}`} role="table" aria-label={`${addLabel}列表`} headerSelector=".model-table-head" minWidths={MODEL_TABLE_COLUMN_MIN_WIDTHS} columnGap={12} horizontalPadding={32}>
+    <ResizableGridTable className={`model-table ${activeTab}`} role="table" aria-label={`${addLabel}列表`} headerSelector=".model-table-head" minWidths={MODEL_TABLE_COLUMN_MIN_WIDTHS} columnGap={12} horizontalPadding={32} resizeAtAllWidths>
       <div className="model-table-head" role="row">
         {columnHeaders.map((label, index) => <span className="model-table-heading" role="columnheader" aria-label={label} key={label}>
           {index < columnHeaders.length - 1 && <span>{label}</span>}
@@ -1378,10 +1393,9 @@ function RegistryCheckboxField({ id, name, label, defaultChecked }: { id: string
   return <div className="registry-checkbox-field"><Checkbox id={id} name={name} value="on" defaultChecked={defaultChecked} /><label htmlFor={id}>{label}</label></div>
 }
 
-function RegistryEditor({ registry, kind, item, busy, onClose, onSave }: { registry: ModelRegistry; kind: RegistryKind; item?: RegistryItem; busy: boolean; onClose: () => void; onSave: (value: Record<string, unknown>) => void }) {
+function RegistryEditor({ registry, kind, item, busy, onClose, onSave }: { registry: ModelRegistry; kind: Exclude<RegistryKind, "model">; item?: RegistryItem; busy: boolean; onClose: () => void; onSave: (value: Record<string, unknown>) => void }) {
   const [formError, setFormError] = useState<string | null>(null)
   const runtime = kind === "runtime" ? item as ModelRuntime | undefined : undefined
-  const model = kind === "model" ? item as ManagedModel | undefined : undefined
   const provider = kind === "provider" ? item as ModelProvider | undefined : undefined
   const gateway = kind === "gateway" ? item as GatewayProfile | undefined : undefined
   const submit = (event: React.FormEvent<HTMLFormElement>) => {
@@ -1390,23 +1404,21 @@ function RegistryEditor({ registry, kind, item, busy, onClose, onSave }: { regis
     try {
       const config = JSON.parse(String(values.get("config") || "{}")) as Record<string, unknown>
       if (kind === "runtime") onSave({ provider_id: values.get("provider_id"), gateway_profile_id: values.get("gateway_profile_id") === NONE_SELECT_VALUE ? null : values.get("gateway_profile_id"), name: values.get("name"), runtime_kind: values.get("runtime_kind"), brand_key: runtime?.brand_key ?? "generic", enabled: values.get("enabled") === "on", is_default: values.get("is_default") === "on", allowed_roles: split(values.get("allowed_roles")), config })
-      else if (kind === "model") onSave({ provider_id: model?.provider_id ?? values.get("provider_id"), runtime_id: model?.runtime_id ?? values.get("runtime_id"), model_key: model?.model_key ?? values.get("model_key"), display_name: values.get("display_name"), family_key: model?.family_key ?? "generic", upstream_model_id: model?.upstream_model_id ?? values.get("model_key"), assignment_required: model?.assignment_required ?? false, enabled: values.get("enabled") === "on", is_default: values.get("is_default") === "on", capabilities: split(values.get("capabilities")), context_window: numberOrNull(values.get("context_window")), input_cost_per_million: numberOrNull(values.get("input_cost_per_million")), output_cost_per_million: numberOrNull(values.get("output_cost_per_million")), cached_cost_per_million: numberOrNull(values.get("cached_cost_per_million")), cache_write_cost_per_million: numberOrNull(values.get("cache_write_cost_per_million")), allowed_roles: split(values.get("allowed_roles")) })
       else if (kind === "provider") onSave({ name: values.get("name"), provider_kind: values.get("provider_kind"), brand_key: provider?.brand_key ?? "generic", endpoint_url: values.get("endpoint_url") || null, auth_type: values.get("auth_type"), credential: values.get("credential") || undefined, enabled: values.get("enabled") === "on", config })
       else onSave({ name: values.get("name"), implementation: values.get("implementation"), base_url: values.get("base_url") || null, auth_type: values.get("auth_type"), credential: values.get("credential") || undefined, enabled: values.get("enabled") === "on", is_default: values.get("is_default") === "on", config })
     } catch (error) { setFormError(`参数 JSON 无效：${String(error)}`) }
   }
-  const editorLabel = kind === "runtime" ? "连接" : kind === "model" ? "模型" : kind === "provider" ? "提供方" : "网关"
+  const editorLabel = kind === "runtime" ? "连接" : kind === "provider" ? "提供方" : "网关"
   return <Dialog open onOpenChange={(open) => { if (!open) onClose() }}><DialogContent className="registry-editor-dialog" finalFocus={false}>
     <form className="registry-editor" onSubmit={submit}>
       <DialogHeader className="registry-editor-header"><DialogTitle>{`${item ? "编辑" : "新增"}${editorLabel}`}</DialogTitle><DialogDescription>配置会直接写入模型平台 Registry。</DialogDescription></DialogHeader>
       <div className="registry-editor-body">
-        {(kind === "runtime" || kind === "model") && <RegistrySelectField label="提供方" name="provider_id" defaultValue={runtime?.provider_id ?? model?.provider_id ?? registry.providers[0]?.id ?? ""} options={registry.providers.map((value) => ({ value: value.id, label: value.name }))} disabled={Boolean(model)} />}
+        {kind === "runtime" && <RegistrySelectField label="提供方" name="provider_id" defaultValue={runtime?.provider_id ?? registry.providers[0]?.id ?? ""} options={registry.providers.map((value) => ({ value: value.id, label: value.name }))} />}
         {kind === "runtime" && <><RegistryInputField label="运行时名称" name="name" required defaultValue={runtime?.name} placeholder="例如 Foundry Production" /><div className="form-grid"><RegistrySelectField label="运行时类型" name="runtime_kind" defaultValue={runtime?.runtime_kind ?? "foundry"} options={[{ value: "foundry", label: "Microsoft Foundry" }, { value: "openai_compatible", label: "OpenAI Compatible" }]} /><RegistrySelectField label="网关" name="gateway_profile_id" defaultValue={runtime?.gateway_profile_id ?? NONE_SELECT_VALUE} options={[{ value: NONE_SELECT_VALUE, label: "提供方直连" }, ...registry.gateways.map((value) => ({ value: value.id, label: value.name }))]} /></div><RegistryInputField label="允许角色" name="allowed_roles" defaultValue={(runtime?.allowed_roles ?? ["owner", "admin", "member"]).join(", ")} /></>}
-        {kind === "model" && <><div className="form-grid"><RegistryInputField label="模型 Key" name="model_key" required defaultValue={model?.model_key} placeholder="gpt-4.1" disabled={Boolean(model)} /><RegistryInputField label="显示名称" name="display_name" required defaultValue={model?.display_name} /></div><RegistrySelectField label="运行时" name="runtime_id" defaultValue={model?.runtime_id ?? registry.runtimes[0]?.id ?? ""} options={registry.runtimes.map((value) => ({ value: value.id, label: value.name }))} disabled={Boolean(model)} /><RegistryInputField label="能力（逗号分隔）" name="capabilities" defaultValue={(model?.capabilities ?? ["chat"]).join(", ")} /><div className="form-grid three"><RegistryInputField label="上下文窗口" name="context_window" type="number" defaultValue={model?.context_window ?? ""} /><RegistryInputField label="输入 $/M" name="input_cost_per_million" type="number" step="0.000001" defaultValue={model?.input_cost_per_million ?? ""} /><RegistryInputField label="输出 $/M" name="output_cost_per_million" type="number" step="0.000001" defaultValue={model?.output_cost_per_million ?? ""} /></div><div className="form-grid"><RegistryInputField label="缓存读取 $/M（留空按输入价）" name="cached_cost_per_million" type="number" step="0.000001" defaultValue={model?.cached_cost_per_million ?? ""} /><RegistryInputField label="缓存写入 $/M（留空按读取价）" name="cache_write_cost_per_million" type="number" step="0.000001" defaultValue={model?.cache_write_cost_per_million ?? ""} /></div><RegistryInputField label="允许角色" name="allowed_roles" defaultValue={(model?.allowed_roles ?? ["owner", "admin", "member"]).join(", ")} /></>}
         {kind === "provider" && <><RegistryInputField label="提供方名称" name="name" required defaultValue={provider?.name} /><div className="form-grid"><RegistrySelectField label="接口协议" name="provider_kind" defaultValue={provider?.provider_kind ?? "microsoft_foundry"} options={providerKindOptions} /><AuthSelect value={provider?.auth_type} /></div><RegistryInputField label="Endpoint URL" name="endpoint_url" type="url" defaultValue={provider?.endpoint_url ?? ""} placeholder="https://..." /><CredentialField configured={provider?.credential_configured} hint={provider?.credential_hint} /></>}
         {kind === "gateway" && <><RegistryInputField label="网关名称" name="name" required defaultValue={gateway?.name} /><div className="form-grid"><RegistrySelectField label="实现" name="implementation" defaultValue={gateway?.implementation ?? "apim"} options={gatewayImplementationOptions} /><AuthSelect value={gateway?.auth_type} /></div><RegistryInputField label="Base URL" name="base_url" type="url" defaultValue={gateway?.base_url ?? ""} placeholder="https://gateway.example.com" /><CredentialField configured={gateway?.credential_configured} hint={gateway?.credential_hint} /></>}
         {(kind === "runtime" || kind === "provider" || kind === "gateway") && <label className="registry-field"><span className="registry-field-label">参数 JSON</span><Textarea name="config" rows={5} defaultValue={JSON.stringify(runtime?.config ?? provider?.config ?? gateway?.config ?? {}, null, 2)} spellCheck={false} /></label>}
-        <div className="form-switches"><RegistryCheckboxField id="registry-enabled" name="enabled" label="启用" defaultChecked={runtime?.enabled ?? model?.enabled ?? provider?.enabled ?? gateway?.enabled ?? true} />{(kind === "runtime" || kind === "model" || kind === "gateway") && <RegistryCheckboxField id="registry-default" name="is_default" label="设为默认" defaultChecked={runtime?.is_default ?? model?.is_default ?? gateway?.is_default ?? false} />}</div>
+        <div className="form-switches"><RegistryCheckboxField id="registry-enabled" name="enabled" label="启用" defaultChecked={runtime?.enabled ?? provider?.enabled ?? gateway?.enabled ?? true} />{(kind === "runtime" || kind === "gateway") && <RegistryCheckboxField id="registry-default" name="is_default" label="设为默认" defaultChecked={runtime?.is_default ?? gateway?.is_default ?? false} />}</div>
         {formError && <div className="registry-error">{formError}</div>}
       </div>
       <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="registry-editor-close" />}><X size={16} /><span className="sr-only">关闭</span></DialogClose>
@@ -1418,7 +1430,6 @@ function RegistryEditor({ registry, kind, item, busy, onClose, onSave }: { regis
 function AuthSelect({ value = "none" }: { value?: string }) { return <RegistrySelectField label="鉴权方式" name="auth_type" defaultValue={value} options={[{ value: "none", label: "无 / 本机登录" }, { value: "api_key", label: "API Key" }, { value: "bearer", label: "Bearer Token" }, { value: "azure_ad", label: "Azure AD" }]} /> }
 function CredentialField({ configured, hint }: { configured?: boolean; hint?: string | null }) { return <RegistryInputField label="鉴权凭据" name="credential" type="password" autoComplete="new-password" placeholder={configured ? `已配置 ${hint ?? ""}，留空保持不变` : "输入后将加密保存"} /> }
 function split(value: FormDataEntryValue | null) { return String(value ?? "").split(",").map((item) => item.trim()).filter(Boolean) }
-function numberOrNull(value: FormDataEntryValue | null) { const text = String(value ?? "").trim(); return text ? Number(text) : null }
 
 function GatewayConsole({ registry, onClose }: { registry: ModelRegistry; onClose: () => void }) {
   const defaultRuntime = registry.runtimes.find((item) => item.is_default && item.enabled) ?? registry.runtimes.find((item) => item.enabled)

@@ -1204,6 +1204,7 @@ __LEGACY_PROVIDER_ROUTING__
     <set-header name="x-hive-model" exists-action="delete" />
     <set-header name="x-hive-runtime" exists-action="delete" />
     <set-header name="x-turnstile-pool-member" exists-action="delete" />
+    <set-header name="x-turnstile-pool-runtime" exists-action="delete" />
 __USAGE_OBSERVER_HEADERS__
   </inbound>
   <backend>
@@ -1256,7 +1257,8 @@ __USAGE_OBSERVER_HEADERS__
         // and cache_write_tokens is its write-only subset.
         var cacheRead = (long?)usage?[&quot;prompt_tokens_details&quot;]?[&quot;cached_tokens&quot;]
           ?? (long?)usage?[&quot;input_tokens_details&quot;]?[&quot;cached_tokens&quot;]
-          ?? (long?)usage?[&quot;cache_read_input_tokens&quot;] ?? 0;
+          ?? (long?)usage?[&quot;cache_read_input_tokens&quot;]
+          ?? (long?)usage?[&quot;cached_tokens&quot;] ?? 0;
         var cacheWrite = (long?)usage?[&quot;prompt_tokens_details&quot;]?[&quot;cache_write_tokens&quot;]
           ?? (long?)usage?[&quot;cache_creation_input_tokens&quot;] ?? 0;
         // OpenAI reports prompt_tokens INCLUDING its cached subset, while Anthropic's

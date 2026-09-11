@@ -460,6 +460,54 @@ def test_observer_parameters_reuse_apps_but_isolate_the_observer_plan(
     assert document["parameters"]["provisionAcr"]["value"] is False
 
 
+@pytest.mark.parametrize(
+    ("existing_observer", "expected_acr_group"),
+    (
+        (None, "turnstile-test"),
+        ({"acrName": "acrexisting", "webAppName": "observer-existing"}, "shared-apim"),
+        (
+            {
+                "acrName": "acrexisting",
+                "webAppName": "observer-existing",
+                "acrResourceGroupName": "turnstile-test",
+            },
+            "turnstile-test",
+        ),
+    ),
+)
+def test_observer_registry_scope_is_independent_of_reused_apim(
+    tmp_path: Path,
+    existing_observer: dict[str, str] | None,
+    expected_acr_group: str,
+) -> None:
+    inputs = DeploymentInputs.load(
+        "subscription",
+        _parameters(tmp_path / "parameters.json"),
+        tmp_path / "state.json",
+    )
+    answers = iter(("a-secure-owner-password", "a-secure-owner-password"))
+    material = load_or_create_secret_material(
+        inputs,
+        read_password=lambda _: next(answers),
+        require_owner_password=False,
+    )
+    document = observer_parameters(
+        inputs,
+        {
+            "resourceGroupName": "turnstile-test",
+            "apimResourceGroupName": "shared-apim",
+            "eventHubNamespaceName": "eh-turnstile-test",
+            "apimName": "apim-shared",
+        },
+        material,
+        "abc123",
+        existing_observer=existing_observer,
+    )
+
+    assert document["parameters"]["acrResourceGroupName"]["value"] == expected_acr_group
+    assert document["parameters"]["apimResourceGroupName"]["value"] == "shared-apim"
+
+
 def test_deterministic_zip_has_stable_bytes_and_order(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()

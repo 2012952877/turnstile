@@ -267,6 +267,21 @@ class TableStorageLedger:
         response = self._request("PUT", self._entity_url(partition, row_key), json=entity)
         response.raise_for_status()
 
+    def insert_if_missing(self, partition: str, row_key: str, entity: dict[str, Any]) -> None:
+        response = self._request(
+            "POST", f"{self._endpoint}/{self._table}",
+            json={**entity, "PartitionKey": partition, "RowKey": row_key},
+        )
+        if response.status_code != 409:
+            response.raise_for_status()
+
+    def read_entity(self, partition: str, row_key: str) -> dict[str, Any] | None:
+        response = self._request("GET", self._entity_url(partition, row_key))
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        return dict(response.json())
+
     def list_reservations(self, partition: str) -> list[LedgerReservation]:
         """List every reservation in one partition, following Table continuation tokens."""
         escaped_partition = partition.replace("'", "''")

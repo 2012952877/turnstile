@@ -4,6 +4,9 @@ import importlib.util
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+import yaml  # type: ignore[import-untyped]
+
 ROOT = Path(__file__).parents[3]
 ADAPTER = ROOT / "infra" / "envoy-cache-adapter"
 
@@ -62,6 +65,63 @@ def test_shipper_normalizes_exact_cache_buckets_without_double_counting() -> Non
     assert event["cache_write_tokens"] == 128
     assert event["output_tokens"] == 30
     assert event["estimated"] is False
+    assert event["runtime_authoritative"] is False
+
+
+@pytest.mark.parametrize("nested", (None, "", "-"))
+def test_shipper_uses_top_level_cache_only_when_nested_measurement_is_missing(
+    nested: object,
+) -> None:
+    event = load_shipper().normalize_access_row(access_row(
+        cache_read_tokens=nested, cache_read_tokens_fallback=1000,
+    ))
+    assert event is not None
+    assert event["cached_tokens"] == 1128
+    assert event["input_tokens"] == 72
+
+
+@pytest.mark.parametrize("nested", (0, "0", 200))
+def test_shipper_preserves_explicit_nested_cache_including_zero(nested: object) -> None:
+    event = load_shipper().normalize_access_row(access_row(
+        cache_read_tokens=nested, cache_read_tokens_fallback=1000,
+    ))
+    assert event is not None
+    assert event["cached_tokens"] == int(str(nested)) + 128
+    assert event["input_tokens"] + event["cached_tokens"] == 1200
+
+
+@pytest.mark.parametrize("runtime", (None, "", "-", "unattributed", "pool-member-runtime"))
+def test_only_exact_pool_runtime_metadata_is_authoritative(runtime: object) -> None:
+    event = load_shipper().normalize_access_row(access_row(pool_runtime=runtime))
+    assert event is not None
+    assert event["runtime_authoritative"] is (runtime == "pool-member-runtime")
+    if runtime == "pool-member-runtime":
+        assert event["runtime"] == runtime
+    else:
+        assert event["runtime"] == "Envoy Cache Experiment"
+    assert load_shipper().normalize_access_row(access_row(
+        response_code=503, pool_runtime=runtime,
+    )) is None
+
+
+def test_observer_keeps_fallback_cache_and_pool_identity_in_separate_metadata() -> None:
+    template = yaml.safe_load((ADAPTER / "envoy.yaml.template").read_text(encoding="utf-8"))
+    listener = template["static_resources"]["listeners"][0]
+    config = listener["filter_chains"][0]["filters"][0]["typed_config"]
+    filters = {item["name"]: item["typed_config"] for item in config["http_filters"]}
+    request_rules = filters["envoy.filters.http.header_to_metadata"]["request_rules"]
+    pool = next(rule for rule in request_rules if rule["header"] == "x-turnstile-pool-runtime")
+    assert pool["on_header_present"]["key"] == "pool_runtime"
+    assert pool["remove"] is True
+    rules = filters["envoy.filters.http.json_to_metadata"]["response_rules"]["rules"]
+    fallback = next(rule for rule in rules if rule["selectors"] == [
+        {"key": "usage"}, {"key": "cached_tokens"},
+    ])
+    assert fallback["on_present"]["key"] == "cache_read_tokens_fallback"
+    nested = next(rule for rule in rules if rule["selectors"] == [
+        {"key": "usage"}, {"key": "prompt_tokens_details"}, {"key": "cached_tokens"},
+    ])
+    assert nested["on_present"]["key"] == "cache_read_tokens"
 
 
 def test_shipper_skips_failed_or_usage_free_access_rows() -> None:

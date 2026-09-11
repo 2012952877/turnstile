@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
+from ..domain.control_plane import GatewayPublication, publication_materialized_named_values
 from .repository_support import _activation_runtime_config
 
 
@@ -205,11 +206,25 @@ class InMemoryPublicationRepositoryMixin:
         ):
             raise ValueError("Another gateway publication is already in progress")
         now = datetime.now(UTC)
+        materialized = publication_materialized_named_values(
+            GatewayPublication.model_validate(publication),
+            provisioning_completed=any(
+                item.get("publication_id") == publication_id
+                and item.get("from_status") == "validating"
+                and item.get("to_status") == "provisioning"
+                for item in self.gateway_publication_audit
+            ),
+        )
+        preserved_manifest = (
+            {"named_values": materialized}
+            if credential_ciphertext is None and materialized
+            else {}
+        )
         publication.update(
             status="queued",
             apim_revision=None,
             policy_sha256=None,
-            resource_manifest={},
+            resource_manifest=preserved_manifest,
             error_code=None,
             error_message=None,
             attempt_count=0,
@@ -543,6 +558,8 @@ class InMemoryPublicationRepositoryMixin:
             row["started_at"] = row["started_at"] or now
         if status in {"succeeded", "failed", "restored"}:
             row["completed_at"] = now
+            if row["operation_kind"] == "application_provision":
+                self.delete_gateway_release_operation_secret(operation_id)
         self.gateway_release_operation_audit.append(
             {
                 "id": uuid4(),

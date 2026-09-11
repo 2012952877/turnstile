@@ -427,6 +427,14 @@ def test_owner_provisions_subscription_with_one_time_key_and_no_secret_storage()
         ) -> None:
             self.provisioned = (spec, primary_key, secondary_key)
 
+        def activate_application_subscription(
+            self,
+            spec: GatewayApplicationSubscriptionProvisionSpec,
+            primary_key: str,
+            secondary_key: str,
+        ) -> None:
+            assert self.provisioned == (spec, primary_key, secondary_key)
+
     repository = InMemoryRepository()
     cipher = CredentialCipher(Fernet.generate_key())
     service = GatewayControlPlaneService(repository, cipher)
@@ -454,14 +462,17 @@ def test_owner_provisions_subscription_with_one_time_key_and_no_secret_storage()
     assert accepted.primary_key.encode() not in ciphertext
 
     worker = GatewayReleaseOperationWorker(
-        repository, client, cipher=cipher
+        repository, client, cipher=cipher,
+        application_projector=lambda _gateway, _application: None,
     )
     queued = worker.run_once("release-worker")
     provisioned = worker.run_once("release-worker")
+    materialized = worker.run_once("release-worker")
     completed = worker.run_once("release-worker")
 
     assert queued is not None and queued.status == "validating_dependencies"
     assert provisioned is not None and provisioned.status == "promoting"
+    assert materialized is not None and materialized.status == "verifying_readback"
     assert completed is not None and completed.status == "succeeded"
     assert client.provisioned is not None
     assert client.provisioned[1] == accepted.primary_key
@@ -524,7 +535,8 @@ def test_failed_subscription_provisioning_deletes_encrypted_keys() -> None:
         "owner@example.com",
     )
     worker = GatewayReleaseOperationWorker(
-        repository, FailingProvisioningClient(), cipher=cipher
+        repository, FailingProvisioningClient(), cipher=cipher,
+        application_projector=lambda _gateway, _application: None,
     )
 
     assert worker.run_once("release-worker") is not None

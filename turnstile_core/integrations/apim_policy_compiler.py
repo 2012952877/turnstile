@@ -105,9 +105,8 @@ class ApimPolicyCompiler:
                 continue
             if binding.backend_url is None:
                 raise PolicyCompilationError("A managed runtime is missing its backend URL")
-            raw_pool = binding.runtime_config.get("apim_backend_pool")
-            if raw_pool is not None:
-                pool = GatewayBackendPoolConfig.model_validate(raw_pool)
+            pool = binding.backend_pool
+            if pool is not None:
                 member_resources: list[BackendPoolMemberResource] = []
                 member_backend_ids: list[str] = []
                 breaker = BackendCircuitBreakerResource(
@@ -128,11 +127,10 @@ class ApimPolicyCompiler:
                 for member in pool.members:
                     member_url = str(member.backend_url).rstrip("/")
                     member_upstream = self._validated_backend_url(member_url)
-                    member_backend_id = self._pool_member_backend_id(
+                    member_backend_id = self.pool_member_backend_id(
                         publication,
                         binding,
                         member,
-                        member_upstream,
                     )
                     backend_url, backend_headers = self._observer_backend(
                         member_url,
@@ -168,15 +166,20 @@ class ApimPolicyCompiler:
                 pool_digest = hashlib.sha256(
                     json.dumps(
                         {
-                            "pool": pool.model_dump(mode="json"),
+                            "pool": pool.model_dump(
+                                mode="json",
+                                exclude=set() if pool.session_affinity else {"session_affinity"},
+                            ),
                             "member_backend_ids": member_backend_ids,
                             "apim_priority_contract": "one-based-v1",
                         },
                         sort_keys=True,
                         separators=(",", ":"),
                     ).encode("utf-8")
-                ).hexdigest()[:10]
+                ).hexdigest()[:24 if pool.session_affinity else 10]
                 pool_backend_id = (
+                    f"turnstile-pool-affinity-{pool_digest}"
+                    if pool.session_affinity else
                     f"turnstile-pool-{publication.id.hex[:12]}-{pool_digest}"
                 )
                 backends.append(
@@ -185,6 +188,12 @@ class ApimPolicyCompiler:
                         title=f"Turnstile {binding.model.display_name} deployment pool",
                         url="",
                         members=tuple(member_resources),
+                        session_cookie_name=(
+                            "TurnstileAffinity-" + hashlib.sha256(
+                                f"{publication.gateway_profile_id}:{binding.model.model_key}".encode()
+                            ).hexdigest()[:16]
+                            if pool.session_affinity else None
+                        ),
                     )
                 )
                 backend_ids[binding.model.model_key] = pool_backend_id
@@ -326,6 +335,32 @@ class ApimPolicyCompiler:
             self._usage_observer_url + upstream.path.rstrip("/"),
             tuple(headers),
         )
+
+    def pool_member_backend_id(
+        self,
+        publication: GatewayPublication,
+        binding: GatewayModelBinding,
+        member: GatewayBackendPoolMember,
+    ) -> str:
+        source_url = str(member.backend_url).rstrip("/")
+        upstream = self._validated_backend_url(source_url)
+        pool = binding.backend_pool
+        if pool is None or not pool.session_affinity:
+            return self._pool_member_backend_id(publication, binding, member, upstream)
+        backend_url, backend_headers = self._observer_backend(
+            source_url, upstream, pool_runtime_name=member.runtime_name
+        )
+        identity = {
+            "gateway": str(publication.gateway_profile_id),
+            "model": binding.model.model_key,
+            "runtime": str(member.runtime_id),
+            "url": backend_url,
+            "headers": backend_headers + self._pool_member_auth_headers(binding, member),
+            "breaker": pool.rate_limit.circuit_breaker.model_dump(mode="json"),
+        }
+        return "turnstile-pool-member-affinity-" + hashlib.sha256(
+            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()[:24]
 
     @staticmethod
     def _pool_member_backend_id(
@@ -1226,11 +1261,9 @@ class ApimPolicyCompiler:
         for binding in bindings:
             if api_format is not None and binding.api_format is not api_format:
                 continue
-            raw_pool = binding.runtime_config.get("apim_backend_pool")
-            if raw_pool is not None:
-                pooled.append(
-                    (binding, GatewayBackendPoolConfig.model_validate(raw_pool))
-                )
+            pool = binding.backend_pool
+            if pool is not None:
+                pooled.append((binding, pool))
         if not pooled:
             return "  <backend><base /></backend>"
         branches = "\n".join(

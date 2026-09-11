@@ -1019,9 +1019,14 @@ def activate(repository: InMemoryRepository, publication_id: str) -> None:
     repository.activate_gateway_publication(item_id, "worker")
 
 
+@pytest.mark.parametrize("affinity", (False, True))
 def test_model_backend_pool_configuration_and_removal_are_publications(
     publication_api: InMemoryRepository,
+    affinity: bool,
 ) -> None:
+    assert client.get("/api/v1/model-management").json()[
+        "backend_pool_session_affinity_supported"
+    ] is True
     provider = next(
         item
         for item in publication_api.providers
@@ -1089,7 +1094,8 @@ def test_model_backend_pool_configuration_and_removal_are_publications(
             "model_key": "gpt-5.6-native-pool-secondary",
         }
     )
-    write = {
+    write: dict[str, object] = {
+        "session_affinity": affinity,
         "members": [
             {"runtime_id": str(primary["id"]), "priority": 0, "weight": 3},
             {"runtime_id": str(secondary_id), "priority": 0, "weight": 1},
@@ -1137,6 +1143,11 @@ def test_model_backend_pool_configuration_and_removal_are_publications(
     )
     pool = binding.runtime_config["apim_backend_pool"]
     assert isinstance(pool, dict)
+    assert "session_affinity" not in pool
+    if affinity:
+        assert binding.runtime_config["apim_backend_pool_session_affinity"] is True
+    else:
+        assert "apim_backend_pool_session_affinity" not in binding.runtime_config
     assert [item["weight"] for item in pool["members"]] == [3, 1]
     assert [item["auth_strategy"] for item in pool["members"]] == [
         "managed_identity",
@@ -1153,6 +1164,7 @@ def test_model_backend_pool_configuration_and_removal_are_publications(
         f"/api/v1/model-management/models/{model['id']}/backend-pool"
     )
     assert effective_pool.status_code == 200
+    assert effective_pool.json()["session_affinity"] is affinity
     assert [item["runtime_id"] for item in effective_pool.json()["members"]] == [
         str(primary["id"]),
         str(secondary_id),
@@ -1226,6 +1238,7 @@ def test_model_backend_pool_configuration_and_removal_are_publications(
         if item.model.model_key == model["model_key"]
     )
     assert "apim_backend_pool" not in removed_binding.runtime_config
+    assert "apim_backend_pool_session_affinity" not in removed_binding.runtime_config
 
 
 def test_model_backend_pool_rejects_incompatible_runtime_path(

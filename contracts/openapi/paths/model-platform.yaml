@@ -753,8 +753,9 @@ paths:
       - Model Control Plane
       operationId: retryGatewayPublication
       summary: Retry a failed publication
-      description: Credential-bearing providers require a replacement key; managed-identity providers
-        do not accept one.
+      description: Credential-bearing providers require a replacement key only when persisted
+        publication evidence cannot recover the release-owned APIM Named Value. An explicitly
+        supplied replacement key is provisioned again; managed-identity providers do not accept one.
       parameters:
       - name: publication_id
         in: path

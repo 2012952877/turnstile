@@ -1,4 +1,79 @@
-from tests.support.paths import FRONTEND_SOURCE, read_frontend_styles
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from tests.support.paths import FRONTEND_SOURCE, REPOSITORY_ROOT, read_frontend_styles
+
+
+@pytest.mark.parametrize(
+    "suite_name",
+    (
+        "model-edit-form.test.mjs",
+        "model-publication-connections.test.mjs",
+        "openai-compatible.test.mjs",
+    ),
+)
+def test_model_form_unit_cases(suite_name: str) -> None:
+    node = shutil.which("node")
+    assert node is not None, "Node.js is required for frontend unit tests"
+    result = subprocess.run(
+        [
+            node,
+            "--experimental-strip-types",
+            "--test",
+            str(Path(__file__).with_name(suite_name)),
+        ],
+        cwd=REPOSITORY_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_model_editing_uses_the_dedicated_dialog_without_generic_identity_inputs() -> None:
+    page = (FRONTEND_SOURCE / "pages/model-management-page.tsx").read_text(encoding="utf-8")
+    dialog = (
+        FRONTEND_SOURCE / "components/model-management/model-edit-dialog.tsx"
+    ).read_text(encoding="utf-8")
+    generic = page.split("function RegistryEditor(", 1)[1].split("function AuthSelect(", 1)[0]
+
+    assert "<ModelEditDialog" in page
+    assert "model={editingModel}" in page
+    assert 'kind: "model", id: editingModel.id, value' in page
+    assert "onEditModel={openModelEditor}" in page
+    assert "openModelEditor(item as ManagedModel)" in page
+    assert 'kind === "model"' not in generic
+    assert "model_key" not in generic
+    assert "save.reset()" in page
+    assert "setEditingModel(null)" in page
+    assert "<code>{model.model_key}</code>" in dialog
+    assert "<code>{model.upstream_model_id" in dialog
+    assert "<Select" not in dialog
+    assert "draft.capabilities" not in dialog
+    assert "roleOptions.map" in dialog
+    assert "modelEditPayload(model, draft)" in dialog
+    assert "if (busy || !dirty || validation) return" in dialog
+    assert "if (!busy) onClose()" in dialog
+    assert "disabled={busy || !dirty || Boolean(validation)}" in dialog
+    assert 'role="alert">{message}' in dialog
+
+
+def test_model_editor_layout_contains_long_identity_and_role_values() -> None:
+    styles = read_frontend_styles()
+
+    assert ".registry-editor-dialog.model-edit-dialog" in styles
+    assert "calc(100dvh - 24px)" in styles
+    assert ".model-editor-identity dd > span { min-width: 0; white-space: normal;" in styles
+    assert ".model-editor-checkbox > span { min-width: 0; overflow-wrap: anywhere; }" in styles
+    assert ".model-edit-dialog .form-grid, .model-edit-dialog .form-grid.three," in styles
+    assert (
+        ".model-editor-identity, .model-editor-checkbox-grid { "
+        "grid-template-columns: minmax(0, 1fr); }"
+    ) in styles
 
 
 def test_connection_onboarding_is_distinct_from_model_publication() -> None:
@@ -8,6 +83,9 @@ def test_connection_onboarding_is_distinct_from_model_publication() -> None:
     )
     model_source = (
         FRONTEND_SOURCE / "components/model-management/model-publication-dialog.tsx"
+    ).read_text(encoding="utf-8")
+    connection_selection_source = (
+        FRONTEND_SOURCE / "components/model-management/model-publication-connections.ts"
     ).read_text(encoding="utf-8")
     connection_source = (
         FRONTEND_SOURCE / "components/model-management/connection-dialog.tsx"
@@ -24,8 +102,8 @@ def test_connection_onboarding_is_distinct_from_model_publication() -> None:
     ).read_text(encoding="utf-8")
     styles = read_frontend_styles()
 
-    assert 'runtime.config.api_format === "openai_chat"' in model_source
-    assert 'runtime.brand_key === "microsoft_foundry"' in model_source
+    assert 'runtime.config.api_format === "openai_chat"' in connection_selection_source
+    assert 'runtime.brand_key === "microsoft_foundry"' in connection_selection_source
     assert 'intent: "model" | "connection"' not in model_source
     assert "connectionIntent" not in model_source
     assert "Deployment Name" not in connection_source
@@ -37,7 +115,7 @@ def test_connection_onboarding_is_distinct_from_model_publication() -> None:
     assert "foundryApiKey" not in connection_source
     assert "Foundry API Key" not in connection_source
     assert "<FoundryAuthModeSwitch" in connection_source
-    assert "<FoundryAuthModeSwitch" in model_source
+    assert "<FoundryAuthModeSwitch" not in model_source
     assert 'aria-label="Foundry 认证方式"' in auth_switch_source
     assert "同租户 · 仅 Project Endpoint" in auth_switch_source
     assert "跨租户 · Project + Inference Endpoint" in auth_switch_source
@@ -63,7 +141,8 @@ def test_connection_onboarding_is_distinct_from_model_publication() -> None:
     assert 'openNewPublication("connection")' not in page_source
     assert 'intent={publicationIntent}' not in page_source
     assert "selectedRuntimeNeedsCredential" in model_source
-    assert "api_key: selectedRuntimeNeedsCredential" in model_source
+    assert "publicationConnectionTarget(registry," in model_source
+    assert "needsCredential ? { api_key: apiKey.trim() } : {}" in connection_selection_source
     assert "一次性 API Key" in model_source
     assert "后续模型无需重复提供" in model_source
     assert "等待首次模型验证" in page_source
@@ -136,6 +215,91 @@ def test_connection_onboarding_is_distinct_from_model_publication() -> None:
         ".publication-safety-note > svg {", 1
     )[1].split("}", 1)[0]
     assert "margin-top" not in safety_icon_rule
+
+
+def test_model_publication_selects_existing_connections_and_clears_connection_drafts() -> None:
+    source = (
+        FRONTEND_SOURCE / "components/model-management/model-publication-dialog.tsx"
+    ).read_text(encoding="utf-8")
+    page = (FRONTEND_SOURCE / "pages/model-management-page.tsx").read_text(encoding="utf-8")
+
+    assert "publicationConnections(registry, gatewayId)" in source
+    assert "preferredPublicationConnection(apimRuntimes)?.id" in source
+    assert "apimRuntimes.find((runtime) => runtime.id === runtimeId)" in source
+    assert "preferredPublicationConnection(nextConnections, runtimeId)?.id" in source
+    assert 'aria-label="已有连接"' in source
+    assert "selectedRuntimeNeedsCredential && !providerApiKey.trim()" in source
+    assert "!selectedRuntime || !selectedProvider || requiredCredentialMissing" in source
+    for removed in (
+        "NEW_RUNTIME", "providerChoices", "foundry_project_endpoint:",
+        "foundry_inference_endpoint:", "bedrock_runtime_url:", "creatingRuntime",
+    ):
+        assert removed not in source
+
+    clear_draft = source.split("const clearConnectionInputs = () => {", 1)[1].split(
+        "const chooseGateway", 1
+    )[0]
+    for setter in (
+        "setProviderApiKey", "setFoundryDeployment", "setModelKey", "setDisplayName",
+        "setUpstreamModelId", "setContextWindow", "setInputPrice", "setOutputPrice",
+        "setCacheReadPrice", "setCacheWritePrice",
+    ):
+        assert f'{setter}("")' in clear_draft
+    assert "setKeyRevealed(false)" in clear_draft
+    assert source.count("clearConnectionInputs()") == 2
+    assert "if (publishing) return" in source
+    assert "if (!publishing) onClose()" in source
+    assert 'type="submit" disabled={publishing' in source
+    assert "publicationConnectionEndpoint(selectedRuntime)" in source
+    assert "publicationConnectionAuth(selectedRuntime, selectedProvider)" in source
+    assert "dataSource.retryGatewayPublication(" in source
+    assert "dataSource.resumeGatewayPublicationAuthorization(publicationId)" in source
+
+    navigation = page.split("onManageConnections={() => {", 1)[1].split(
+        "}} onClose=", 1
+    )[0]
+    assert "closePublication()" in navigation
+    assert "setRuntimeDetailId(null)" in navigation
+    assert 'changeTab("connections")' in navigation
+
+
+def test_publication_connection_summary_wraps_long_endpoints_on_narrow_screens() -> None:
+    styles = read_frontend_styles()
+    summary_rule = styles.split(".publication-connection-summary dd {", 1)[1].split("}", 1)[0]
+
+    assert "min-width: 0" in summary_rule
+    assert "overflow-wrap: anywhere" in summary_rule
+    assert ".publication-connection-endpoint code { white-space: normal;" in styles
+    assert ".publication-connection-dialog .registry-editor-footer { flex-wrap: wrap; }" in styles
+    assert ".publication-connection-summary { grid-template-columns: minmax(0, 1fr); }" in styles
+
+
+def test_openai_onboarding_keeps_vendor_identity_and_key_entry_separate() -> None:
+    connection = (
+        FRONTEND_SOURCE / "components/model-management/connection-dialog.tsx"
+    ).read_text(encoding="utf-8")
+    publication = (
+        FRONTEND_SOURCE / "components/model-management/model-publication-dialog.tsx"
+    ).read_text(encoding="utf-8")
+    editor = (
+        FRONTEND_SOURCE / "components/model-management/model-edit-dialog.tsx"
+    ).read_text(encoding="utf-8")
+    api = (FRONTEND_SOURCE / "data-sources/apim/api.ts").read_text(encoding="utf-8")
+
+    assert 'provider.provider_kind === "openai_compatible"' in connection
+    assert "<ModelVendorSelect" in connection
+    assert "isOpenAICompatibleBaseUrl(openaiBaseUrl)" in connection
+    assert "openai_base_url: openaiCompatible" in connection
+    assert "model_vendor: openaiCompatible" in connection
+    assert 'type="password"' not in connection
+    assert "api_key:" not in connection
+    assert "publicModelKeyFromProviderId(upstreamModelId)" in publication
+    assert "displayNameFromProviderId(upstreamModelId)" in publication
+    assert "upstream_model_id: foundry ? undefined : upstreamModelId.trim()" in publication
+    assert "<ModelVendorLogo" in editor
+    assert "<ModelVendorSelect" not in editor
+    assert "requireOpenAICompatibleApi(" in api
+    assert "isUnsupportedOpenAICompatibleDetails(" in api
 
 
 def test_connections_own_the_runtime_inventory_and_detail_route() -> None:

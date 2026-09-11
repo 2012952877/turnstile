@@ -40,10 +40,12 @@ static_resources:
                           model: "%DYNAMIC_METADATA(turnstile.request:model)%"
                           model_id: "%DYNAMIC_METADATA(turnstile.request:model_id)%"
                           runtime: "%DYNAMIC_METADATA(turnstile.request:runtime)%"
+                          pool_runtime: "%DYNAMIC_METADATA(turnstile.request:pool_runtime)%"
                           api_format: "%DYNAMIC_METADATA(turnstile.request:api_format)%"
                           request_source: "%DYNAMIC_METADATA(turnstile.request:request_source)%"
                           prompt_tokens: "%DYNAMIC_METADATA(turnstile.usage:prompt_tokens)%"
                           cache_read_tokens: "%DYNAMIC_METADATA(turnstile.usage:cache_read_tokens)%"
+                          cache_read_tokens_fallback: "%DYNAMIC_METADATA(turnstile.usage:cache_read_tokens_fallback)%"
                           cache_write_tokens: "%DYNAMIC_METADATA(turnstile.usage:cache_write_tokens)%"
                           output_tokens: "%DYNAMIC_METADATA(turnstile.usage:output_tokens)%"
                           response_code: "%RESPONSE_CODE%"
@@ -123,7 +125,7 @@ static_resources:
                         - { header: x-hive-model, on_header_present: { metadata_namespace: turnstile.request, key: model, type: STRING }, remove: true }
                         - { header: x-model-id, on_header_present: { metadata_namespace: turnstile.request, key: model_id, type: STRING }, remove: true }
                         - { header: x-hive-runtime, on_header_present: { metadata_namespace: turnstile.request, key: runtime, type: STRING }, remove: true }
-                        - { header: x-turnstile-pool-runtime, on_header_present: { metadata_namespace: turnstile.request, key: runtime, type: STRING }, remove: true }
+                        - { header: x-turnstile-pool-runtime, on_header_present: { metadata_namespace: turnstile.request, key: pool_runtime, type: STRING }, remove: true }
                         - { header: x-turnstile-api-format, on_header_present: { metadata_namespace: turnstile.request, key: api_format, type: STRING }, remove: true }
                         - { header: x-request-source, on_header_present: { metadata_namespace: turnstile.request, key: request_source, type: STRING }, remove: true }
                         - { header: x-adapter-key, on_header_present: { metadata_namespace: turnstile.request, key: adapter_authorized, type: STRING }, remove: true }
@@ -145,6 +147,7 @@ static_resources:
                             "@type": type.googleapis.com/envoy.extensions.content_parsers.json.v3.JsonContentParser
                             rules:
                               - rule: { selectors: [{ key: usage }, { key: prompt_tokens }], on_present: { metadata_namespace: turnstile.usage, key: prompt_tokens, type: NUMBER } }
+                              - rule: { selectors: [{ key: usage }, { key: cached_tokens }], on_present: { metadata_namespace: turnstile.usage, key: cache_read_tokens_fallback, type: NUMBER } }
                               - rule: { selectors: [{ key: usage }, { key: prompt_tokens_details }, { key: cached_tokens }], on_present: { metadata_namespace: turnstile.usage, key: cache_read_tokens, type: NUMBER } }
                               - rule: { selectors: [{ key: usage }, { key: prompt_tokens_details }, { key: cache_write_tokens }], on_present: { metadata_namespace: turnstile.usage, key: cache_write_tokens, type: NUMBER } }
                               - rule: { selectors: [{ key: usage }, { key: completion_tokens }], on_present: { metadata_namespace: turnstile.usage, key: output_tokens, type: NUMBER } }
@@ -157,6 +160,7 @@ static_resources:
                               - rule: { selectors: [{ key: usage }, { key: cache_creation_input_tokens }], on_present: { metadata_namespace: turnstile.usage, key: cache_write_tokens, type: NUMBER } }
                               - rule: { selectors: [{ key: usage }, { key: output_tokens }], on_present: { metadata_namespace: turnstile.usage, key: output_tokens, type: NUMBER } }
                               - rule: { selectors: [{ key: response }, { key: usage }, { key: input_tokens }], on_present: { metadata_namespace: turnstile.usage, key: prompt_tokens, type: NUMBER } }
+                              - rule: { selectors: [{ key: response }, { key: usage }, { key: cached_tokens }], on_present: { metadata_namespace: turnstile.usage, key: cache_read_tokens_fallback, type: NUMBER } }
                               - rule: { selectors: [{ key: response }, { key: usage }, { key: input_tokens_details }, { key: cached_tokens }], on_present: { metadata_namespace: turnstile.usage, key: cache_read_tokens, type: NUMBER } }
                               - rule: { selectors: [{ key: response }, { key: usage }, { key: output_tokens }], on_present: { metadata_namespace: turnstile.usage, key: output_tokens, type: NUMBER } }
                   - name: envoy.filters.http.json_to_metadata
@@ -166,6 +170,8 @@ static_resources:
                         rules:
                           - selectors: [{ key: usage }, { key: prompt_tokens }]
                             on_present: { metadata_namespace: turnstile.usage, key: prompt_tokens, type: NUMBER }
+                          - selectors: [{ key: usage }, { key: cached_tokens }]
+                            on_present: { metadata_namespace: turnstile.usage, key: cache_read_tokens_fallback, type: NUMBER }
                           - selectors: [{ key: usage }, { key: prompt_tokens_details }, { key: cached_tokens }]
                             on_present: { metadata_namespace: turnstile.usage, key: cache_read_tokens, type: NUMBER }
                           - selectors: [{ key: usage }, { key: prompt_tokens_details }, { key: cache_write_tokens }]

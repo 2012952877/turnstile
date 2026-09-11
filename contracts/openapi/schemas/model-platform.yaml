@@ -11,6 +11,14 @@ schemas:
       - auth_mode
     - required:
       - bedrock_runtime_url
+    - required:
+      - openai_base_url
+      not:
+        anyOf:
+        - required:
+          - auth_mode
+        - required:
+          - foundry_inference_endpoint
     properties:
       gateway_profile_id:
         type: string
@@ -34,6 +42,21 @@ schemas:
         type: string
         format: uri
         description: Regional Bedrock Runtime origin. No model or key is registered here.
+      openai_base_url:
+        type: string
+        format: uri
+        pattern: ^https://
+        description: HTTPS Base URL without credentials, query or fragment. A trailing
+          /chat/completions is normalized. No model or key is registered here.
+      model_vendor:
+        type: string
+        enum:
+        - generic
+        - kimi
+        - deepseek
+        - openai
+        - anthropic
+        description: Display metadata for OpenAI-compatible connections only; not a routing rule.
   ModelConnectionUpdate:
     type: object
     additionalProperties: false
@@ -58,6 +81,10 @@ schemas:
     - runtimes
     - models
     properties:
+      backend_pool_session_affinity_supported:
+        type: boolean
+        default: false
+        description: Explicit opt-in support for native APIM Pool cookie affinity.
       providers:
         type: array
         items:
@@ -225,6 +252,11 @@ schemas:
     - members
     - rate_limit
     properties:
+      session_affinity:
+        type: boolean
+        default: false
+        description: Keep requests with the same client-held session cookie on an eligible
+          Pool member. Does not change priority, weight, or failover rules.
       members:
         type: array
         minItems: 2
@@ -280,6 +312,10 @@ schemas:
     - members
     - rate_limit
     properties:
+      session_affinity:
+        type: boolean
+        default: false
+        description: Effective affinity setting; absent in legacy stored Pool JSON.
       schema_version:
         type: integer
         const: 1
@@ -309,6 +345,7 @@ schemas:
         enum:
         - amazon_bedrock
         - microsoft_foundry
+        - openai_compatible
   GatewayRuntimeTarget:
     type: object
     additionalProperties: false
@@ -323,6 +360,8 @@ schemas:
           - foundry_project_endpoint
         - required:
           - foundry_inference_endpoint
+        - required:
+          - openai_base_url
     - required:
       - bedrock_runtime_url
       - api_key
@@ -334,6 +373,8 @@ schemas:
           - foundry_project_endpoint
         - required:
           - foundry_inference_endpoint
+        - required:
+          - openai_base_url
     - required:
       - foundry_project_endpoint
       not:
@@ -346,6 +387,8 @@ schemas:
           - foundry_inference_endpoint
         - required:
           - api_key
+        - required:
+          - openai_base_url
     - required:
       - foundry_project_endpoint
       - foundry_inference_endpoint
@@ -356,6 +399,21 @@ schemas:
           - existing_id
         - required:
           - bedrock_runtime_url
+        - required:
+          - openai_base_url
+    - required:
+      - openai_base_url
+      - api_key
+      not:
+        anyOf:
+        - required:
+          - existing_id
+        - required:
+          - bedrock_runtime_url
+        - required:
+          - foundry_project_endpoint
+        - required:
+          - foundry_inference_endpoint
     properties:
       existing_id:
         type: string
@@ -372,11 +430,17 @@ schemas:
         type: string
         format: uri
         description: Matching Foundry inference endpoint ending in /openai/v1; requires api_key.
+      openai_base_url:
+        type: string
+        format: uri
+        pattern: ^https://
+        description: HTTPS Chat Completions Base URL without credentials, query or fragment;
+          requires api_key when creating a new Runtime.
       api_key:
         type: string
         format: password
         writeOnly: true
-        description: One-time Bedrock or Foundry provider key. It may accompany a new runtime or the first
+        description: One-time Bedrock, Foundry or OpenAI-compatible provider key. It may accompany a new runtime or the first
           model on a registered API-key connection; it is encrypted on receipt and removed after APIM
           secret provisioning.
   GatewayModelTarget:
@@ -493,6 +557,8 @@ schemas:
         - type: 'null'
       retry_requires_credential:
         type: boolean
+        description: True when retry cannot reuse a release-owned APIM credential resource
+          from persisted publication or completed provisioning evidence.
       attempt_count:
         type: integer
         minimum: 0

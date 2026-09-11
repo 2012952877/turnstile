@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+from uuid import UUID
 
 import azure.functions as func
 
@@ -12,8 +13,10 @@ from turnstile_core.integrations.apim_control_plane import (
     ApimPolicyCompiler,
     AzureApimPublisherClient,
 )
+from turnstile_core.integrations.ledger import TableStorageLedger
 from turnstile_core.persistence.factory import create_repository
 from turnstile_core.security import CredentialCipher
+from turnstile_core.services.application_provisioning_ledger import prepare_application_ledger
 from turnstile_core.services.gateway_publication_worker import GatewayPublicationWorker
 from turnstile_core.services.gateway_release_operation_worker import (
     GatewayReleaseOperationWorker,
@@ -96,6 +99,15 @@ def process_gateway_release_operations(timer: func.TimerRequest) -> None:
     repository = create_repository(settings)
     publisher = AzureApimPublisherClient(settings)
     worker_id = os.environ.get("WEBSITE_INSTANCE_ID", "control-plane-local")[:128]
+
+    def project_application(gateway_id: UUID, application_id: UUID) -> None:
+        if not settings.ledger_table_endpoint:
+            raise RuntimeError("Application admission ledger is not configured")
+        with TableStorageLedger(
+            settings.ledger_table_endpoint, settings.ledger_table_name
+        ) as store:
+            prepare_application_ledger(repository, store, gateway_id, application_id)
+
     release_worker = GatewayReleaseOperationWorker(
         repository,
         publisher,
@@ -112,6 +124,11 @@ def process_gateway_release_operations(timer: func.TimerRequest) -> None:
             settings.gateway_application_default_tokens_per_minute
         ),
         cipher=CredentialCipher.from_settings(settings),
+        application_projector=(
+            project_application
+            if settings.gateway_application_provisioning_enabled and settings.ledger_table_endpoint
+            else None
+        ),
     )
     operation = release_worker.run_once(
         worker_id=worker_id,

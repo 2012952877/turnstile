@@ -303,6 +303,87 @@ def test_postgres_reuses_attempt_identity_for_usage_and_attribution(
     assert record.id == "gateway-attempt"
 
 
+@pytest.mark.parametrize("observer_first", (False, True))
+def test_runtime_authority_wins_both_event_orders_without_repricing(observer_first: bool) -> None:
+    repository = InMemoryRepository()
+    processor = UsageProcessor(repository, CoefficientResolver({"default": 1.0}))
+    logical = event(id="runtime-order", runtime="Logical primary", input_tokens=120)
+    measured = event(
+        id="runtime-order", runtime="Measured secondary", input_tokens=240,
+        runtime_authoritative=True,
+    )
+    first, second = (measured, logical) if observer_first else (logical, measured)
+    assert processor.process(first)
+    before = repository.usage_records[-1].model_dump()
+    assert processor.process(second)
+    assert repository.usage_records[-1].model_dump() == {**before, "runtime": "Measured secondary"}
+    assert len(repository.usage_records) == 1
+    assert "runtime_authoritative" not in repository.usage_records[-1].model_dump()
+
+
+@pytest.mark.parametrize("has_admission", (False, True))
+def test_runtime_only_correction_keeps_every_other_exact_field(has_admission: bool) -> None:
+    repository = InMemoryRepository()
+    processor = UsageProcessor(repository, CoefficientResolver({"default": 1.0}))
+    logical = event(
+        id="runtime-only", runtime="Logical primary", input_tokens=123,
+        cache_write_tokens=50, estimated_cost=1.25,
+        budget_admission="ok" if has_admission else None,
+        model_admission="ok" if has_admission else None,
+    )
+    observed = event(
+        id="runtime-only", runtime="Measured secondary", runtime_authoritative=True,
+        model="different-unpriced-model", input_tokens=456, cached_tokens=600,
+        cache_write_tokens=80, output_tokens=900, latency_ms=9999, estimated_cost=99.0,
+    )
+    assert processor.process(logical)
+    expected = {**repository.usage_records[-1].model_dump(), "runtime": "Measured secondary"}
+    for incoming in (observed, observed, logical):
+        assert processor.process(incoming)
+        assert repository.usage_records[-1].model_dump() == expected
+    assert len(repository.usage_records) == 1
+
+
+@pytest.mark.parametrize("overrides", (
+    {"estimated": True}, {"input_tokens": None}, {"runtime": "unattributed"},
+    {"runtime": ""}, {"ingest_source": "copilot_cli"}, {"ingest_source": "gateway"},
+    {"request_source": "copilot-assistant-tools"},
+))
+def test_runtime_authority_rejects_unmeasured_or_non_apim_sources(
+    overrides: dict[str, object],
+) -> None:
+    processor = UsageProcessor(RecordingRepository(), CoefficientResolver({"default": 1.0}))
+    raw = event(runtime="Measured runtime", runtime_authoritative=True)
+    raw.update(overrides)
+    record = processor.normalize(raw)
+    assert record is not None
+    assert record.runtime_authoritative is False
+
+
+@pytest.mark.parametrize("authoritative", (False, True))
+def test_postgres_runtime_authority_is_a_transient_bound_parameter(authoritative: bool) -> None:
+    processor = UsageProcessor(RecordingRepository(), CoefficientResolver({"default": 1.0}))
+    record = processor.normalize(event(
+        runtime="Measured runtime", runtime_authoritative=authoritative,
+        request_id="caller", correlation_id="attempt",
+    ))
+    assert record is not None
+    repository = object.__new__(PostgreSqlOpsDbProxy)
+    with patch.object(repository, "_connection") as connect:
+        connection = connect.return_value.__enter__.return_value
+        connection.execute.return_value.fetchone.return_value = {"id": "legacy-row"}
+        repository.write_token_usage(record)
+    statement, values = connection.execute.call_args.args
+    assert values["id"] == "legacy-row"
+    assert values["runtime_authoritative"] is authoritative
+    assert values["runtime"] == record.runtime
+    assert "runtime_authoritative" not in record.model_dump()
+    assert "runtime_authoritative" not in statement.split(") VALUES", 1)[0]
+    assert "existing.runtime IS DISTINCT FROM EXCLUDED.runtime" in statement
+    assert "input_tokens = CASE WHEN existing.estimated" in statement
+    assert connection.execute.call_count == 2
+
+
 def test_copilot_identity_and_missing_correlation_fallbacks_are_preserved() -> None:
     processor = UsageProcessor(RecordingRepository(), CoefficientResolver({"default": 1.0}))
     cases: tuple[tuple[dict[str, object], str, str], ...] = (

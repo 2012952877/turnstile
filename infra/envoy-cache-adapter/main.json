@@ -4,8 +4,8 @@
   "metadata": {
     "_generator": {
       "name": "bicep",
-      "version": "0.31.92.45157",
-      "templateHash": "4503493975325900743"
+      "version": "0.47.16.16243",
+      "templateHash": "5165170467777619732"
     }
   },
   "parameters": {
@@ -48,6 +48,10 @@
       "type": "bool",
       "defaultValue": true
     },
+    "acrResourceGroupName": {
+      "type": "string",
+      "defaultValue": "[if(parameters('provisionAcr'), parameters('resourceGroupName'), parameters('apimResourceGroupName'))]"
+    },
     "imageRepository": {
       "type": "string",
       "defaultValue": "turnstile/envoy-cache-adapter"
@@ -81,9 +85,9 @@
     {
       "condition": "[parameters('provisionAcr')]",
       "type": "Microsoft.Resources/deployments",
-      "apiVersion": "2022-09-01",
+      "apiVersion": "2025-04-01",
       "name": "envoy-cache-adapter-registry",
-      "resourceGroup": "[parameters('apimResourceGroupName')]",
+      "resourceGroup": "[parameters('acrResourceGroupName')]",
       "properties": {
         "expressionEvaluationOptions": {
           "scope": "inner"
@@ -3923,7 +3927,7 @@
     },
     {
       "type": "Microsoft.Resources/deployments",
-      "apiVersion": "2022-09-01",
+      "apiVersion": "2025-04-01",
       "name": "envoy-cache-adapter-app",
       "resourceGroup": "[parameters('resourceGroupName')]",
       "properties": {
@@ -3969,8 +3973,8 @@
           "metadata": {
             "_generator": {
               "name": "bicep",
-              "version": "0.31.92.45157",
-              "templateHash": "13735497111236891126"
+              "version": "0.47.16.16243",
+              "templateHash": "17849414219172352526"
             }
           },
           "parameters": {
@@ -4041,6 +4045,9 @@
               "name": "[parameters('webAppName')]",
               "location": "[parameters('location')]",
               "kind": "app,linux,container",
+              "tags": {
+                "SecurityControl": "Ignore"
+              },
               "identity": {
                 "type": "SystemAssigned"
               },
@@ -4087,7 +4094,7 @@
             {
               "type": "Microsoft.Authorization/roleAssignments",
               "apiVersion": "2022-04-01",
-              "scope": "[format('Microsoft.EventHub/namespaces/{0}/eventhubs/{1}', parameters('eventHubNamespaceName'), parameters('eventHubName'))]",
+              "scope": "[resourceId('Microsoft.EventHub/namespaces/eventhubs', parameters('eventHubNamespaceName'), parameters('eventHubName'))]",
               "name": "[guid(resourceId('Microsoft.EventHub/namespaces/eventhubs', parameters('eventHubNamespaceName'), parameters('eventHubName')), resourceId('Microsoft.Web/sites', parameters('webAppName')), 'envoy-cache-adapter-event-hub-sender')]",
               "properties": {
                 "principalId": "[reference(resourceId('Microsoft.Web/sites', parameters('webAppName')), '2024-11-01', 'full').identity.principalId]",
@@ -4114,9 +4121,9 @@
     },
     {
       "type": "Microsoft.Resources/deployments",
-      "apiVersion": "2022-09-01",
+      "apiVersion": "2025-04-01",
       "name": "envoy-cache-adapter-acr-role",
-      "resourceGroup": "[parameters('apimResourceGroupName')]",
+      "resourceGroup": "[parameters('acrResourceGroupName')]",
       "properties": {
         "expressionEvaluationOptions": {
           "scope": "inner"
@@ -4127,7 +4134,7 @@
             "value": "[parameters('acrName')]"
           },
           "principalId": {
-            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('resourceGroupName')), 'Microsoft.Resources/deployments', 'envoy-cache-adapter-app'), '2022-09-01').outputs.principalId.value]"
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('resourceGroupName')), 'Microsoft.Resources/deployments', 'envoy-cache-adapter-app'), '2025-04-01').outputs.principalId.value]"
           }
         },
         "template": {
@@ -4136,8 +4143,8 @@
           "metadata": {
             "_generator": {
               "name": "bicep",
-              "version": "0.31.92.45157",
-              "templateHash": "5154748805532644181"
+              "version": "0.47.16.16243",
+              "templateHash": "11639968918548832971"
             }
           },
           "parameters": {
@@ -4155,7 +4162,7 @@
             {
               "type": "Microsoft.Authorization/roleAssignments",
               "apiVersion": "2022-04-01",
-              "scope": "[format('Microsoft.ContainerRegistry/registries/{0}', parameters('acrName'))]",
+              "scope": "[resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName'))]",
               "name": "[guid(resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), parameters('principalId'), 'envoy-cache-adapter-acr-pull')]",
               "properties": {
                 "principalId": "[parameters('principalId')]",
@@ -4168,12 +4175,12 @@
       },
       "dependsOn": [
         "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('resourceGroupName')), 'Microsoft.Resources/deployments', 'envoy-cache-adapter-app')]",
-        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('apimResourceGroupName')), 'Microsoft.Resources/deployments', 'envoy-cache-adapter-registry')]"
+        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('acrResourceGroupName')), 'Microsoft.Resources/deployments', 'envoy-cache-adapter-registry')]"
       ]
     },
     {
       "type": "Microsoft.Resources/deployments",
-      "apiVersion": "2022-09-01",
+      "apiVersion": "2025-04-01",
       "name": "[format('envoy-cache-adapter-apim-{0}', uniqueString(parameters('resourceGroupName')))]",
       "resourceGroup": "[parameters('apimResourceGroupName')]",
       "properties": {
@@ -4198,8 +4205,8 @@
           "metadata": {
             "_generator": {
               "name": "bicep",
-              "version": "0.31.92.45157",
-              "templateHash": "9829588668453471476"
+              "version": "0.47.16.16243",
+              "templateHash": "13511781592696423146"
             }
           },
           "parameters": {
@@ -4239,7 +4246,7 @@
   "outputs": {
     "webAppUrl": {
       "type": "string",
-      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('resourceGroupName')), 'Microsoft.Resources/deployments', 'envoy-cache-adapter-app'), '2022-09-01').outputs.webAppUrl.value]"
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('resourceGroupName')), 'Microsoft.Resources/deployments', 'envoy-cache-adapter-app'), '2025-04-01').outputs.webAppUrl.value]"
     },
     "webAppName": {
       "type": "string",
@@ -4259,15 +4266,19 @@
     },
     "webAppPrincipalId": {
       "type": "string",
-      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('resourceGroupName')), 'Microsoft.Resources/deployments', 'envoy-cache-adapter-app'), '2022-09-01').outputs.principalId.value]"
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('resourceGroupName')), 'Microsoft.Resources/deployments', 'envoy-cache-adapter-app'), '2025-04-01').outputs.principalId.value]"
     },
     "adapterKeyNamedValueName": {
       "type": "string",
-      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('apimResourceGroupName')), 'Microsoft.Resources/deployments', format('envoy-cache-adapter-apim-{0}', uniqueString(parameters('resourceGroupName')))), '2022-09-01').outputs.namedValueName.value]"
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('apimResourceGroupName')), 'Microsoft.Resources/deployments', format('envoy-cache-adapter-apim-{0}', uniqueString(parameters('resourceGroupName')))), '2025-04-01').outputs.namedValueName.value]"
     },
     "acrName": {
       "type": "string",
       "value": "[parameters('acrName')]"
+    },
+    "acrResourceGroupName": {
+      "type": "string",
+      "value": "[parameters('acrResourceGroupName')]"
     },
     "image": {
       "type": "string",

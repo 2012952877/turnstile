@@ -56,6 +56,7 @@ def test_internal_attribution_headers_never_reach_a_provider() -> None:
         "x-hive-model",
         "x-hive-runtime",
         "x-turnstile-pool-member",
+        "x-turnstile-pool-runtime",
     )
 
     for name in header_names:
@@ -499,6 +500,21 @@ def test_apim_normalizes_openai_prompt_tokens_to_exclude_cache() -> None:
     assert policy.index("var cacheWrite") < policy.index("var promptTokens")
     # The Anthropic shape keeps its own already-exclusive value.
     assert "usage?[&quot;input_tokens&quot;]" in policy
+
+
+def test_apim_cache_fallback_is_nullable_and_after_nested_measurements() -> None:
+    for path in (POLICY_PATH, POLICY_PATH.with_name("llm-gateway-policy.xml")):
+        root = ElementTree.fromstring(path.read_text())
+        expression = next(
+            node.attrib["value"] for node in root.iter("set-variable")
+            if node.attrib.get("name") == "usagePayload"
+            and 'usage?["prompt_tokens_details"]' in node.attrib.get("value", "")
+        )
+        nested = '(long?)usage?["prompt_tokens_details"]?["cached_tokens"]'
+        fallback = '?? (long?)usage?["cached_tokens"]'
+        assert nested in expression
+        assert fallback in expression
+        assert expression.index(nested) < expression.index(fallback)
 
 
 def test_apim_strips_request_fields_the_databricks_backend_rejects() -> None:

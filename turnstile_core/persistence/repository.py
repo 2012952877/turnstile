@@ -169,6 +169,7 @@ class PostgreSqlOpsDbProxy(
         application: UsageApplicationAttribution | None = None,
     ) -> None:
         values = record.model_dump()
+        values["runtime_authoritative"] = record.runtime_authoritative
         values["user_ref"] = values.pop("user")
         with self._connection() as connection:
             if record.usage_domain == "apim":
@@ -216,6 +217,7 @@ class PostgreSqlOpsDbProxy(
                     correlation_id = CASE WHEN existing.estimated
                         THEN EXCLUDED.correlation_id ELSE existing.correlation_id END,
                     runtime = CASE WHEN existing.estimated
+                        OR (%(runtime_authoritative)s AND NOT EXCLUDED.estimated)
                         THEN EXCLUDED.runtime ELSE existing.runtime END,
                     input_tokens = CASE WHEN existing.estimated
                         THEN EXCLUDED.input_tokens ELSE existing.input_tokens END,
@@ -272,6 +274,8 @@ class PostgreSqlOpsDbProxy(
                              AND EXCLUDED.budget_admission IS NOT NULL)
                             OR (existing.model_admission IS NULL
                                 AND EXCLUDED.model_admission IS NOT NULL)
+                            OR (%(runtime_authoritative)s
+                                AND existing.runtime IS DISTINCT FROM EXCLUDED.runtime)
                         )
                    )
                 """,

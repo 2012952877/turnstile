@@ -12,7 +12,8 @@ import {
 } from "react"
 import { createPortal } from "react-dom"
 
-const DEFAULT_MIN_WIDTH = 72
+import { DEFAULT_MIN_COLUMN_WIDTH, preserveColumnWidths } from "./column-widths"
+
 const MAX_COLUMN_WIDTH = 1600
 const RESIZE_THRESHOLD = 4
 
@@ -29,16 +30,19 @@ function useResizableColumns({
   headerSelector,
   minWidths = [],
   enabled,
+  resizeAtAllWidths = false,
 }: {
   rootRef: React.RefObject<HTMLElement | null>
   headerSelector: string
   minWidths?: readonly number[]
   enabled: boolean
+  resizeAtAllWidths?: boolean
 }): ResizeState {
   const [headerCells, setHeaderCells] = useState<HTMLElement[]>([])
   const [widths, setWidths] = useState<number[] | null>(null)
   const [activeColumn, setActiveColumn] = useState<number | null>(null)
   const defaultWidthsRef = useRef<number[] | null>(null)
+  const lastVisibleWidthsRef = useRef<number[] | null>(null)
   const cleanupDragRef = useRef<(() => void) | null>(null)
   const headerSignatureRef = useRef("")
 
@@ -56,6 +60,7 @@ function useResizableColumns({
     if (signatureChanged || (widths && widths.length !== nextCells.length)) {
       setWidths(null)
       defaultWidthsRef.current = null
+      lastVisibleWidthsRef.current = null
     }
     headerSignatureRef.current = signature
   })
@@ -77,6 +82,20 @@ function useResizableColumns({
     return () => restorations.forEach((restore) => restore())
   }, [headerCells])
 
+  useLayoutEffect(() => {
+    const rememberVisibleWidths = () => {
+      lastVisibleWidthsRef.current = preserveColumnWidths(
+        headerCells.map((cell) => cell.getBoundingClientRect().width),
+        lastVisibleWidthsRef.current,
+        minWidths,
+      )
+    }
+    rememberVisibleWidths()
+    const observer = new ResizeObserver(rememberVisibleWidths)
+    headerCells.forEach((cell) => observer.observe(cell))
+    return () => observer.disconnect()
+  }, [headerCells, minWidths])
+
   useLayoutEffect(() => () => cleanupDragRef.current?.(), [])
   useLayoutEffect(() => {
     if (enabled) return
@@ -84,10 +103,14 @@ function useResizableColumns({
     setActiveColumn(null)
   }, [enabled])
 
-  const measureWidths = () => headerCells.map((cell) => Math.round(cell.getBoundingClientRect().width))
+  const measureWidths = () => preserveColumnWidths(
+    headerCells.map((cell) => cell.getBoundingClientRect().width),
+    widths ?? lastVisibleWidthsRef.current,
+    minWidths,
+  )
   const clampWidth = (index: number, width: number) => Math.min(
     MAX_COLUMN_WIDTH,
-    Math.max(minWidths[index] ?? DEFAULT_MIN_WIDTH, Math.round(width)),
+    Math.max(minWidths[index] ?? DEFAULT_MIN_COLUMN_WIDTH, Math.round(width)),
   )
   const rememberDefaults = (measured: number[]) => {
     if (!defaultWidthsRef.current || defaultWidthsRef.current.length !== measured.length) {
@@ -177,11 +200,12 @@ function useResizableColumns({
         role="separator"
         aria-label={label ? `Resize ${label} column` : `Resize column ${index + 1}`}
         aria-orientation="vertical"
-        aria-valuemin={minWidths[index] ?? DEFAULT_MIN_WIDTH}
+        aria-valuemin={minWidths[index] ?? DEFAULT_MIN_COLUMN_WIDTH}
         aria-valuemax={MAX_COLUMN_WIDTH}
         aria-valuenow={widths?.[index] ?? Math.round(cell.getBoundingClientRect().width)}
         aria-keyshortcuts="ArrowLeft ArrowRight Enter Space"
         data-active={activeColumn === index || undefined}
+        data-resize-at-all-widths={resizeAtAllWidths || undefined}
         data-no-localize
         tabIndex={0}
         onPointerDown={(event) => beginResize(index, event)}
@@ -200,13 +224,13 @@ function useResizableColumns({
   return {
     activeColumn,
     enabled,
-    overlay: activeColumn === null ? null : <div className="table-column-resize-overlay" aria-hidden="true" />,
+    overlay: activeColumn === null ? null : <div className="table-column-resize-overlay" data-resize-at-all-widths={resizeAtAllWidths || undefined} aria-hidden="true" />,
     portals,
     widths,
   }
 }
 
-function useDesktopColumnResize() {
+function useDesktopColumnResize(resizeAtAllWidths = false) {
   const [enabled, setEnabled] = useState(() => typeof window === "undefined"
     || window.matchMedia("(min-width: 761px)").matches)
 
@@ -222,7 +246,7 @@ function useDesktopColumnResize() {
     }
   }, [])
 
-  return enabled
+  return resizeAtAllWidths || enabled
 }
 
 type ResizableGridTableProps = HTMLAttributes<HTMLDivElement> & {
@@ -231,6 +255,7 @@ type ResizableGridTableProps = HTMLAttributes<HTMLDivElement> & {
   headerSelector: string
   horizontalPadding?: number
   minWidths?: readonly number[]
+  resizeAtAllWidths?: boolean
 }
 
 export function ResizableGridTable({
@@ -240,12 +265,13 @@ export function ResizableGridTable({
   horizontalPadding = 0,
   className,
   minWidths,
+  resizeAtAllWidths = false,
   style,
   ...props
 }: ResizableGridTableProps) {
   const rootRef = useRef<HTMLDivElement>(null)
-  const enabled = useDesktopColumnResize()
-  const resize = useResizableColumns({ rootRef, headerSelector, minWidths, enabled })
+  const enabled = useDesktopColumnResize(resizeAtAllWidths)
+  const resize = useResizableColumns({ rootRef, headerSelector, minWidths, enabled, resizeAtAllWidths })
   const activeWidths = resize.enabled ? resize.widths : null
   const contentWidth = activeWidths
     ? activeWidths.reduce((total, width) => total + width, horizontalPadding + columnGap * Math.max(0, activeWidths.length - 1))

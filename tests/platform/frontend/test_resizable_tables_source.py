@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
+from pathlib import Path
+
 from tests.support.paths import (
     FRONTEND_SOURCE,
+    REPOSITORY_ROOT,
     read_apim_dashboard_source,
     read_frontend_styles,
 )
@@ -48,8 +53,30 @@ def test_resizable_table_primitive_keeps_interaction_and_accessibility_contract(
     assert '<div\n        className="table-column-resizer"' not in source
     assert "--resizable-table-columns" in source
     assert ".table-column-resizer" in styles
-    assert "\t.table-column-resizer," in styles
-    assert "display: none" in styles.split("\t.table-column-resizer,", 1)[1].split("}", 1)[0]
+    selector = '\t.table-column-resizer:not([data-resize-at-all-widths="true"]),'
+    assert selector in styles
+    assert "display: none" in styles.split(selector, 1)[1].split("}", 1)[0]
+    assert "widths ?? lastVisibleWidthsRef.current" in source
+    assert "new ResizeObserver(rememberVisibleWidths)" in source
+    assert "return resizeAtAllWidths || enabled" in source
+
+
+def test_column_width_behavior_and_narrow_model_tracks() -> None:
+    node = shutil.which("node")
+    assert node is not None, "Node.js is required for frontend unit tests"
+    result = subprocess.run(
+        [node, "--experimental-strip-types", "--test",
+         str(Path(__file__).with_name("column-widths.test.mjs"))],
+        cwd=REPOSITORY_ROOT, capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    page = (FRONTEND_SOURCE / "pages/model-management-page.tsx").read_text(encoding="utf-8")
+    styles = read_frontend_styles()
+    assert "horizontalPadding={32} resizeAtAllWidths" in page
+    assert "[180, 120, 160, 80, 48]" in page
+    assert "minmax(180px, var(--resizable-column-1, 1fr))" in styles
+    assert "minmax(80px, var(--resizable-column-4, 90px))" in styles
+    assert "minmax(48px, var(--resizable-column-5, 76px))" in styles
 
 
 def test_visual_disclosure_and_action_tables_are_included() -> None:

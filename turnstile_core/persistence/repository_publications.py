@@ -8,6 +8,7 @@ from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
+from ..domain.control_plane import GatewayPublication, publication_materialized_named_values
 from .repository_support import _activation_runtime_config
 
 
@@ -190,10 +191,26 @@ class PostgreSqlPublicationRepositoryMixin:
         ).fetchone()
         if in_flight is not None:
             raise ValueError("Another gateway publication is already in progress")
+        provisioning_completed = connection.execute(
+            """SELECT 1 FROM gateway_publication_audit
+               WHERE publication_id = %s
+                 AND from_status = 'validating' AND to_status = 'provisioning'
+               LIMIT 1""",
+            (publication["id"],),
+        ).fetchone()
+        materialized = publication_materialized_named_values(
+            GatewayPublication.model_validate(publication),
+            provisioning_completed=provisioning_completed is not None,
+        )
+        preserved_manifest = (
+            {"named_values": materialized}
+            if credential_ciphertext is None and materialized
+            else {}
+        )
         row = connection.execute(
             """UPDATE gateway_publication SET
                    status = 'queued', apim_revision = NULL,
-                   policy_sha256 = NULL, resource_manifest = '{}'::jsonb,
+                   policy_sha256 = NULL, resource_manifest = %s,
                    error_code = NULL, error_message = NULL,
                    attempt_count = 0, started_at = NULL, completed_at = NULL,
                    desired_spec = COALESCE(%s, desired_spec),
@@ -201,6 +218,7 @@ class PostgreSqlPublicationRepositoryMixin:
                    created_by = %s, updated_at = now()
                WHERE id = %s RETURNING *""",
             (
+                Jsonb(preserved_manifest),
                 Jsonb(dict(desired_spec)) if desired_spec is not None else None,
                 desired_spec_sha256,
                 created_by,
@@ -629,6 +647,14 @@ class PostgreSqlPublicationRepositoryMixin:
                         Jsonb(dict(updates)),
                     ),
                 )
+                if (
+                    row["operation_kind"] == "application_provision"
+                    and status in {"succeeded", "failed", "restored"}
+                ):
+                    connection.execute(
+                        "DELETE FROM gateway_release_operation_secret WHERE operation_id = %s",
+                        (operation_id,),
+                    )
         return cast(dict[str, Any] | None, row)
 
     def list_gateway_release_operation_audit(

@@ -1,15 +1,13 @@
 import { useEffect, useRef, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { Check, Circle, Copy, Eye, EyeOff, LoaderCircle, Rocket, ShieldCheck, TriangleAlert, X } from "lucide-react"
+import { Check, Circle, Copy, Eye, EyeOff, LoaderCircle, Rocket, Server, ShieldCheck, TriangleAlert, X } from "lucide-react"
 
 import { dataSource } from "../../data-sources/apim/api"
 import { finopsKeys, finopsQueries } from "../../data-sources/apim/queries"
 import type {
-  BrandKey,
   GatewayPublication,
   GatewayPublicationCreate,
   GatewayPublicationStatus,
-  ModelProvider,
   ModelRegistry,
   ModelRuntime,
 } from "../../data-sources/apim/types"
@@ -38,14 +36,22 @@ import {
   SelectValue,
 } from "../ui/select"
 import {
-  FoundryAuthModeSwitch,
-  type FoundryAuthMode,
-} from "./foundry-auth-mode-switch"
+  preferredPublicationConnection,
+  publicationConnectionAuth,
+  publicationConnectionEndpoint,
+  publicationConnectionNeedsCredential,
+  publicationConnections,
+  publicationConnectionTarget,
+} from "./model-publication-connections"
 import { FieldHelp } from "./field-help"
+import { ModelVendorLogo } from "./model-vendor-select"
+import {
+  displayNameFromProviderId,
+  modelVendorFromMetadata,
+  modelVendorLabel,
+  publicModelKeyFromProviderId,
+} from "./openai-compatible"
 
-const NEW_BEDROCK_PROVIDER = "template:amazon-bedrock"
-const NEW_FOUNDRY_PROVIDER = "template:microsoft-foundry"
-const NEW_RUNTIME = "new-runtime"
 const TERMINAL_STATUSES: GatewayPublicationStatus[] = [
   "active",
   "failed",
@@ -120,20 +126,6 @@ function PublicationProgress({ publication }: { publication: GatewayPublication 
   </section>
 }
 
-type ProviderChoice = {
-  id: string
-  name: string
-  brandKey: BrandKey
-  provider?: ModelProvider
-}
-
-function choiceBrand(choice: ProviderChoice) {
-  return providerBrandFromMetadata(
-    choice.brandKey,
-    `${choice.name} ${choice.provider?.provider_kind ?? ""}`,
-  )
-}
-
 function numberOrNull(value: string) {
   const text = value.trim()
   return text ? Number(text) : null
@@ -144,89 +136,6 @@ function optionalNumberError(values: string[]) {
   return numeric.some((value) => !Number.isFinite(value) || value < 0)
     ? "上下文窗口和价格必须是非负数字。"
     : null
-}
-
-type BedrockModel = {
-  displayName: string
-  modelKey: string
-  upstreamModelId: string
-}
-
-function isBedrockRuntimeUrl(value: string) {
-  try {
-    const endpoint = new URL(value.trim())
-    return endpoint.protocol === "https:"
-      && endpoint.hostname.startsWith("bedrock-runtime.")
-      && endpoint.hostname.endsWith(".amazonaws.com")
-      && (endpoint.pathname === "/" || endpoint.pathname === "")
-  } catch {
-    return false
-  }
-}
-
-function isFoundryProjectEndpoint(value: string) {
-  try {
-    const endpoint = new URL(value.trim())
-    return endpoint.protocol === "https:"
-      && endpoint.hostname.endsWith(".services.ai.azure.com")
-      && /^\/api\/projects\/[a-zA-Z0-9._-]+\/?$/.test(endpoint.pathname)
-      && !endpoint.search
-      && !endpoint.hash
-  } catch {
-    return false
-  }
-}
-
-function isMatchingFoundryInferenceEndpoint(projectValue: string, inferenceValue: string) {
-  try {
-    const project = new URL(projectValue.trim())
-    const inference = new URL(inferenceValue.trim())
-    const account = project.hostname.replace(/\.services\.ai\.azure\.com$/i, "")
-    return Boolean(account)
-      && inference.protocol === "https:"
-      && [
-        `${account}.openai.azure.com`,
-        `${account}.services.ai.azure.com`,
-      ].includes(inference.hostname.toLowerCase())
-      && inference.pathname.replace(/\/$/, "") === "/openai/v1"
-      && !inference.search
-      && !inference.hash
-  } catch {
-    return false
-  }
-}
-
-function deriveBedrockModel(value: string): BedrockModel | null {
-  const upstreamModelId = value.trim()
-  if (!upstreamModelId || upstreamModelId.length > 2048) return null
-  const resourceName = upstreamModelId.split("/").at(-1) ?? upstreamModelId
-  if (!resourceName.toLowerCase().includes("claude")) return null
-  const modelName = resourceName
-    .replace(/^(?:[a-z]{2}|apac|global)\.anthropic\./i, "")
-    .replace(/^anthropic\./i, "")
-  const parts = modelName.split("-").filter(Boolean)
-  const versionStart = parts.findIndex((part) => /^\d/.test(part))
-  const family = (versionStart < 0 ? parts : parts.slice(0, versionStart))
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ")
-  const version = versionStart < 0 ? "" : parts.slice(versionStart).join(".")
-  return {
-    displayName: `${family}${version ? ` ${version}` : ""} · Amazon Bedrock`,
-    modelKey: `${modelName.toLowerCase().replace(/[^a-z0-9._:-]+/g, "-")}-bedrock`,
-    upstreamModelId,
-  }
-}
-
-function publicationRuntimeEligible(runtime: ModelRuntime) {
-  if (runtime.brand_key === "microsoft_foundry") {
-    return runtime.config.control_plane_managed === true
-      && typeof runtime.config.project_endpoint === "string"
-      && runtime.config.project_endpoint.length > 0
-  }
-  return runtime.config.api_format === "anthropic_messages"
-    || runtime.config.api_format === "openai_chat"
-    || runtime.brand_key === "amazon_bedrock"
-    || runtime.brand_key === "azure_databricks"
 }
 
 function runtimeRegion(runtime: ModelRuntime) {
@@ -246,40 +155,6 @@ function runtimeRegion(runtime: ModelRuntime) {
 function runtimeChoiceLabel(runtime: ModelRuntime) {
   const region = runtimeRegion(runtime)
   return region ? `${runtime.name} · ${region}` : runtime.name
-}
-
-function foundryRuntimeChoiceLabel(runtime: ModelRuntime) {
-  return `复用已有连接 · ${runtime.name}`
-}
-
-function providerChoices(registry: ModelRegistry, runtimes: ModelRuntime[]): ProviderChoice[] {
-  const runtimeProviderIds = new Set(runtimes.map((runtime) => runtime.provider_id))
-  const existing: ProviderChoice[] = registry.providers
-    .filter((provider) => runtimeProviderIds.has(provider.id)
-      || provider.brand_key === "amazon_bedrock"
-      || provider.brand_key === "microsoft_foundry")
-    .map((provider) => ({
-      id: provider.id,
-      name: provider.name,
-      brandKey: provider.brand_key,
-      provider,
-    }))
-
-  if (!registry.providers.some((provider) => provider.brand_key === "amazon_bedrock")) {
-    existing.push({
-      id: NEW_BEDROCK_PROVIDER,
-      name: "Amazon Bedrock",
-      brandKey: "amazon_bedrock",
-    })
-  }
-  if (!registry.providers.some((provider) => provider.brand_key === "microsoft_foundry")) {
-    existing.push({
-      id: NEW_FOUNDRY_PROVIDER,
-      name: "Microsoft Foundry",
-      brandKey: "microsoft_foundry",
-    })
-  }
-  return existing
 }
 
 export function publicationStatusLabel(status: GatewayPublicationStatus) {
@@ -303,11 +178,13 @@ export function ModelPublicationDialog({
   registry,
   publicationId,
   onPublicationQueued,
+  onManageConnections,
   onClose,
 }: {
   registry: ModelRegistry
   publicationId: string | null
   onPublicationQueued: (publicationId: string) => void
+  onManageConnections: () => void
   onClose: () => void
 }) {
   const queryClient = useQueryClient()
@@ -320,49 +197,28 @@ export function ModelPublicationDialog({
       ?? "",
   )
   const selectedGateway = apimGateways.find((gateway) => gateway.id === gatewayId)
-  const allApimRuntimes = registry.runtimes.filter(
-    (runtime) => runtime.enabled && publicationRuntimeEligible(runtime) && apimGateways.some(
-      (gateway) => gateway.id === runtime.gateway_profile_id,
-    ),
-  )
-  const apimRuntimes = registry.runtimes.filter(
-    (runtime) => runtime.gateway_profile_id === selectedGateway?.id
-      && runtime.enabled
-      && publicationRuntimeEligible(runtime),
-  )
-  const allChoices = providerChoices(registry, allApimRuntimes)
-  const choices = allChoices
-  const [providerChoiceId, setProviderChoiceId] = useState(
-    choices.find((choice) => choice.brandKey === "microsoft_foundry")?.id
-      ?? choices[0]?.id
-      ?? "",
-  )
-  const selectedChoice = choices.find((choice) => choice.id === providerChoiceId)
-  const providerRuntimes = apimRuntimes.filter(
-    (runtime) => runtime.provider_id === selectedChoice?.provider?.id,
-  )
-  const canCreateRuntime = selectedChoice?.brandKey === "amazon_bedrock"
-    || selectedChoice?.brandKey === "microsoft_foundry"
+  const apimRuntimes = publicationConnections(registry, gatewayId)
   const [runtimeId, setRuntimeId] = useState(
-    canCreateRuntime ? NEW_RUNTIME : providerRuntimes[0]?.id ?? "",
+    preferredPublicationConnection(apimRuntimes)?.id ?? "",
   )
-  const selectedRuntime = registry.runtimes.find((runtime) => runtime.id === runtimeId)
-  const creatingRuntime = runtimeId === NEW_RUNTIME
-  const creatingBedrockConnection = creatingRuntime && selectedChoice?.brandKey === "amazon_bedrock"
-  const creatingFoundryConnection = creatingRuntime && selectedChoice?.brandKey === "microsoft_foundry"
-  const selectedRuntimeNeedsCredential = !creatingRuntime
-    && selectedRuntime?.config.credential_provisioned === false
-    && ["named_value_bearer", "named_value_api_key"].includes(
-      String(selectedRuntime.config.auth_strategy ?? ""),
-    )
+  const selectedRuntime = apimRuntimes.find((runtime) => runtime.id === runtimeId)
+  const selectedProvider = registry.providers.find((provider) => provider.id === selectedRuntime?.provider_id)
+  const foundry = selectedRuntime?.brand_key === "microsoft_foundry"
+  const openaiCompatible = selectedProvider?.provider_kind === "openai_compatible"
+  const selectedVendor = selectedRuntime && openaiCompatible
+    ? modelVendorFromMetadata(selectedRuntime.config, selectedRuntime.name)
+    : null
+  const selectedRuntimeNeedsCredential = selectedRuntime
+    ? publicationConnectionNeedsCredential(selectedRuntime)
+    : false
+  const connectionEndpoint = selectedRuntime ? publicationConnectionEndpoint(selectedRuntime) : null
+  const connectionAuthLabel = {
+    managed_identity: "托管身份",
+    api_key: "API Key",
+    connection: "由连接管理",
+  }[selectedRuntime ? publicationConnectionAuth(selectedRuntime, selectedProvider) : "connection"]
 
-  const [bedrockRuntimeUrl, setBedrockRuntimeUrl] = useState("")
-  const [bedrockModelId, setBedrockModelId] = useState("")
-  const [bedrockApiKey, setBedrockApiKey] = useState("")
-  const [foundryProjectEndpoint, setFoundryProjectEndpoint] = useState("")
-  const [foundryAuthMode, setFoundryAuthMode] = useState<FoundryAuthMode>("managed_identity")
-  const [foundryInferenceEndpoint, setFoundryInferenceEndpoint] = useState("")
-  const [foundryApiKey, setFoundryApiKey] = useState("")
+  const [providerApiKey, setProviderApiKey] = useState("")
   const [foundryDeployment, setFoundryDeployment] = useState("")
   const [keyRevealed, setKeyRevealed] = useState(false)
   const [modelKey, setModelKey] = useState("")
@@ -377,14 +233,9 @@ export function ModelPublicationDialog({
   const [publishError, setPublishError] = useState<string | null>(null)
   const [publishing, setPublishing] = useState(false)
   const activationNotified = useRef(false)
-  const requiredCredentialMissing = (
-    selectedRuntimeNeedsCredential
-    || creatingBedrockConnection
-    || (creatingFoundryConnection && foundryAuthMode === "api_key")
-  ) && !(selectedChoice?.brandKey === "microsoft_foundry"
-    ? foundryApiKey
-    : bedrockApiKey
-  ).trim()
+  const requiredCredentialMissing = selectedRuntimeNeedsCredential && !providerApiKey.trim()
+  const effectiveModelKey = openaiCompatible ? publicModelKeyFromProviderId(upstreamModelId) : modelKey.trim()
+  const effectiveDisplayName = openaiCompatible ? displayNameFromProviderId(upstreamModelId) : displayName.trim()
 
   const publication = useQuery(finopsQueries.gatewayPublication(publicationId))
 
@@ -394,85 +245,48 @@ export function ModelPublicationDialog({
     void queryClient.invalidateQueries({ queryKey: finopsKeys.registry })
   }, [publication.data?.status, queryClient])
 
+  const clearConnectionInputs = () => {
+    setProviderApiKey("")
+    setFoundryDeployment("")
+    setKeyRevealed(false)
+    setModelKey("")
+    setDisplayName("")
+    setUpstreamModelId("")
+    setContextWindow("")
+    setInputPrice("")
+    setOutputPrice("")
+    setCacheReadPrice("")
+    setCacheWritePrice("")
+    setFormError(null)
+    setPublishError(null)
+  }
+
   const chooseGateway = (id: string | null) => {
-    if (!id) return
-    const gatewayRuntimes = registry.runtimes.filter(
-      (runtime) => runtime.gateway_profile_id === id && runtime.enabled,
-    )
-    const nextChoice = choices.find((choice) => choice.id === providerChoiceId)
-      ?? choices[0]
-    const nextRuntimes = gatewayRuntimes.filter(
-      (runtime) => runtime.provider_id === nextChoice?.provider?.id,
-    )
+    if (publishing || !id || id === gatewayId || !apimGateways.some((gateway) => gateway.id === id)) return
+    const nextConnections = publicationConnections(registry, id)
     setGatewayId(id)
-    setProviderChoiceId(nextChoice?.id ?? "")
-    setRuntimeId(
-      nextChoice?.brandKey === "amazon_bedrock" || nextChoice?.brandKey === "microsoft_foundry"
-        ? NEW_RUNTIME
-        : nextRuntimes[0]?.id ?? "",
-    )
-    setFormError(null)
+    setRuntimeId(preferredPublicationConnection(nextConnections, runtimeId)?.id ?? "")
+    clearConnectionInputs()
   }
 
-  const chooseProvider = (id: string | null) => {
-    if (!id) return
-    const choice = choices.find((item) => item.id === id)
-    const runtimes = apimRuntimes.filter(
-      (runtime) => runtime.provider_id === choice?.provider?.id,
-    )
-    setProviderChoiceId(id)
-    setRuntimeId(
-      choice?.brandKey === "amazon_bedrock" || choice?.brandKey === "microsoft_foundry"
-        ? NEW_RUNTIME
-        : runtimes[0]?.id ?? "",
-    )
-    setFormError(null)
-  }
-
-  const chooseFoundryAuthMode = (mode: FoundryAuthMode) => {
-    setFoundryAuthMode(mode)
-    if (mode === "managed_identity") {
-      setFoundryInferenceEndpoint("")
-      setFoundryApiKey("")
-      setKeyRevealed(false)
-    }
-    setFormError(null)
+  const chooseRuntime = (id: string | null) => {
+    if (publishing || !id || id === runtimeId || !apimRuntimes.some((runtime) => runtime.id === id)) return
+    setRuntimeId(id)
+    clearConnectionInputs()
   }
 
   const validate = () => {
     if (!selectedGateway) return "没有可用的 Azure API Management 网关。"
-    if (!selectedChoice) return "请选择提供方。"
-    if (!runtimeId) return "请选择使用 APIM 的运行时。"
-    if (creatingBedrockConnection) {
-      if (!isBedrockRuntimeUrl(bedrockRuntimeUrl)) return "请输入有效的 Bedrock Runtime URL。"
-      if (!deriveBedrockModel(bedrockModelId)) return "请输入有效的 Claude Model / Inference Profile ID。"
-      if (!bedrockApiKey.trim()) return "请输入 Bedrock API Key。"
-      return null
-    }
-    if (selectedRuntimeNeedsCredential) {
-      const credential = selectedChoice.brandKey === "microsoft_foundry"
-        ? foundryApiKey
-        : bedrockApiKey
-      if (!credential.trim()) return "请输入该连接首次发布所需的一次性 API Key。"
-    }
-    if (selectedChoice.brandKey === "microsoft_foundry") {
-      if (creatingFoundryConnection && !isFoundryProjectEndpoint(foundryProjectEndpoint)) {
-        return "请输入有效的 Foundry Project Endpoint。"
-      }
-      if (creatingFoundryConnection && foundryAuthMode === "api_key") {
-        if (!isMatchingFoundryInferenceEndpoint(
-          foundryProjectEndpoint,
-          foundryInferenceEndpoint,
-        )) return "请输入与 Project 属于同一 Foundry 资源的 Inference Endpoint。"
-        if (!foundryApiKey.trim()) return "请输入 Foundry API Key。"
-      }
+    if (!selectedRuntime || !selectedProvider) return "请选择当前网关下的可用连接。"
+    if (requiredCredentialMissing) return "请输入该连接首次发布所需的一次性 API Key。"
+    if (foundry) {
       if (!foundryDeployment.trim()) return "请输入已有的 Foundry Deployment Name。"
       return optionalNumberError([
         contextWindow, inputPrice, outputPrice, cacheReadPrice, cacheWritePrice,
       ])
     }
-    if (!/^[a-zA-Z0-9._:-]+$/.test(modelKey.trim())) return "模型 Key 格式无效。"
-    if (!displayName.trim()) return "请输入显示名称。"
+    if (!/^[a-zA-Z0-9._:-]+$/.test(effectiveModelKey) || effectiveModelKey.length > 255) return "模型 Key 格式无效。"
+    if (!effectiveDisplayName || effectiveDisplayName.length > 255) return "请输入显示名称。"
     if (!upstreamModelId.trim()) return "请输入上游模型 ID。"
     return optionalNumberError([
       contextWindow, inputPrice, outputPrice, cacheReadPrice, cacheWritePrice,
@@ -480,68 +294,29 @@ export function ModelPublicationDialog({
   }
 
   const submit = async () => {
+    if (publishing) return
     const error = validate()
     setFormError(error)
     setPublishError(null)
-    if (error || !selectedGateway || !selectedChoice) return
-    const parsedBedrock = creatingBedrockConnection
-      ? deriveBedrockModel(bedrockModelId)
-      : null
-    if (creatingBedrockConnection && !parsedBedrock) return
-
-    const request: GatewayPublicationCreate = {
-      gateway_profile_id: selectedGateway.id,
-      provider: selectedChoice.provider
-        ? { existing_id: selectedChoice.provider.id }
-        : {
-            template: selectedChoice.brandKey === "microsoft_foundry"
-              ? "microsoft_foundry"
-              : "amazon_bedrock",
-          },
-      runtime: creatingRuntime
-        ? creatingFoundryConnection ? {
-            foundry_project_endpoint: foundryProjectEndpoint.trim(),
-            foundry_inference_endpoint: foundryAuthMode === "api_key"
-              ? foundryInferenceEndpoint.trim()
-              : undefined,
-            api_key: foundryAuthMode === "api_key" ? foundryApiKey.trim() : undefined,
-          } : {
-            bedrock_runtime_url: bedrockRuntimeUrl.trim(),
-            api_key: bedrockApiKey.trim(),
-          }
-        : {
-            existing_id: runtimeId,
-            api_key: selectedRuntimeNeedsCredential
-              ? selectedChoice.brandKey === "microsoft_foundry"
-                ? foundryApiKey.trim()
-                : bedrockApiKey.trim()
-              : undefined,
-          },
-      model: {
-        deployment_name: selectedChoice.brandKey === "microsoft_foundry"
-          ? foundryDeployment.trim()
-          : undefined,
-        model_key: selectedChoice.brandKey === "microsoft_foundry"
-          ? undefined
-          : parsedBedrock?.modelKey ?? modelKey.trim(),
-        display_name: selectedChoice.brandKey === "microsoft_foundry"
-          ? undefined
-          : parsedBedrock?.displayName ?? displayName.trim(),
-        upstream_model_id: selectedChoice.brandKey === "microsoft_foundry"
-          ? undefined
-          : parsedBedrock?.upstreamModelId ?? upstreamModelId.trim(),
-        context_window: parsedBedrock ? null : numberOrNull(contextWindow),
-        input_cost_per_million: parsedBedrock ? null : numberOrNull(inputPrice),
-        output_cost_per_million: parsedBedrock ? null : numberOrNull(outputPrice),
-        cached_cost_per_million: parsedBedrock ? null : numberOrNull(cacheReadPrice),
-        cache_write_cost_per_million: parsedBedrock ? null : numberOrNull(cacheWritePrice),
-      },
-    }
+    if (error || !selectedGateway || !selectedRuntime || !selectedProvider) return
     setPublishing(true)
     try {
+      const request: GatewayPublicationCreate = {
+        ...publicationConnectionTarget(registry, selectedGateway.id, selectedRuntime.id, providerApiKey),
+        model: {
+          deployment_name: foundry ? foundryDeployment.trim() : undefined,
+          model_key: foundry ? undefined : effectiveModelKey,
+          display_name: foundry ? undefined : effectiveDisplayName,
+          upstream_model_id: foundry ? undefined : upstreamModelId.trim(),
+          context_window: numberOrNull(contextWindow),
+          input_cost_per_million: numberOrNull(inputPrice),
+          output_cost_per_million: numberOrNull(outputPrice),
+          cached_cost_per_million: numberOrNull(cacheReadPrice),
+          cache_write_cost_per_million: numberOrNull(cacheWritePrice),
+        },
+      }
       const accepted = await dataSource.publishModel(request)
-      setBedrockApiKey("")
-      setFoundryApiKey("")
+      setProviderApiKey("")
       setKeyRevealed(false)
       queryClient.setQueryData(
         finopsKeys.gatewayPublication(accepted.publication.id),
@@ -571,15 +346,15 @@ export function ModelPublicationDialog({
   const retry = async () => {
     if (!publicationId) return
     const retryRequiresCredential = publication.data?.retry_requires_credential ?? false
-    if (retryRequiresCredential && !bedrockApiKey.trim()) return
+    if (retryRequiresCredential && !providerApiKey.trim()) return
     setPublishing(true)
     setPublishError(null)
     try {
       const queued = await dataSource.retryGatewayPublication(
         publicationId,
-        retryRequiresCredential ? bedrockApiKey.trim() : undefined,
+        retryRequiresCredential ? providerApiKey.trim() : undefined,
       )
-      setBedrockApiKey("")
+      setProviderApiKey("")
       setKeyRevealed(false)
       queryClient.setQueryData(
         finopsKeys.gatewayPublication(publicationId),
@@ -623,14 +398,19 @@ export function ModelPublicationDialog({
     }
   }
 
-  return <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
-    <DialogContent className="registry-editor-dialog simple-model-dialog" finalFocus={false}>
-      <div className="registry-editor simple-model-form">
+  const close = () => { if (!publishing) onClose() }
+
+  return <Dialog open onOpenChange={(open) => { if (!open) close() }}>
+    <DialogContent className="registry-editor-dialog simple-model-dialog publication-connection-dialog" finalFocus={false}>
+      <form className="registry-editor simple-model-form" aria-busy={publishing} onSubmit={(event) => {
+        event.preventDefault()
+        if (!publicationId) void submit()
+      }}>
         <DialogHeader className="registry-editor-header">
           <DialogTitle>{dialogTitle}</DialogTitle>
           {publication.data && <DialogDescription data-no-localize>{`${publication.data.display_name} · ${publication.data.model_key}`}</DialogDescription>}
         </DialogHeader>
-        <button type="button" className="registry-editor-close" onClick={onClose} aria-label="关闭"><X size={16} /></button>
+        <button type="button" className="registry-editor-close" onClick={close} disabled={publishing} aria-label="关闭"><X size={16} /></button>
 
         <div className="registry-editor-body simple-model-body">
           {publicationId && publication.isPending && <div className="publication-detail-loading"><LoaderCircle className="spin" size={16} />加载发布详情</div>}
@@ -661,88 +441,21 @@ export function ModelPublicationDialog({
 
           {failed && publication.data?.retry_requires_credential && <div className="simple-model-section simple-connection-section">
             <div className="simple-section-title"><b>重新发布</b></div>
-            <div className="registry-field"><span className="registry-field-label-row"><label className="registry-field-label" htmlFor="retry-api-key">Provider API Key</label><FieldHelp>请输入新的 API Key 后重新发布同一模型。</FieldHelp></span><div className="login-password"><Input id="retry-api-key" type={keyRevealed ? "text" : "password"} autoComplete="off" value={bedrockApiKey} onChange={(event) => setBedrockApiKey(event.target.value)} /><button type="button" className="login-reveal" onClick={() => setKeyRevealed((value) => !value)} aria-label={keyRevealed ? "隐藏 API Key" : "显示 API Key"} aria-pressed={keyRevealed}>{keyRevealed ? <EyeOff size={15} /> : <Eye size={15} />}</button></div></div>
+            <div className="registry-field"><span className="registry-field-label-row"><label className="registry-field-label" htmlFor="retry-api-key">Provider API Key</label><FieldHelp>请输入新的 API Key 后重新发布同一模型。</FieldHelp></span><div className="login-password"><Input id="retry-api-key" type={keyRevealed ? "text" : "password"} autoComplete="off" value={providerApiKey} onChange={(event) => setProviderApiKey(event.target.value)} disabled={publishing} /><button type="button" className="login-reveal" onClick={() => setKeyRevealed((value) => !value)} aria-label={keyRevealed ? "隐藏 API Key" : "显示 API Key"} aria-pressed={keyRevealed} disabled={publishing}>{keyRevealed ? <EyeOff size={15} /> : <Eye size={15} />}</button></div></div>
           </div>}
 
           {!publicationId && <>
-          <div className="simple-model-section">
-            <div className="registry-field">
-              <span className="registry-field-label">提供方</span>
-              <Select value={providerChoiceId} onValueChange={chooseProvider} disabled={Boolean(status)}>
-                <SelectTrigger className="registry-select-trigger" aria-label="提供方">
-                  <SelectValue>{selectedChoice ? <span className="registry-option"><ProviderBrandLogo brand={choiceBrand(selectedChoice)} size={15} /><span>{selectedChoice.name}</span></span> : "选择提供方"}</SelectValue>
-                </SelectTrigger>
-                <SelectContent align="start" alignItemWithTrigger={false}>
-                  {choices.map((choice) => <SelectItem key={choice.id} value={choice.id}><span className="registry-option"><ProviderBrandLogo brand={choiceBrand(choice)} size={15} /><span>{choice.name}</span></span></SelectItem>)}
-                </SelectContent>
-              </Select>
+          <section className="simple-model-section simple-target-section" aria-label="发布目标">
+            <div className="publication-connection-heading">
+              <b>发布目标</b>
+              <Button type="button" variant="outline" size="sm" onClick={onManageConnections} disabled={publishing}>
+                <Server size={14} />管理连接
+              </Button>
             </div>
-          </div>
-
-          {canCreateRuntime && <div className="simple-model-section">
-            <div className="registry-field">
-              <span className="registry-field-label">运行时</span>
-              <Select value={runtimeId} onValueChange={(value) => value && setRuntimeId(value)} disabled={Boolean(status)}>
-                <SelectTrigger className="registry-select-trigger" aria-label="运行时">
-                  <SelectValue>{creatingRuntime ? creatingFoundryConnection ? "连接新的 Foundry Project" : "新建区域 Runtime（填写 URL 与 API Key）" : selectedRuntime ? selectedChoice?.brandKey === "microsoft_foundry" ? foundryRuntimeChoiceLabel(selectedRuntime) : runtimeChoiceLabel(selectedRuntime) : "选择运行时"}</SelectValue>
-                </SelectTrigger>
-                <SelectContent align="start" alignItemWithTrigger={false}>
-                  <SelectItem value={NEW_RUNTIME}>{selectedChoice?.brandKey === "microsoft_foundry" ? "连接新的 Foundry Project" : "新建区域 Runtime（填写 URL 与 API Key）"}</SelectItem>
-                  {providerRuntimes.map((runtime) => <SelectItem key={runtime.id} value={runtime.id}>{selectedChoice?.brandKey === "microsoft_foundry" ? foundryRuntimeChoiceLabel(runtime) : runtimeChoiceLabel(runtime)}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>}
-
-          {creatingBedrockConnection && <div className="simple-model-section simple-connection-section">
-            <div className="simple-section-title"><b>Bedrock 模型</b></div>
-            <label className="registry-field"><span className="registry-field-label">Bedrock Runtime URL</span><Input type="url" value={bedrockRuntimeUrl} onChange={(event) => setBedrockRuntimeUrl(event.target.value)} disabled={Boolean(status)} placeholder="https://bedrock-runtime.ap-southeast-2.amazonaws.com" /></label>
-            <label className="registry-field"><span className="registry-field-label">Model / Inference Profile ID</span><Input value={bedrockModelId} onChange={(event) => setBedrockModelId(event.target.value)} disabled={Boolean(status)} placeholder="au.anthropic.claude-sonnet-4-6" /></label>
-            <div className="registry-field"><span className="registry-field-label-row"><label className="registry-field-label" htmlFor="bedrock-api-key">Bedrock API Key</label><FieldHelp>短期 API Key 最长有效 12 小时，当前发布不会自动续期。</FieldHelp></span><div className="login-password"><Input id="bedrock-api-key" type={keyRevealed ? "text" : "password"} autoComplete="off" value={bedrockApiKey} onChange={(event) => setBedrockApiKey(event.target.value)} disabled={Boolean(status)} /><button type="button" className="login-reveal" onClick={() => setKeyRevealed((value) => !value)} aria-label={keyRevealed ? "隐藏 API Key" : "显示 API Key"} aria-pressed={keyRevealed} disabled={Boolean(status)}>{keyRevealed ? <EyeOff size={15} /> : <Eye size={15} />}</button></div></div>
-            {deriveBedrockModel(bedrockModelId) && <div className="simple-bedrock-preview"><ProviderBrandLogo brand="bedrock" size={17} /><span><b>{deriveBedrockModel(bedrockModelId)?.displayName}</b><small>{deriveBedrockModel(bedrockModelId)?.modelKey}</small></span></div>}
-          </div>}
-
-          {creatingFoundryConnection && <div className="simple-model-section simple-connection-section">
-            <div className="simple-section-title"><b>连接新的 Foundry Project</b></div>
-            <label className="registry-field"><span className="registry-field-label">Project Endpoint</span><Input type="url" value={foundryProjectEndpoint} onChange={(event) => setFoundryProjectEndpoint(event.target.value)} disabled={Boolean(status)} placeholder="https://contoso-ai.services.ai.azure.com/api/projects/finops" /></label>
-            <div className="registry-field">
-              <span className="registry-field-label">认证方式</span>
-              <FoundryAuthModeSwitch value={foundryAuthMode} disabled={Boolean(status)} onChange={chooseFoundryAuthMode} />
-            </div>
-            {foundryAuthMode === "api_key" && <>
-              <label className="registry-field"><span className="registry-field-label">Inference Endpoint</span><Input type="url" value={foundryInferenceEndpoint} onChange={(event) => setFoundryInferenceEndpoint(event.target.value)} disabled={Boolean(status)} placeholder="https://contoso-ai.openai.azure.com/openai/v1" /></label>
-              <div className="registry-field"><span className="registry-field-label-row"><label className="registry-field-label" htmlFor="foundry-api-key">Foundry API Key</label><FieldHelp>Key 仅用于创建 APIM Secret Named Value，不会写入模型注册表或发布详情。</FieldHelp></span><div className="login-password"><Input id="foundry-api-key" type={keyRevealed ? "text" : "password"} autoComplete="off" value={foundryApiKey} onChange={(event) => setFoundryApiKey(event.target.value)} disabled={Boolean(status)} /><button type="button" className="login-reveal" onClick={() => setKeyRevealed((value) => !value)} aria-label={keyRevealed ? "隐藏 API Key" : "显示 API Key"} aria-pressed={keyRevealed} disabled={Boolean(status)}>{keyRevealed ? <EyeOff size={15} /> : <Eye size={15} />}</button></div></div>
-            </>}
-            <label className="registry-field"><span className="registry-field-label">Deployment Name</span><Input value={foundryDeployment} onChange={(event) => setFoundryDeployment(event.target.value)} disabled={Boolean(status)} placeholder="gpt-5-mini" /></label>
-          </div>}
-
-          {!creatingRuntime && selectedChoice?.brandKey === "microsoft_foundry" && <div className="simple-model-section simple-connection-section">
-            <div className="simple-section-title"><b>复用已有的 Foundry Project</b><FieldHelp>Project Endpoint、认证方式与 APIM 路由来自已有连接；这里只选择该 Project 中已经存在的 Deployment。</FieldHelp></div>
-            <label className="registry-field"><span className="registry-field-label">Deployment Name</span><Input value={foundryDeployment} onChange={(event) => setFoundryDeployment(event.target.value)} disabled={Boolean(status)} placeholder="gpt-5.4" /></label>
-            {selectedRuntimeNeedsCredential && <div className="registry-field"><span className="registry-field-label-row"><label className="registry-field-label" htmlFor="existing-foundry-api-key">一次性 API Key</label><FieldHelp>仅首次发布需要。Key 写入 APIM Secret Named Value 后即从 Turnstile 临时记录中清除；后续模型无需重复提供。</FieldHelp></span><div className="login-password"><Input id="existing-foundry-api-key" type={keyRevealed ? "text" : "password"} autoComplete="off" value={foundryApiKey} onChange={(event) => setFoundryApiKey(event.target.value)} disabled={Boolean(status)} /><button type="button" className="login-reveal" onClick={() => setKeyRevealed((value) => !value)} aria-label={keyRevealed ? "隐藏 API Key" : "显示 API Key"} aria-pressed={keyRevealed} disabled={Boolean(status)}>{keyRevealed ? <EyeOff size={15} /> : <Eye size={15} />}</button></div></div>}
-          </div>}
-
-          {selectedRuntimeNeedsCredential && selectedChoice?.brandKey !== "microsoft_foundry" && <div className="simple-model-section simple-connection-section">
-            <div className="registry-field"><span className="registry-field-label-row"><label className="registry-field-label" htmlFor="existing-provider-api-key">一次性 API Key</label><FieldHelp>仅首次发布需要。Key 写入 APIM Secret Named Value 后即从 Turnstile 临时记录中清除；后续模型无需重复提供。</FieldHelp></span><div className="login-password"><Input id="existing-provider-api-key" type={keyRevealed ? "text" : "password"} autoComplete="off" value={bedrockApiKey} onChange={(event) => setBedrockApiKey(event.target.value)} disabled={Boolean(status)} /><button type="button" className="login-reveal" onClick={() => setKeyRevealed((value) => !value)} aria-label={keyRevealed ? "隐藏 API Key" : "显示 API Key"} aria-pressed={keyRevealed} disabled={Boolean(status)}>{keyRevealed ? <EyeOff size={15} /> : <Eye size={15} />}</button></div></div>
-          </div>}
-
-          {!creatingBedrockConnection && selectedChoice?.brandKey !== "microsoft_foundry" && <div className="simple-model-section">
-            <div className="simple-section-title"><b>模型</b></div>
-            <div className="form-grid"><label className="registry-field"><span className="registry-field-label">模型 Key</span><Input value={modelKey} onChange={(event) => setModelKey(event.target.value)} disabled={Boolean(status)} placeholder="claude-sonnet-4-6-bedrock" /></label><label className="registry-field"><span className="registry-field-label">显示名称</span><Input value={displayName} onChange={(event) => setDisplayName(event.target.value)} disabled={Boolean(status)} placeholder="Claude Sonnet 4.6" /></label></div>
-            <label className="registry-field"><span className="registry-field-label">上游模型 ID</span><Input value={upstreamModelId} onChange={(event) => setUpstreamModelId(event.target.value)} disabled={Boolean(status)} placeholder="au.anthropic.claude-sonnet-4-6" /></label>
-          </div>}
-
-          {!creatingBedrockConnection && <details className="simple-pricing">
-            <summary>价格与上下文</summary>
-            <div className="simple-pricing-fields"><div className="form-grid three"><label className="registry-field"><span className="registry-field-label">上下文窗口</span><Input type="number" min="1" value={contextWindow} onChange={(event) => setContextWindow(event.target.value)} disabled={Boolean(status)} /></label><label className="registry-field"><span className="registry-field-label">输入 $/M</span><Input type="number" min="0" step="0.000001" value={inputPrice} onChange={(event) => setInputPrice(event.target.value)} disabled={Boolean(status)} /></label><label className="registry-field"><span className="registry-field-label">输出 $/M</span><Input type="number" min="0" step="0.000001" value={outputPrice} onChange={(event) => setOutputPrice(event.target.value)} disabled={Boolean(status)} /></label></div><div className="form-grid"><label className="registry-field"><span className="registry-field-label">缓存读取 $/M</span><Input type="number" min="0" step="0.000001" value={cacheReadPrice} onChange={(event) => setCacheReadPrice(event.target.value)} disabled={Boolean(status)} /></label><label className="registry-field"><span className="registry-field-label">缓存写入 $/M</span><Input type="number" min="0" step="0.000001" value={cacheWritePrice} onChange={(event) => setCacheWritePrice(event.target.value)} disabled={Boolean(status)} /></label></div></div>
-          </details>}
-
-          <div className="simple-model-section simple-target-section">
-            <div className="simple-section-title"><b>发布目标</b></div>
-            <div className={`simple-model-grid ${canCreateRuntime ? "single" : ""}`}>
+            <div className="simple-model-grid single">
               <div className="registry-field">
                 <span className="registry-field-label">APIM 网关</span>
-                <Select value={gatewayId} onValueChange={chooseGateway} disabled={Boolean(status)}>
+                <Select value={selectedGateway?.id ?? ""} onValueChange={chooseGateway} disabled={publishing || apimGateways.length === 0}>
                   <SelectTrigger className="registry-select-trigger" aria-label="APIM 网关">
                     <SelectValue>{selectedGateway ? <span className="registry-option"><GatewayBrandLogo brand={gatewayBrandFromIdentity(`${selectedGateway.name} ${selectedGateway.implementation}`)} size={15} /><span>{selectedGateway.name}</span></span> : "选择 APIM 网关"}</SelectValue>
                   </SelectTrigger>
@@ -751,32 +464,85 @@ export function ModelPublicationDialog({
                   </SelectContent>
                 </Select>
               </div>
-              {!canCreateRuntime && <div className="registry-field">
-                <span className="registry-field-label">运行时</span>
-                <Select value={runtimeId} onValueChange={(value) => value && setRuntimeId(value)} disabled={Boolean(status)}>
-                  <SelectTrigger className="registry-select-trigger" aria-label="运行时">
-                    <SelectValue>{creatingRuntime ? "新建区域 Runtime（填写 URL 与 API Key）" : selectedRuntime ? runtimeChoiceLabel(selectedRuntime) : "选择运行时"}</SelectValue>
+              <div className="registry-field">
+                <span className="registry-field-label">已有连接</span>
+                <Select value={selectedRuntime?.id ?? ""} onValueChange={chooseRuntime} disabled={publishing || apimRuntimes.length === 0}>
+                  <SelectTrigger className="registry-select-trigger" aria-label="已有连接">
+                    <SelectValue>{selectedRuntime ? <span className="registry-option">
+                      <ProviderBrandLogo brand={providerBrandFromMetadata(selectedRuntime.brand_key, selectedRuntime.provider_name)} size={15} />
+                      <span data-no-localize>{runtimeChoiceLabel(selectedRuntime)}</span>
+                    </span> : "选择已有连接"}</SelectValue>
                   </SelectTrigger>
                   <SelectContent align="start" alignItemWithTrigger={false}>
-                    {providerRuntimes.map((runtime) => <SelectItem key={runtime.id} value={runtime.id}>{runtimeChoiceLabel(runtime)}</SelectItem>)}
-                    {canCreateRuntime && <SelectItem value={NEW_RUNTIME}>新建区域 Runtime（填写 URL 与 API Key）</SelectItem>}
+                    {apimRuntimes.map((runtime) => <SelectItem key={runtime.id} value={runtime.id}>
+                      <span className="registry-option">
+                        <ProviderBrandLogo brand={providerBrandFromMetadata(runtime.brand_key, runtime.provider_name)} size={15} />
+                        <span data-no-localize>{runtimeChoiceLabel(runtime)}</span>
+                      </span>
+                    </SelectItem>)}
                   </SelectContent>
                 </Select>
-              </div>}
+              </div>
             </div>
-          </div>
+            {!selectedGateway && <p className="publication-connection-empty" role="status">没有可用的 Azure API Management 网关。</p>}
+            {selectedGateway && apimRuntimes.length === 0 && <p className="publication-connection-empty" role="status">当前网关没有可用连接。</p>}
+            {selectedRuntime && <dl className="publication-connection-summary" aria-label="连接信息">
+              <div><dt>提供方</dt><dd data-no-localize>{selectedProvider?.name ?? selectedRuntime.provider_name}</dd></div>
+              <div><dt>认证方式</dt><dd>{connectionAuthLabel}</dd></div>
+              {selectedVendor && <div><dt>API 服务商</dt><dd className="registry-option"><ModelVendorLogo value={selectedVendor} size={15} /><span>{modelVendorLabel(selectedVendor)}</span></dd></div>}
+              {connectionEndpoint && <div className="publication-connection-endpoint"><dt>Endpoint</dt><dd data-no-localize><code>{connectionEndpoint}</code></dd></div>}
+            </dl>}
+          </section>
+
+          {selectedRuntime && <>
+            <section className="simple-model-section simple-connection-section" aria-label="模型">
+              <div className="simple-section-title"><b>模型</b></div>
+              {foundry ? <label className="registry-field">
+                <span className="registry-field-label">Deployment Name</span>
+                <Input value={foundryDeployment} onChange={(event) => setFoundryDeployment(event.target.value)} disabled={publishing} />
+              </label> : openaiCompatible ? <>
+                <label className="registry-field"><span className="registry-field-label">上游模型 ID</span>
+                  <Input value={upstreamModelId} onChange={(event) => setUpstreamModelId(event.target.value)} disabled={publishing} maxLength={500} />
+                </label>
+                {upstreamModelId.trim() && <dl className="publication-connection-summary">
+                  <div><dt>模型别名</dt><dd data-no-localize><code>{effectiveModelKey || "-"}</code></dd></div>
+                  <div><dt>显示名称</dt><dd data-no-localize>{effectiveDisplayName || "-"}</dd></div>
+                </dl>}
+              </> : <>
+                <div className="form-grid">
+                  <label className="registry-field"><span className="registry-field-label">模型 Key</span><Input value={modelKey} onChange={(event) => setModelKey(event.target.value)} disabled={publishing} /></label>
+                  <label className="registry-field"><span className="registry-field-label">显示名称</span><Input value={displayName} onChange={(event) => setDisplayName(event.target.value)} disabled={publishing} /></label>
+                </div>
+                <label className="registry-field"><span className="registry-field-label">上游模型 ID</span><Input value={upstreamModelId} onChange={(event) => setUpstreamModelId(event.target.value)} disabled={publishing} /></label>
+              </>}
+              {selectedRuntimeNeedsCredential && <div className="registry-field">
+                <span className="registry-field-label-row">
+                  <label className="registry-field-label" htmlFor="existing-provider-api-key">一次性 API Key</label>
+                  <FieldHelp>仅首次发布需要。Key 写入 APIM Secret Named Value 后即从 Turnstile 临时记录中清除；后续模型无需重复提供。</FieldHelp>
+                </span>
+                <div className="login-password">
+                  <Input id="existing-provider-api-key" type={keyRevealed ? "text" : "password"} autoComplete="off" value={providerApiKey} onChange={(event) => setProviderApiKey(event.target.value)} disabled={publishing} />
+                  <button type="button" className="login-reveal" onClick={() => setKeyRevealed((value) => !value)} aria-label={keyRevealed ? "隐藏 API Key" : "显示 API Key"} aria-pressed={keyRevealed} disabled={publishing}>{keyRevealed ? <EyeOff size={15} /> : <Eye size={15} />}</button>
+                </div>
+              </div>}
+            </section>
+            <details className="simple-pricing">
+              <summary>价格与上下文</summary>
+              <div className="simple-pricing-fields"><div className="form-grid three"><label className="registry-field"><span className="registry-field-label">上下文窗口</span><Input type="number" min="1" value={contextWindow} onChange={(event) => setContextWindow(event.target.value)} disabled={publishing} /></label><label className="registry-field"><span className="registry-field-label">输入 $/M</span><Input type="number" min="0" step="0.000001" value={inputPrice} onChange={(event) => setInputPrice(event.target.value)} disabled={publishing} /></label><label className="registry-field"><span className="registry-field-label">输出 $/M</span><Input type="number" min="0" step="0.000001" value={outputPrice} onChange={(event) => setOutputPrice(event.target.value)} disabled={publishing} /></label></div><div className="form-grid"><label className="registry-field"><span className="registry-field-label">缓存读取 $/M</span><Input type="number" min="0" step="0.000001" value={cacheReadPrice} onChange={(event) => setCacheReadPrice(event.target.value)} disabled={publishing} /></label><label className="registry-field"><span className="registry-field-label">缓存写入 $/M</span><Input type="number" min="0" step="0.000001" value={cacheWritePrice} onChange={(event) => setCacheWritePrice(event.target.value)} disabled={publishing} /></label></div></div>
+            </details>
+          </>}
           </>}
 
-          {(formError || publishError) && <div className="registry-error">{formError ?? publishError}</div>}
+          {(formError || publishError) && <div className="registry-error" role="alert">{formError ?? publishError}</div>}
         </div>
 
         <DialogFooter className="registry-editor-footer">
-          <Button type="button" variant="outline" onClick={onClose}>{publicationId ? "关闭" : "取消"}</Button>
-          {failed && <Button type="button" onClick={() => void retry()} disabled={publishing || Boolean(publication.data?.retry_requires_credential && !bedrockApiKey.trim())}><Rocket size={14} />重新发布</Button>}
+          <Button type="button" variant="outline" onClick={close} disabled={publishing}>{publicationId ? "关闭" : "取消"}</Button>
+          {failed && <Button type="button" onClick={() => void retry()} disabled={publishing || Boolean(publication.data?.retry_requires_credential && !providerApiKey.trim())}><Rocket size={14} />重新发布</Button>}
           {awaitingAuthorization && <Button type="button" onClick={() => void resumeAuthorization()} disabled={publishing}><ShieldCheck size={14} />我已授权，重新验证</Button>}
-          {!publicationId && <Button type="button" onClick={() => void submit()} disabled={publishing || requiredCredentialMissing}><Rocket size={14} />{publishing ? "正在提交" : "发布模型"}</Button>}
+          {!publicationId && <Button type="submit" disabled={publishing || !selectedRuntime || !selectedProvider || requiredCredentialMissing}><Rocket size={14} />{publishing ? "正在提交" : "发布模型"}</Button>}
         </DialogFooter>
-      </div>
+      </form>
     </DialogContent>
   </Dialog>
 }

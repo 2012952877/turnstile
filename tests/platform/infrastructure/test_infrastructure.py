@@ -313,6 +313,45 @@ def test_control_plane_features_default_to_disabled() -> None:
     assert "effectiveReleaseWorkerEnabled = releaseWorkerEnabled" in CONTROL_PLANE
 
 
+def test_application_creation_is_gated_and_uses_the_exact_platform_ledger() -> None:
+    assert "param gatewayApplicationProvisioningEnabled bool = false" in MAIN
+    assert (
+        "gatewayApplicationProvisioningEnabled: provisionControlPlane "
+        "&& gatewayApplicationProvisioningEnabled" in MAIN
+    )
+    assert "ledgerStorageName: dataPlane.outputs.ledgerStorageName" in MAIN
+    assert "ledgerTableEndpoint: dataPlane.outputs.ledgerTableEndpoint" in MAIN
+    assert MAIN.count("apimProductId: apimProductId") == 2
+    assert "value: string(applicationProvisioningEnabled)" in CONTROL_PLANE
+    release = (ROOT / "infra/runtime-release.bicep").read_text(encoding="utf-8")
+    assert "union(currentApiSettings" in release
+    assert "union(currentControlPlaneSettings" in release
+    assert release.count("GATEWAY_RELEASE_WORKER_ENABLED: string(releaseWorkerEnabled)") == 2
+    role = CONTROL_PLANE.split("resource applicationLedgerContributor", 1)[1].split(
+        "resource functionDatabaseSecretReader", 1
+    )[0]
+    assert "if (applicationProvisioningEnabled)" in role
+    assert "scope: ledgerTable" in role
+    assert "principalId: functionApp.identity.principalId" in role
+    assert "0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3" in role
+    for template in (DATA_PLANE, CONTROL_PLANE):
+        for setting in (
+            "APIM_PRODUCT_ID", "LEDGER_TABLE_ENDPOINT", "LEDGER_TABLE_NAME",
+            "GATEWAY_APPLICATION_PROVISIONING_ENABLED",
+            "GATEWAY_APPLICATION_DEFAULT_MONTHLY_TOKEN_LIMIT",
+            "GATEWAY_APPLICATION_DEFAULT_TOKENS_PER_MINUTE",
+        ):
+            assert f"name: '{setting}'" in template
+    for action in (
+        "Microsoft.ApiManagement/service/subscriptions/read",
+        "Microsoft.ApiManagement/service/subscriptions/write",
+        "Microsoft.ApiManagement/service/products/apis/read",
+        "Microsoft.ApiManagement/service/apis/policies/read",
+    ):
+        assert action in CONTROL_PLANE_APIM_RBAC
+    assert "listSecrets" not in CONTROL_PLANE_APIM_RBAC
+
+
 def test_control_plane_uses_its_own_flex_plan_and_the_platform_vnet() -> None:
     assert "appServicePlanName:" not in MAIN.split("module controlPlane", 1)[1].split(
         "module controlPlaneApimRbac", 1

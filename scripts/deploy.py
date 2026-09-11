@@ -1000,6 +1000,12 @@ def observer_parameters(
     apim_resource_group_name = platform_outputs.get("apimResourceGroupName")
     if not isinstance(apim_resource_group_name, str) or not apim_resource_group_name:
         apim_resource_group_name = _output_string(platform_outputs, "resourceGroupName")
+    if existing_observer is None:
+        acr_resource_group_name = _output_string(platform_outputs, "resourceGroupName")
+    elif "acrResourceGroupName" in existing_observer:
+        acr_resource_group_name = _output_string(existing_observer, "acrResourceGroupName")
+    else:
+        acr_resource_group_name = apim_resource_group_name
     adapter_key_named_value_name = platform_outputs.get(
         "observerAdapterKeyNamedValueName"
     )
@@ -1015,6 +1021,7 @@ def observer_parameters(
             "appServicePlanWorkerCount": inputs.observer_plan_worker_count,
             "webAppName": web_app_name,
             "acrName": acr_name,
+            "acrResourceGroupName": acr_resource_group_name,
             "provisionAcr": existing_observer is None,
             "imageTag": version,
             "eventHubNamespaceName": _output_string(

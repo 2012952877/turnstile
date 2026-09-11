@@ -96,7 +96,10 @@ def test_applications_use_only_typed_read_inventory_and_async_sync() -> None:
     assert 'className="application-card application-usage-activity-card"' in activity_card
     assert 'title="后端尚未发布编辑能力"' in page
     assert "primary_key" in types
-    assert "navigator.clipboard.writeText" in page
+    creation = (
+        FRONTEND_SOURCE / "components/applications/application-create-dialog.tsx"
+    ).read_text(encoding="utf-8")
+    assert "navigator.clipboard.writeText(primaryKey.current)" in creation
     assert "secondary_key" not in page.lower()
     assert "listsecrets" not in page.lower()
     assert "ApplicationSubscriptionCard" in page

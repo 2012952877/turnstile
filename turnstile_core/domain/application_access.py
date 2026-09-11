@@ -254,6 +254,11 @@ class GatewayApplicationDetail(GatewayApplicationSummary):
     key_management_unavailable_reason: str | None = None
 
 
+class GatewayApplicationProvisioningDefaults(StrictModel):
+    monthly_token_limit: int = Field(gt=0)
+    tokens_per_minute: int = Field(gt=0)
+
+
 class GatewayApplicationList(StrictModel):
     items: list[GatewayApplicationSummary]
     period_start: date
@@ -266,6 +271,7 @@ class GatewayApplicationList(StrictModel):
     sync_unavailable_reason: str | None = None
     provisioning_available: bool
     provisioning_unavailable_reason: str | None = None
+    provisioning_defaults: GatewayApplicationProvisioningDefaults | None = None
     key_management_available: bool
     key_management_unavailable_reason: str | None = None
 
@@ -298,6 +304,10 @@ class GatewayApplicationSubscriptionCreate(StrictModel):
 
 
 class GatewayApplicationSubscriptionProvisionSpec(StrictModel):
+    provisioning_version: Literal[1, 2] = 1
+    gateway_profile_id: UUID | None = None
+    initial_monthly_token_limit: int | None = Field(default=None, gt=0)
+    initial_tokens_per_minute: int | None = Field(default=None, gt=0)
     application_id: UUID
     application_subscription_id: UUID
     apim_subscription_id: str = Field(
@@ -315,6 +325,16 @@ class GatewayApplicationSubscriptionProvisionSpec(StrictModel):
     application_type: Literal["service", "agent"] = "service"
     scope_type: Literal["product"] = "product"
     scope_id: str = Field(min_length=1, max_length=255)
+
+    @model_validator(mode="after")
+    def require_staged_identity_and_limits(self) -> GatewayApplicationSubscriptionProvisionSpec:
+        if self.provisioning_version == 2 and any(value is None for value in (
+            self.gateway_profile_id,
+            self.initial_monthly_token_limit,
+            self.initial_tokens_per_minute,
+        )):
+            raise ValueError("Staged provisioning requires a gateway and snapshotted budget limits")
+        return self
 
 
 class GatewayApplicationDiscoveryItem(StrictModel):

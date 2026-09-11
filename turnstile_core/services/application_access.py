@@ -17,6 +17,7 @@ from ..domain.application_access import (
     GatewayApplicationDiscovery,
     GatewayApplicationList,
     GatewayApplicationModelAccessUpdate,
+    GatewayApplicationProvisioningDefaults,
     GatewayApplicationSubscription,
     GatewayApplicationSubscriptionKeyRotation,
     GatewayApplicationSubscriptionKeySecret,
@@ -129,8 +130,8 @@ class ApplicationAccessService:
             spec.model_dump(mode="python"),
             actor,
             period_start,
-            self._default_token_limit,
-            self._default_tokens_per_minute,
+            spec.initial_monthly_token_limit or self._default_token_limit,
+            spec.initial_tokens_per_minute or self._default_tokens_per_minute,
         )
 
     def applications(self) -> GatewayApplicationList:
@@ -150,6 +151,10 @@ class ApplicationAccessService:
                 None if self._sync_available else self._sync_unavailable_reason
             ),
             provisioning_available=self._provisioning_available,
+            provisioning_defaults=GatewayApplicationProvisioningDefaults(
+                monthly_token_limit=self._default_token_limit,
+                tokens_per_minute=self._default_tokens_per_minute,
+            ),
             provisioning_unavailable_reason=(
                 None if self._provisioning_available else self._provisioning_unavailable_reason
             ),

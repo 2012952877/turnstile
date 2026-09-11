@@ -4,6 +4,7 @@ import hashlib
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from pydantic import Field, HttpUrl, SecretStr, model_validator
@@ -13,6 +14,24 @@ from .models import StrictModel
 ModelCapability = Literal["chat", "tools", "vision", "reasoning", "streaming", "embeddings"]
 FOUNDRY_INFERENCE_RESOURCE = "https://ai.azure.com"
 FOUNDRY_INFERENCE_ROLE_ID = "a97b65f3-24c7-4388-baec-2e87135dc908"
+
+
+class ModelVendorKey(StrEnum):
+    GENERIC = "generic"
+    KIMI = "kimi"
+    DEEPSEEK = "deepseek"
+    OPENAI = "openai"
+    ANTHROPIC = "anthropic"
+
+
+def model_vendor_label(value: ModelVendorKey) -> str:
+    return {
+        ModelVendorKey.GENERIC: "Other provider",
+        ModelVendorKey.KIMI: "Kimi",
+        ModelVendorKey.DEEPSEEK: "DeepSeek",
+        ModelVendorKey.OPENAI: "OpenAI",
+        ModelVendorKey.ANTHROPIC: "Anthropic",
+    }[value]
 
 
 def default_capabilities() -> list[ModelCapability]:
@@ -27,6 +46,42 @@ def foundry_runtime_name(account: str, project: str) -> str:
     if len(identity) > maximum_identity_length:
         digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:8]
         identity = f"{identity[: maximum_identity_length - len(digest) - 1]}-{digest}"
+    return f"{prefix}{identity}{suffix}"
+
+
+def openai_compatible_endpoint_values(value: str) -> tuple[str, str, str]:
+    endpoint = urlsplit(value.strip())
+    if (
+        endpoint.scheme != "https"
+        or not endpoint.hostname
+        or endpoint.username is not None
+        or endpoint.password is not None
+        or endpoint.query
+        or endpoint.fragment
+    ):
+        raise ValueError(
+            "The OpenAI-compatible Base URL must be HTTPS without credentials, query, or fragment"
+        )
+    path = endpoint.path.rstrip("/")
+    suffix = "/chat/completions"
+    if path.casefold().endswith(suffix):
+        path = path[:-len(suffix)].rstrip("/")
+    origin = f"{endpoint.scheme}://{endpoint.netloc}"
+    return f"{origin}{path}", origin, f"{path}{suffix}"
+
+
+def openai_compatible_runtime_name(
+    base_url: str,
+    model_vendor: ModelVendorKey = ModelVendorKey.GENERIC,
+) -> str:
+    endpoint = urlsplit(base_url)
+    prefix = f"{model_vendor_label(model_vendor)} "
+    suffix = " via APIM"
+    identity = f"{endpoint.netloc}{endpoint.path}"
+    maximum = 160 - len(prefix) - len(suffix)
+    if len(identity) > maximum:
+        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:8]
+        identity = f"{identity[:maximum - len(digest) - 1]}-{digest}"
     return f"{prefix}{identity}{suffix}"
 
 
@@ -139,7 +194,7 @@ class RuntimeWrite(StrictModel):
 
 class ProviderTarget(StrictModel):
     existing_id: UUID | None = None
-    template: Literal["amazon_bedrock", "microsoft_foundry"] | None = None
+    template: Literal["amazon_bedrock", "microsoft_foundry", "openai_compatible"] | None = None
 
     @model_validator(mode="after")
     def require_existing_or_new_provider(self) -> ProviderTarget:
@@ -155,17 +210,30 @@ class ModelConnectionCreate(StrictModel):
     foundry_project_endpoint: HttpUrl | None = None
     foundry_inference_endpoint: HttpUrl | None = None
     bedrock_runtime_url: HttpUrl | None = None
+    openai_base_url: HttpUrl | None = None
+    model_vendor: ModelVendorKey | None = None
 
     @model_validator(mode="after")
     def require_one_connection_shape(self) -> ModelConnectionCreate:
         has_foundry = self.foundry_project_endpoint is not None
         has_bedrock = self.bedrock_runtime_url is not None
-        if has_foundry == has_bedrock:
-            raise ValueError("select one Foundry or Bedrock connection")
+        has_openai = self.openai_base_url is not None
+        if sum((has_foundry, has_bedrock, has_openai)) != 1:
+            raise ValueError("select one Foundry, Bedrock, or OpenAI-compatible connection")
         if has_bedrock:
-            if self.auth_mode is not None or self.foundry_inference_endpoint is not None:
+            if (
+                self.auth_mode is not None
+                or self.foundry_inference_endpoint is not None
+                or self.model_vendor is not None
+            ):
                 raise ValueError("a Bedrock connection accepts only its Runtime URL")
             return self
+        if has_openai:
+            if self.auth_mode is not None or self.foundry_inference_endpoint is not None:
+                raise ValueError("an OpenAI-compatible connection accepts only its Base URL")
+            return self
+        if self.model_vendor is not None:
+            raise ValueError("model_vendor belongs only to an OpenAI-compatible connection")
         if self.auth_mode is None:
             raise ValueError("a Foundry connection requires an authentication mode")
         if self.auth_mode is ConnectionAuthMode.MANAGED_IDENTITY:
@@ -239,6 +307,7 @@ class RegistryResponse(StrictModel):
     gateways: list[GatewayProfile]
     runtimes: list[Runtime]
     models: list[ManagedModel]
+    backend_pool_session_affinity_supported: bool = False
 
 
 class RuntimeHealth(StrictModel):

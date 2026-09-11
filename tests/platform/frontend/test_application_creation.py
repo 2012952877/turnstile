@@ -26,6 +26,15 @@ def test_application_creation_rules() -> None:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_creation_and_model_editor_short_labels_have_exact_translations() -> None:
+    for language in ("en", "ja", "ko"):
+        catalog = (FRONTEND_SOURCE / f"locales/{language}/phrases-core.ts").read_text(
+            encoding="utf-8"
+        )
+        for phrase in ("输出单价", "订阅 ID", "重新检查"):
+            assert f'"{phrase}":' in catalog
+
+
 def test_creation_credentials_never_enter_dom_or_query_cache() -> None:
     dialog = (FRONTEND_SOURCE / "components/applications/application-create-dialog.tsx").read_text(
         encoding="utf-8"

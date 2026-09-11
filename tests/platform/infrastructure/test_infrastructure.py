@@ -293,6 +293,27 @@ def test_data_plane_creates_an_entra_only_budget_ledger() -> None:
     assert "output ledgerTableEndpoint string = ledgerTableEndpoint" in DATA_PLANE
 
 
+def test_ledger_has_its_own_table_private_endpoint_without_opening_the_firewall() -> None:
+    ledger = DATA_PLANE.split("resource ledgerStorage ", 1)[1].split(
+        "resource ledgerTableService ", 1
+    )[0]
+    assert "defaultAction: 'Deny'" in ledger
+    assert "ipRules: []" in ledger
+    assert "allowSharedKeyAccess: false" in ledger
+    endpoint = DATA_PLANE.split("resource ledgerTablePrivateEndpoint ", 1)[1].split(
+        "resource ledgerTablePrivateDnsZoneGroup ", 1
+    )[0]
+    assert "name: 'pe-${ledgerStorageName}-table'" in endpoint
+    assert "privateLinkServiceId: ledgerStorage.id" in endpoint
+    assert "id: privateEndpointSubnet.id" in endpoint
+    assert "'table'" in endpoint
+    dns = DATA_PLANE.split("resource ledgerTablePrivateDnsZoneGroup ", 1)[1].split(
+        "module keyVaultPrivateEndpoint ", 1
+    )[0]
+    assert "parent: ledgerTablePrivateEndpoint" in dns
+    assert "privateDnsZoneId: tablePrivateDnsZone.id" in dns
+
+
 def test_ledger_and_telemetry_roles_are_deterministic_and_scoped() -> None:
     assert "resource telemetryLedgerContributor" in DATA_PLANE
     assert "resource apimLedgerContributor" in DATA_PLANE

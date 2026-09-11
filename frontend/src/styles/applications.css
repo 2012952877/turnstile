@@ -197,12 +197,14 @@
 .application-budget-progress { margin-top: 9px; }
 .application-budget-progress [data-slot="progress-track"] { width: 100%; height: 6px; overflow: hidden; border-radius: 3px; background: var(--muted); }
 .application-budget-progress [data-slot="progress-indicator"] { height: 100%; border-radius: inherit; background: var(--brand); transition: width 160ms ease; }
-.application-budget-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 14px; }
+.application-budget-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); row-gap: 12px; margin-top: 14px; }
 .application-budget-stats > div { min-width: 0; display: grid; gap: 3px; border-right: 1px solid var(--border); padding: 0 12px; }
-.application-budget-stats > div:first-child { padding-left: 0; }
-.application-budget-stats > div:last-child { border-right: 0; padding-right: 0; }
+.application-budget-stats > div:nth-child(4n + 1) { padding-left: 0; }
+.application-budget-stats > div:nth-child(4n) { border-right: 0; padding-right: 0; }
 .application-budget-stats span { color: var(--muted-foreground); font-size: 10px; line-height: 14px; }
 .application-budget-stats b { overflow: hidden; font: 12px/18px "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.application-ledger-snapshot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; margin-top: 12px; color: var(--muted-foreground); font-size: 10px; line-height: 16px; }
+.application-ledger-snapshot time { min-width: 0; overflow-wrap: anywhere; }
 .application-card-empty { min-height: 72px; display: flex; align-items: center; justify-content: center; gap: 7px; padding: 14px 16px; color: var(--muted-foreground); font-size: 12px; }
 .application-card-empty.warning { color: var(--warning); }
 .application-user-list { display: grid; }
@@ -396,8 +398,8 @@
   .application-metric:nth-last-child(-n+2) { border-bottom: 0; }
   .application-budget-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 12px; }
   .application-budget-stats > div { padding: 0 10px; }
-  .application-budget-stats > div:nth-child(2) { border-right: 0; padding-right: 0; }
-  .application-budget-stats > div:nth-child(3) { padding-left: 0; }
+  .application-budget-stats > div:nth-child(2n) { border-right: 0; padding-right: 0; }
+  .application-budget-stats > div:nth-child(2n + 1) { padding-left: 0; }
   .application-drawer-list.application-list-pane { min-height: 0; max-height: none; flex: 1 1 auto; border: 0; background: var(--background); }
   .application-drawer-list .application-list-row { padding-inline: 28px 16px; }
   .application-detail-head { align-items: flex-start; }

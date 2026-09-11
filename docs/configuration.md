@@ -34,6 +34,18 @@ Set `AZURE_SUBSCRIPTION_ID`, `APIM_RESOURCE_GROUP`, `APIM_SERVICE_NAME`, `APIM_P
 
 `APIM_REGRESSION_MODEL_KEY` has no default. Set it only after onboarding a model that can be used for publication probes.
 
+## Budget ledger recovery
+
+The existing Telemetry timer uses managed identity and the configured `LOG_ANALYTICS_WORKSPACE_ID` and `APIM_API_ID` to recover reservation evidence. It creates no cloud resources and requires the existing Table and Log Analytics data-plane permissions.
+
+| Variable | Purpose |
+| --- | --- |
+| `LEDGER_SYNC_ENABLED` | Enables ledger projection; remains false by default. |
+| `LEDGER_RESERVATION_RECOVERY_LAG_MINUTES` | Wait before querying missing usage; default 10, range 6-120. |
+| `LEDGER_RESERVATION_FINALIZATION_LAG_HOURS` | Grace before conservative upper-bound finalization; default 24, range 1-168, and must exceed the recovery lag. |
+
+When reconciliation is disabled or the workspace is absent, unknown reservations stay pending and charged. Failed, partial or malformed log queries cannot authorize finalization. A successful complete query with no conclusive evidence after the grace period ends Pending status but retains the original reserved amount. Exact evidence can later replace that amount. Neither a timeout nor HTTP query failure releases budget.
+
 ## Frontend proxy
 
 `API_PROXY_TARGET` controls the Vite proxy and defaults to `http://127.0.0.1:8000`. `VITE_API_BASE_URL` is normally unset because production uses same-origin API requests.

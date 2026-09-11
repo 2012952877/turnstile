@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -11,9 +12,11 @@ import pytest
 from turnstile_core.domain.application_access import (
     GatewayApplicationDiscovery,
     GatewayApplicationDiscoveryItem,
+    GatewayApplicationLedgerState,
     UsageApplicationAttribution,
 )
-from turnstile_core.domain.models import TokenUsageRecord
+from turnstile_core.domain.ledger import BudgetReservationFinalization
+from turnstile_core.domain.models import ReservationTerminalEvidence, TokenUsageRecord
 from turnstile_core.integrations.ledger import (
     RESERVATION_PREFIX,
     ROLL_FORWARD_ACTOR,
@@ -34,6 +37,84 @@ PERIOD_START = datetime(2026, 7, 1, tzinfo=UTC)
 USER = "test.user01@contoso.com"
 
 
+def _finalization(**overrides: Any) -> BudgetReservationFinalization:
+    return BudgetReservationFinalization.model_validate(
+        {
+            "scope_type": "person",
+            "scope_id": USER,
+            "period_start": PERIOD_START.date(),
+            "correlation_id": "reservation-attempt",
+            "reservation_created_at": PERIOD_START,
+            "reservation_tokens": 900,
+            "evidence_at": datetime(2026, 7, 2, tzinfo=UTC),
+            "total_tokens": 900,
+            "finalization_kind": "unverified_upper_bound",
+            "source": "reservation_timeout",
+            **overrides,
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"total_tokens": 0},
+        {"input_tokens": 0},
+        {"status_code": 200},
+        {"source": "apim_gateway_log"},
+        {"scope_id": " "},
+        {"period_start": date(2026, 7, 2)},
+        {"evidence_at": datetime(2026, 6, 30, tzinfo=UTC)},
+        {"evidence_at": datetime(2026, 7, 2)},
+    ],
+)
+def test_finalization_contract_rejects_unsafe_upper_bounds(overrides: dict[str, Any]) -> None:
+    with pytest.raises(ValueError):
+        _finalization(**overrides)
+
+
+def test_finalization_contract_distinguishes_evidence_strengths() -> None:
+    assert _finalization().total_tokens == 900
+    assert (
+        _finalization(
+            finalization_kind="exact_usage",
+            source="apim_gateway_llm_log",
+            input_tokens=70,
+            output_tokens=30,
+            total_tokens=100,
+        ).total_tokens
+        == 100
+    )
+    assert (
+        _finalization(
+            finalization_kind="terminal_zero",
+            source="apim_gateway_log",
+            input_tokens=0,
+            output_tokens=0,
+            total_tokens=0,
+            status_code=429,
+        ).total_tokens
+        == 0
+    )
+    with pytest.raises(ValueError):
+        _finalization(
+            finalization_kind="terminal_zero",
+            source="apim_gateway_log",
+            input_tokens=0,
+            output_tokens=0,
+            total_tokens=0,
+            status_code=200,
+        )
+    with pytest.raises(ValueError):
+        _finalization(
+            finalization_kind="exact_usage",
+            source="apim_gateway_llm_log",
+            input_tokens=70,
+            output_tokens=30,
+            total_tokens=0,
+        )
+
+
 class FakeLedgerStore:
     def __init__(self) -> None:
         self.entities: dict[tuple[str, str], dict[str, Any]] = {}
@@ -49,6 +130,7 @@ class FakeLedgerStore:
                 row_key=row_key,
                 correlation_id=row_key.split("|", 2)[2],
                 reserved_tokens=int(entity["Reserved"]),
+                finalization_kind=entity.get("FinalizationKind"),
             )
             for (row_partition, row_key), entity in sorted(self.entities.items())
             if row_partition == partition and row_key.startswith(RESERVATION_PREFIX)
@@ -62,6 +144,27 @@ class FakeLedgerStore:
                 deleted += 1
         return deleted
 
+    def list_pending_partitions(self) -> list[str]:
+        return sorted(
+            {
+                partition
+                for partition, row_key in self.entities
+                if row_key.startswith(RESERVATION_PREFIX)
+            }
+        )
+
+    def mark_upper_bounds(
+        self,
+        partition: str,
+        reservations: Sequence[LedgerReservation],
+    ) -> int:
+        for reservation in reservations:
+            self.entities[(partition, reservation.row_key)]["FinalizationKind"] = (
+                "unverified_upper_bound"
+            )
+            self.operations.append(("mark", partition, reservation.row_key))
+        return len(reservations)
+
 
 class FakeTokenProvider:
     def __init__(self) -> None:
@@ -71,6 +174,91 @@ class FakeTokenProvider:
         assert resource == "https://storage.azure.com/"
         self.calls += 1
         return f"token-{self.calls}"
+
+
+class FakeTerminalLog:
+    def __init__(
+        self, items: Sequence[ReservationTerminalEvidence] = (), fail: bool = False
+    ) -> None:
+        self.items = items
+        self.fail = fail
+
+    def fetch_correlations(
+        self,
+        correlation_ids: Sequence[str],
+        window_start: datetime,
+        window_end: datetime,
+    ) -> Sequence[ReservationTerminalEvidence]:
+        if self.fail:
+            raise RuntimeError("unavailable evidence")
+        return [item for item in self.items if item.correlation_id in correlation_ids]
+
+
+def test_orphan_upper_bound_retains_charge_and_late_usage_replaces_it() -> None:
+    repository = _repository_with_budget()
+    store = FakeLedgerStore()
+    partition = partition_key(USER, "2026-07")
+    row_key = reservation_row_key(PERIOD_START, "correlation-orphan")
+    store.entities[(partition, row_key)] = {"Reserved": 900}
+    service = LedgerSyncService(repository, store, FakeTerminalLog())
+    now = datetime(2026, 7, 3, tzinfo=UTC)
+    first = service.run(now)
+    assert first.person_finalizations_written == 1
+    assert first.reservations_finalized_upper_bound == 1
+    assert store.entities[(partition, row_key)] == {
+        "Reserved": 900,
+        "FinalizationKind": "unverified_upper_bound",
+    }
+    assert store.entities[(partition, "C")] == {"ConfirmedUsed": 0}
+    assert service.run(now).person_finalizations_written == 0
+    repository.write_token_usage(_usage("orphan", PERIOD_START, 120, estimated=False))
+    outcome = service.run(now)
+    assert outcome.upper_bounds_settled == 1
+    assert (partition, row_key) not in store.entities
+    assert store.entities[(partition, "C")] == {"ConfirmedUsed": 120}
+    assert store.operations.index(("upsert", partition, "C")) < store.operations.index(
+        ("mark", partition, row_key)
+    )
+
+
+@pytest.mark.parametrize("terminal_log", [None, FakeTerminalLog(fail=True)])
+def test_unavailable_recovery_never_finalizes_unknown_usage(
+    terminal_log: FakeTerminalLog | None,
+) -> None:
+    store = FakeLedgerStore()
+    partition = partition_key(USER, "2026-07")
+    row_key = reservation_row_key(PERIOD_START, "unknown")
+    store.entities[(partition, row_key)] = {"Reserved": 900}
+    repository = _repository_with_budget()
+    outcome = LedgerSyncService(repository, store, terminal_log).run(
+        datetime(2026, 7, 3, tzinfo=UTC)
+    )
+    assert outcome.person_finalizations_written == 0
+    assert store.entities[(partition, row_key)] == {"Reserved": 900}
+
+
+def test_exact_log_recovery_settles_an_orphan_without_fabricating_a_usage_event() -> None:
+    repository = _repository_with_budget()
+    store = FakeLedgerStore()
+    partition = partition_key(USER, "2026-07")
+    row_key = reservation_row_key(PERIOD_START, "orphan")
+    store.entities[(partition, row_key)] = {"Reserved": 900}
+    log = FakeTerminalLog(
+        [
+            ReservationTerminalEvidence(
+                correlation_id="orphan",
+                observed_at=PERIOD_START,
+                status_code=200,
+                prompt_tokens=70,
+                completion_tokens=30,
+                total_tokens=100,
+            )
+        ]
+    )
+    outcome = LedgerSyncService(repository, store, log).run(datetime(2026, 7, 3, tzinfo=UTC))
+    assert outcome.reservations_settled == 1
+    assert store.entities[(partition, "C")] == {"ConfirmedUsed": 100}
+    assert repository.usage_records == []
 
 
 def _usage(
@@ -134,6 +322,295 @@ def _repository_with_budget() -> InMemoryRepository:
     return repository
 
 
+def _application_fixture() -> tuple[InMemoryRepository, UUID, UsageApplicationAttribution]:
+    repository = _repository_with_budget()
+    application = ApplicationAccessService(repository, sync_available=True).sync_discovery(
+        GatewayApplicationDiscovery(
+            gateway_profile_id=UUID("10000000-0000-4000-8000-000000000001"),
+            discovered_at=PERIOD_START,
+            items=[
+                GatewayApplicationDiscoveryItem(
+                    apim_subscription_id="ledger-client",
+                    display_name="Ledger Client",
+                    state="active",
+                    scope_type="product",
+                    scope_id="applications",
+                    scope_exists=True,
+                    application_type="service",
+                    system_managed=False,
+                )
+            ],
+        ),
+        "test-worker",
+    )[0]
+    application_id = UUID(str(application["id"]))
+    attribution = UsageApplicationAttribution(
+        application_id=application_id,
+        application_subscription_id=repository.gateway_application_subscriptions[0]["id"],
+        application_name_snapshot="Ledger Client",
+        apim_subscription_id="ledger-client",
+        actor_type="person",
+        actor_id=USER,
+        person_id=USER,
+    )
+    return repository, application_id, attribution
+
+
+def test_application_upper_bound_leaves_pending_but_remains_charged() -> None:
+    repository, application_id, attribution = _application_fixture()
+    store = FakeLedgerStore()
+    partition = application_partition_key(application_id, "2026-07")
+    row_key = reservation_row_key(PERIOD_START, "correlation-app")
+    store.entities[(partition, row_key)] = {"Reserved": 900}
+    now = PERIOD_START + timedelta(days=2)
+    service = LedgerSyncService(repository, store, FakeTerminalLog())
+    service.run(now)
+    state = repository.list_gateway_application_ledger_states(
+        PERIOD_START.date(), [application_id]
+    )[0]
+    assert state["pending_reserved_tokens"] == 0
+    assert state["pending_reservation_count"] == 0
+    assert state["finalized_upper_bound_tokens"] == 900
+    assert state["available_tokens"] == 99_100
+    repository.write_token_usage(_usage("app", PERIOD_START, 120, estimated=False), attribution)
+    service.run(now + timedelta(minutes=5))
+    state = repository.list_gateway_application_ledger_states(
+        PERIOD_START.date(), [application_id]
+    )[0]
+    assert state["finalized_upper_bound_tokens"] == 0
+    assert state["confirmed_tokens"] == 120
+    assert state["available_tokens"] == 99_880
+    assert (partition, row_key) not in store.entities
+
+
+def test_person_and_application_recovery_share_evidence_not_balances() -> None:
+    repository, application_id, _ = _application_fixture()
+    store = FakeLedgerStore()
+    person = partition_key(USER, "2026-07")
+    application = application_partition_key(application_id, "2026-07")
+    row_key = reservation_row_key(PERIOD_START, "delegated-attempt")
+    for partition in (person, application):
+        store.entities[(partition, row_key)] = {"Reserved": 900}
+    log = FakeTerminalLog(
+        [
+            ReservationTerminalEvidence(
+                correlation_id="delegated-attempt",
+                observed_at=PERIOD_START,
+                prompt_tokens=70,
+                completion_tokens=30,
+                total_tokens=100,
+                status_code=200,
+            )
+        ]
+    )
+    outcome = LedgerSyncService(repository, store, log).run(PERIOD_START + timedelta(days=2))
+    assert outcome.reservations_settled == outcome.application_reservations_settled == 1
+    assert outcome.person_finalizations_written == outcome.application_finalizations_written == 1
+    assert (
+        store.entities[(person, "C")]
+        == store.entities[(application, "C")]
+        == {"ConfirmedUsed": 100}
+    )
+    usage = repository.gateway_application_usage(
+        PERIOD_START.date(), date(2026, 8, 1), [application_id]
+    )[0]
+    assert usage["total_tokens"] == 100 and usage["request_count"] == 1
+    activity = repository.gateway_application_usage_activity(
+        application_id, PERIOD_START, PERIOD_START + timedelta(days=2), "day", "UTC"
+    )
+    assert activity[0]["totals"]["total_tokens"] == 100
+    assert repository.usage_records == []
+
+
+def test_retired_application_old_partition_is_recovered_without_reactivation() -> None:
+    repository, application_id, _ = _application_fixture()
+    repository.gateway_applications[0]["status"] = "retired"
+    store = FakeLedgerStore()
+    partition = application_partition_key(application_id, "2026-07")
+    row_key = reservation_row_key(PERIOD_START, "retired-attempt")
+    store.entities[(partition, row_key)] = {"Reserved": 900}
+    log = FakeTerminalLog(
+        [
+            ReservationTerminalEvidence(
+                correlation_id="retired-attempt",
+                observed_at=PERIOD_START,
+                status_code=429,
+            )
+        ]
+    )
+    outcome = LedgerSyncService(repository, store, log).run(datetime(2026, 11, 1, tzinfo=UTC))
+    assert outcome.application_reservations_settled == 1
+    assert (partition, row_key) not in store.entities
+    assert (partition, "Q") not in store.entities
+    assert repository.gateway_applications[0]["status"] == "retired"
+
+
+def test_upper_bound_mark_failure_retries_after_database_evidence_is_saved() -> None:
+    class FailOnceStore(FakeLedgerStore):
+        failed = False
+
+        def mark_upper_bounds(
+            self, partition: str, reservations: Sequence[LedgerReservation]
+        ) -> int:
+            if reservations and not self.failed:
+                self.failed = True
+                raise RuntimeError("interrupted Table mark")
+            return super().mark_upper_bounds(partition, reservations)
+
+    repository = _repository_with_budget()
+    store = FailOnceStore()
+    partition = partition_key(USER, "2026-07")
+    row_key = reservation_row_key(PERIOD_START, "mark-attempt")
+    store.entities[(partition, row_key)] = {"Reserved": 900}
+    service = LedgerSyncService(repository, store, FakeTerminalLog())
+    with pytest.raises(RuntimeError, match="interrupted Table mark"):
+        service.run(PERIOD_START + timedelta(days=2))
+    assert len(repository.budget_reservation_finalizations) == 1
+    outcome = service.run(PERIOD_START + timedelta(days=2, minutes=5))
+    assert outcome.person_finalizations_written == 0
+    assert outcome.reservations_finalized_upper_bound == 1
+    assert store.entities[(partition, row_key)]["Reserved"] == 900
+
+
+def test_usage_arriving_during_projection_keeps_its_reservation_until_next_run() -> None:
+    from unittest.mock import patch
+
+    repository = _repository_with_budget()
+    store = FakeLedgerStore()
+    partition = partition_key(USER, "2026-07")
+    row_key = reservation_row_key(PERIOD_START, "correlation-race")
+    store.entities[(partition, row_key)] = {"Reserved": 900}
+    original = repository.budget_scope_confirmed_tokens
+
+    def arrive(scope_type: Any, scope_id: str, start: date, end: date) -> int:
+        repository.write_token_usage(_usage("race", PERIOD_START, 120, estimated=False))
+        return original(scope_type, scope_id, start, end)
+
+    service = LedgerSyncService(repository, store)
+    with patch.object(repository, "budget_scope_confirmed_tokens", side_effect=arrive):
+        assert service.run(PERIOD_START + timedelta(days=2)).reservations_settled == 0
+    assert (partition, row_key) in store.entities
+    assert service.run(PERIOD_START + timedelta(days=2, minutes=5)).reservations_settled == 1
+    assert store.entities[(partition, "C")] == {"ConfirmedUsed": 120}
+
+
+def test_nonzero_partial_failure_does_not_release_reservation() -> None:
+    repository = _repository_with_budget()
+    store = FakeLedgerStore()
+    partition = partition_key(USER, "2026-07")
+    row_key = reservation_row_key(PERIOD_START, "partial-failure")
+    store.entities[(partition, row_key)] = {"Reserved": 900}
+    log = FakeTerminalLog(
+        [
+            ReservationTerminalEvidence(
+                correlation_id="partial-failure",
+                observed_at=PERIOD_START,
+                status_code=500,
+                prompt_tokens=70,
+            )
+        ]
+    )
+    service = LedgerSyncService(repository, store, log)
+    assert service.run(PERIOD_START + timedelta(hours=1)).reservations_settled == 0
+    outcome = service.run(PERIOD_START + timedelta(days=2))
+    assert outcome.reservations_finalized_upper_bound == 1
+    assert store.entities[(partition, row_key)]["Reserved"] == 900
+
+
+def test_postgres_finalization_batch_serializes_all_evidence_without_per_row_writes() -> None:
+    from unittest.mock import MagicMock, patch
+
+    from psycopg.types.json import Jsonb
+
+    from turnstile_core.persistence.repository import PostgreSqlOpsDbProxy
+
+    repository = object.__new__(PostgreSqlOpsDbProxy)
+    connection = MagicMock()
+    connection.execute.return_value.fetchall.return_value = [{"id": 1}, {"id": 2}]
+    items = [_finalization(), _finalization(correlation_id="second-attempt")]
+    with patch.object(repository, "_connection") as connect:
+        connect.return_value.__enter__.return_value = connection
+        assert repository.save_budget_reservation_finalizations(items) == 2
+        assert repository.save_budget_reservation_finalizations([]) == 0
+    connection.execute.assert_called_once()
+    query, parameters = connection.execute.call_args.args
+    assert "jsonb_to_recordset" in query
+    assert "DO NOTHING RETURNING id" in query
+    assert isinstance(parameters[0], Jsonb)
+    assert parameters[0].obj == [item.model_dump(mode="json") for item in items]
+    json.dumps(parameters[0].obj)
+
+
+def test_postgres_ledger_reads_bind_all_scope_and_period_parameters() -> None:
+    from unittest.mock import MagicMock, patch
+
+    from turnstile_core.persistence.repository import PostgreSqlOpsDbProxy
+
+    repository = object.__new__(PostgreSqlOpsDbProxy)
+    connection = MagicMock()
+    connection.execute.return_value.fetchall.return_value = []
+    connection.execute.return_value.fetchone.return_value = None
+    start, end = date(2026, 7, 1), date(2026, 8, 1)
+    with patch.object(repository, "_connection") as connect:
+        connect.return_value.__enter__.return_value = connection
+        repository.budget_ledger_snapshot(start, end)
+        repository.person_budget_state(USER, start, end)
+        repository.gateway_application_ledger_snapshot(start, end)
+        repository.gateway_application_usage(start, end, [UUID(int=1)])
+        repository.gateway_application_usage_activity(
+            UUID(int=1), PERIOD_START, PERIOD_START + timedelta(days=1), "day", "UTC"
+        )
+        repository.token_usage_by_budget_scope(PERIOD_START, PERIOD_START + timedelta(days=1))
+    assert connection.execute.call_count == 6
+    for call in connection.execute.call_args_list:
+        query, parameters = call.args
+        assert query % parameters
+
+
+def test_postgres_snapshot_writes_one_complete_version_guarded_balance() -> None:
+    from unittest.mock import MagicMock, patch
+
+    from psycopg.types.json import Jsonb
+
+    from turnstile_core.persistence.repository import PostgreSqlOpsDbProxy
+
+    state = GatewayApplicationLedgerState(
+        period_start=PERIOD_START.date(), application_id=UUID(int=1), token_limit=1000,
+        confirmed_tokens=100, pending_reserved_tokens=200, pending_reservation_count=1,
+        finalized_upper_bound_tokens=300, finalized_upper_bound_count=1,
+        stale_reservation_count=1, oldest_reservation_at=PERIOD_START,
+        available_tokens=400, snapshot_at=PERIOD_START + timedelta(days=2),
+    )
+    repository = object.__new__(PostgreSqlOpsDbProxy)
+    connection = MagicMock()
+    with patch.object(repository, "_connection") as connect:
+        connect.return_value.__enter__.return_value = connection
+        repository.save_gateway_application_ledger_states([state])
+        repository.save_gateway_application_ledger_states([])
+    connection.execute.assert_called_once()
+    query, parameters = connection.execute.call_args.args
+    assert "WHERE existing.snapshot_at < EXCLUDED.snapshot_at" in query
+    assert "ON CONFLICT (period_start, application_id)" in query
+    assert isinstance(parameters[0], Jsonb)
+    assert parameters[0].obj == [state.model_dump(mode="json")]
+    for field in ("pending_reserved_tokens", "finalized_upper_bound_tokens", "available_tokens"):
+        assert f"{field} = EXCLUDED.{field}" in query
+
+
+def test_recovery_clamps_evidence_clock_skew_and_preserves_reservation_identity() -> None:
+    reservation = LedgerReservation(reservation_row_key(PERIOD_START, "attempt"), "attempt", 900)
+    evidence = ReservationTerminalEvidence(
+        correlation_id="attempt", observed_at=PERIOD_START - timedelta(milliseconds=5),
+        status_code=200, prompt_tokens=70, completion_tokens=30, total_tokens=100,
+    )
+    recovered = LedgerSyncService._finalization_from_evidence(
+        "person", USER, PERIOD_START.date(), reservation, evidence
+    )
+    assert recovered is not None
+    assert recovered.evidence_at == reservation.created_at
+    assert recovered.correlation_id == "attempt"
+
+
 def test_snapshot_counts_full_stored_usage_without_a_global_watermark() -> None:
     repository = _repository_with_budget()
     repository.write_token_usage(
@@ -158,6 +635,73 @@ def test_snapshot_counts_full_stored_usage_without_a_global_watermark() -> None:
     assert person.enforce is False
 
 
+def test_finalization_is_idempotent_scoped_and_superseded_only_by_final_usage() -> None:
+    repository = _repository_with_budget()
+    upper = _finalization()
+    exact = _finalization(
+        finalization_kind="exact_usage",
+        source="apim_gateway_llm_log",
+        input_tokens=70,
+        output_tokens=30,
+        total_tokens=100,
+    )
+    assert repository.save_budget_reservation_finalizations([upper, exact]) == 2
+    assert repository.save_budget_reservation_finalizations([upper, exact]) == 0
+    assert (
+        repository.budget_scope_confirmed_tokens("person", USER, date(2026, 7, 1), date(2026, 8, 1))
+        == 100
+    )
+    assert (
+        repository.budget_scope_confirmed_tokens(
+            "person", "another-user", date(2026, 7, 1), date(2026, 8, 1)
+        )
+        == 0
+    )
+    assert (
+        repository.settled_reservation_correlations(
+            [exact.correlation_id], scope_type="application", scope_id="other-application"
+        )
+        == set()
+    )
+    pending = _usage("late", PERIOD_START, 0, estimated=True).model_copy(
+        update={"correlation_id": exact.correlation_id}
+    )
+    repository.write_token_usage(pending)
+    assert (
+        repository.budget_scope_confirmed_tokens("person", USER, date(2026, 7, 1), date(2026, 8, 1))
+        == 100
+    )
+    repository.write_token_usage(
+        pending.model_copy(update={"input_tokens": 40, "estimated": False})
+    )
+    assert (
+        repository.budget_scope_confirmed_tokens("person", USER, date(2026, 7, 1), date(2026, 8, 1))
+        == 40
+    )
+    assert len(repository.budget_reservation_finalizations) == 2
+
+
+def test_recovered_person_usage_reaches_budget_hierarchy_without_double_counting() -> None:
+    repository = _repository_with_budget()
+    exact = _finalization(
+        finalization_kind="exact_usage",
+        source="apim_gateway_llm_log",
+        input_tokens=70,
+        output_tokens=30,
+        total_tokens=100,
+    )
+    repository.save_budget_reservation_finalizations([exact])
+    totals = repository.token_usage_by_budget_scope(PERIOD_START, datetime(2026, 8, 1, tzinfo=UTC))
+    assert {(row["scope_type"], row["scope_id"]): row["used_tokens"] for row in totals} == {
+        ("organization", "org-contoso-global"): 100,
+        ("department", "department-platform"): 100,
+        ("user", USER): 100,
+    }
+    state = repository.person_budget_state(USER, date(2026, 7, 1), date(2026, 8, 1))
+    assert state is not None
+    assert state["used_tokens"] == 100
+
+
 def test_snapshot_counts_final_usage_when_nothing_is_pending() -> None:
     repository = _repository_with_budget()
     repository.write_token_usage(
@@ -169,6 +713,90 @@ def test_snapshot_counts_final_usage_when_nothing_is_pending() -> None:
     person = service.snapshot(now)[0]
 
     assert person.confirmed_tokens == 250
+
+
+def test_table_upper_bound_mark_preserves_the_original_reservation() -> None:
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(204)
+
+    reservation = LedgerReservation(reservation_row_key(PERIOD_START, "attempt"), "attempt", 900)
+    with (
+        httpx.Client(transport=httpx.MockTransport(respond)) as client,
+        TableStorageLedger(
+            "https://ledger.example.com", "Ledger", FakeTokenProvider(), client
+        ) as store,
+    ):
+        assert store.mark_upper_bounds(partition_key(USER, "2026-07"), [reservation]) == 1
+    assert requests[0].method == "MERGE"
+    assert requests[0].headers["If-Match"] == "*"
+    assert json.loads(requests[0].content) == {"FinalizationKind": "unverified_upper_bound"}
+
+
+def test_table_partition_discovery_follows_continuation_and_deduplicates() -> None:
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(
+                200,
+                json={"value": [{"PartitionKey": "person|2026-06"}]},
+                headers={
+                    "x-ms-continuation-nextpartitionkey": "next",
+                    "x-ms-continuation-nextrowkey": "row",
+                },
+            )
+        assert request.url.params["NextPartitionKey"] == "next"
+        assert request.url.params["NextRowKey"] == "row"
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    {"PartitionKey": "person|2026-06"},
+                    {"PartitionKey": "person|2026-07"},
+                ]
+            },
+        )
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(respond)) as client,
+        TableStorageLedger(
+            "https://ledger.example.com", "Ledger", FakeTokenProvider(), client
+        ) as store,
+    ):
+        assert store.list_pending_partitions() == ["person|2026-06", "person|2026-07"]
+    assert len(requests) == 2
+
+
+def test_ledger_snapshot_keeps_upper_bound_balance_and_rejects_stale_updates() -> None:
+    repository = InMemoryRepository()
+    state = GatewayApplicationLedgerState(
+        period_start=PERIOD_START.date(),
+        application_id=UUID(int=1),
+        token_limit=1000,
+        confirmed_tokens=100,
+        pending_reserved_tokens=200,
+        pending_reservation_count=1,
+        finalized_upper_bound_tokens=300,
+        finalized_upper_bound_count=1,
+        stale_reservation_count=1,
+        oldest_reservation_at=PERIOD_START,
+        available_tokens=400,
+        snapshot_at=datetime(2026, 7, 3, tzinfo=UTC),
+    )
+    repository.save_gateway_application_ledger_states([state])
+    stale = state.model_copy(update={"snapshot_at": PERIOD_START, "confirmed_tokens": 0})
+    repository.save_gateway_application_ledger_states([stale])
+    assert repository.list_gateway_application_ledger_states(
+        PERIOD_START.date(), [UUID(int=1)]
+    ) == [state.model_dump()]
+    with pytest.raises(ValueError):
+        GatewayApplicationLedgerState.model_validate(
+            {**state.model_dump(), "available_tokens": 700}
+        )
 
 
 def test_sync_settles_by_correlation_without_head_of_line_blocking() -> None:
@@ -187,15 +815,9 @@ def test_sync_settles_by_correlation_without_head_of_line_blocking() -> None:
     store = FakeLedgerStore()
     partition = partition_key(USER, "2026-07")
     # Production ordering: R is written inbound, before the corresponding outbound usage ts.
-    final = reservation_row_key(
-        datetime(2026, 7, 10, 8, 59, tzinfo=UTC), "correlation-final"
-    )
-    pending = reservation_row_key(
-        datetime(2026, 7, 11, 8, 59, tzinfo=UTC), "correlation-pending"
-    )
-    later = reservation_row_key(
-        datetime(2026, 7, 12, 8, 59, tzinfo=UTC), "correlation-later"
-    )
+    final = reservation_row_key(datetime(2026, 7, 10, 8, 59, tzinfo=UTC), "correlation-final")
+    pending = reservation_row_key(datetime(2026, 7, 11, 8, 59, tzinfo=UTC), "correlation-pending")
+    later = reservation_row_key(datetime(2026, 7, 12, 8, 59, tzinfo=UTC), "correlation-later")
     store.entities[(partition, final)] = {"Reserved": 500}
     store.entities[(partition, pending)] = {"Reserved": 900}
     store.entities[(partition, later)] = {"Reserved": 800}
@@ -221,9 +843,7 @@ def test_sync_settles_by_correlation_without_head_of_line_blocking() -> None:
 def test_application_ledger_projects_q_c_m_and_settles_exact_reservation() -> None:
     repository = InMemoryRepository()
     gateway_id = UUID("10000000-0000-4000-8000-000000000001")
-    application = ApplicationAccessService(
-        repository, sync_available=True
-    ).sync_discovery(
+    application = ApplicationAccessService(repository, sync_available=True).sync_discovery(
         GatewayApplicationDiscovery(
             gateway_profile_id=gateway_id,
             discovered_at=datetime(2026, 7, 1, tzinfo=UTC),
@@ -276,9 +896,7 @@ def test_application_ledger_projects_q_c_m_and_settles_exact_reservation() -> No
     )
     store.entities[(partition, reservation)] = {"Reserved": 500}
 
-    outcome = LedgerSyncService(repository, store).run(
-        datetime(2026, 7, 27, 12, tzinfo=UTC)
-    )
+    outcome = LedgerSyncService(repository, store).run(datetime(2026, 7, 27, 12, tzinfo=UTC))
 
     assert outcome.applications == 1
     assert outcome.application_reservations_settled == 1
@@ -295,9 +913,7 @@ def test_application_ledger_projects_q_c_m_and_settles_exact_reservation() -> No
         "Configured": True,
         "Models": model_access_value([str(model_id), str(model["model_key"])]),
     }
-    assert store.entities[
-        (application_map_partition_key(gateway_id), "outline-assistant")
-    ] == {
+    assert store.entities[(application_map_partition_key(gateway_id), "outline-assistant")] == {
         "ApplicationId": str(application_id),
         "ApplicationSlug": "outline-assistant",
         "ApplicationName": "Outline Assistant",
@@ -314,9 +930,7 @@ def test_application_ledger_projects_q_c_m_and_settles_exact_reservation() -> No
 def test_application_budget_roll_forward_is_idempotent() -> None:
     repository = InMemoryRepository()
     gateway_id = UUID("10000000-0000-4000-8000-000000000001")
-    application = ApplicationAccessService(
-        repository, sync_available=True
-    ).sync_discovery(
+    application = ApplicationAccessService(repository, sync_available=True).sync_discovery(
         GatewayApplicationDiscovery(
             gateway_profile_id=gateway_id,
             discovered_at=datetime(2026, 7, 1, tzinfo=UTC),
@@ -336,9 +950,9 @@ def test_application_budget_roll_forward_is_idempotent() -> None:
         "application-sync-worker",
     )[0]
     application_id = UUID(str(application["id"]))
-    repository.gateway_application_budgets[
-        (date(2026, 7, 1), application_id)
-    ]["token_limit"] = 750_000
+    repository.gateway_application_budgets[(date(2026, 7, 1), application_id)]["token_limit"] = (
+        750_000
+    )
 
     first = repository.roll_forward_gateway_application_budgets(
         date(2026, 8, 1), ROLL_FORWARD_ACTOR
@@ -349,23 +963,20 @@ def test_application_budget_roll_forward_is_idempotent() -> None:
 
     assert first == 1
     assert second == 0
-    assert repository.gateway_application_budgets[
-        (date(2026, 8, 1), application_id)
-    ]["token_limit"] == 750_000
+    assert (
+        repository.gateway_application_budgets[(date(2026, 8, 1), application_id)]["token_limit"]
+        == 750_000
+    )
 
 
 def test_missing_telemetry_keeps_only_its_own_reservation() -> None:
     repository = _repository_with_budget()
     store = FakeLedgerStore()
     partition = partition_key(USER, "2026-07")
-    orphan = reservation_row_key(
-        datetime(2026, 7, 10, tzinfo=UTC), "correlation-not-ingested"
-    )
+    orphan = reservation_row_key(datetime(2026, 7, 10, tzinfo=UTC), "correlation-not-ingested")
     store.entities[(partition, orphan)] = {"Reserved": 9_000}
 
-    outcome = LedgerSyncService(repository, store).run(
-        datetime(2026, 7, 27, 12, 0, tzinfo=UTC)
-    )
+    outcome = LedgerSyncService(repository, store).run(datetime(2026, 7, 27, 12, 0, tzinfo=UTC))
 
     assert outcome.reservations_settled == 0
     assert (partition, orphan) in store.entities
@@ -385,20 +996,16 @@ def test_failed_request_settles_its_zero_usage_reservation() -> None:
     )
     store = FakeLedgerStore()
     partition = partition_key(USER, "2026-07")
-    failed = reservation_row_key(
-        datetime(2026, 7, 10, 8, 59, tzinfo=UTC), "correlation-failed"
-    )
+    failed = reservation_row_key(datetime(2026, 7, 10, 8, 59, tzinfo=UTC), "correlation-failed")
     store.entities[(partition, failed)] = {"Reserved": 900}
 
-    outcome = LedgerSyncService(repository, store).run(
-        datetime(2026, 7, 27, 12, 0, tzinfo=UTC)
-    )
+    outcome = LedgerSyncService(repository, store).run(datetime(2026, 7, 27, 12, 0, tzinfo=UTC))
 
     assert outcome.reservations_settled == 1
     assert (partition, failed) not in store.entities
 
 
-def test_partially_reconciled_stream_waits_for_its_user_cache_bucket() -> None:
+def test_reconciled_stream_settles_without_inventing_cache_classification() -> None:
     repository = _repository_with_budget()
     repository.write_token_usage(
         _usage(
@@ -416,16 +1023,15 @@ def test_partially_reconciled_stream_waits_for_its_user_cache_bucket() -> None:
     )
     store.entities[(partition, reservation)] = {"Reserved": 900}
 
-    outcome = LedgerSyncService(repository, store).run(
-        datetime(2026, 7, 27, 12, 0, tzinfo=UTC)
-    )
+    outcome = LedgerSyncService(repository, store).run(datetime(2026, 7, 27, 12, 0, tzinfo=UTC))
 
-    assert outcome.reservations_settled == 0
+    assert outcome.reservations_settled == 1
     assert store.entities[(partition, "C")] == {"ConfirmedUsed": 400}
-    assert (partition, reservation) in store.entities
+    assert (partition, reservation) not in store.entities
+    assert repository.usage_records[0].ingest_error == "stream_cache_usage_unavailable"
 
 
-def test_legacy_user_cache_metric_does_not_settle_a_stream_reservation() -> None:
+def test_legacy_user_cache_metric_does_not_change_exact_total_settlement() -> None:
     repository = _repository_with_budget()
     usage = _usage(
         "partial-stream",
@@ -450,13 +1056,11 @@ def test_legacy_user_cache_metric_does_not_settle_a_stream_reservation() -> None
     )
     store.entities[(partition, reservation)] = {"Reserved": 900}
 
-    outcome = LedgerSyncService(repository, store).run(
-        datetime(2026, 7, 27, 12, 0, tzinfo=UTC)
-    )
+    outcome = LedgerSyncService(repository, store).run(datetime(2026, 7, 27, 12, 0, tzinfo=UTC))
 
-    assert outcome.reservations_settled == 0
+    assert outcome.reservations_settled == 1
     assert store.entities[(partition, "C")] == {"ConfirmedUsed": 400}
-    assert (partition, reservation) in store.entities
+    assert (partition, reservation) not in store.entities
 
 
 def test_removed_budget_is_disabled_and_its_reservations_still_settle() -> None:
@@ -467,15 +1071,11 @@ def test_removed_budget_is_disabled_and_its_reservations_still_settle() -> None:
     repository.delete_token_budget(PERIOD_START.date(), "user", USER, "owner")
     store = FakeLedgerStore()
     partition = partition_key(USER, "2026-07")
-    final = reservation_row_key(
-        datetime(2026, 7, 10, 8, 59, tzinfo=UTC), "correlation-final"
-    )
+    final = reservation_row_key(datetime(2026, 7, 10, 8, 59, tzinfo=UTC), "correlation-final")
     store.entities[(partition, "Q")] = {"Limit": 10_000, "Enforce": True}
     store.entities[(partition, final)] = {"Reserved": 500}
 
-    outcome = LedgerSyncService(repository, store).run(
-        datetime(2026, 7, 27, 12, 0, tzinfo=UTC)
-    )
+    outcome = LedgerSyncService(repository, store).run(datetime(2026, 7, 27, 12, 0, tzinfo=UTC))
 
     assert outcome.reservations_settled == 1
     assert store.entities[(partition, "Q")] == {"Limit": 0, "Enforce": False}
@@ -497,9 +1097,7 @@ def test_current_usage_is_written_before_previous_month_reservation_is_deleted()
     )
     store.entities[(july_partition, july_reservation)] = {"Reserved": 900}
 
-    outcome = LedgerSyncService(repository, store).run(
-        datetime(2026, 8, 1, 0, 5, tzinfo=UTC)
-    )
+    outcome = LedgerSyncService(repository, store).run(datetime(2026, 8, 1, 0, 5, tzinfo=UTC))
 
     assert outcome.reservations_settled == 1
     assert store.entities[(august_partition, "C")] == {"ConfirmedUsed": 600}
@@ -653,11 +1251,7 @@ def test_table_batch_inner_failure_is_not_mistaken_for_outer_accepted() -> None:
     with pytest.raises(RuntimeError, match=r"statuses=\[400\]"):
         store.delete_reservations(
             "person@example.com|2026-07",
-            [
-                reservation_row_key(
-                    datetime(2026, 7, 10, 9, 0, tzinfo=UTC), "correlation-failed"
-                )
-            ],
+            [reservation_row_key(datetime(2026, 7, 10, 9, 0, tzinfo=UTC), "correlation-failed")],
         )
     client.close()
 
@@ -680,9 +1274,7 @@ def test_model_access_projects_both_identifier_spaces() -> None:
 
     store = FakeLedgerStore()
     service = LedgerSyncService(repository, store)
-    service.project_model_access(
-        service.model_access(), datetime(2026, 7, 27, 12, 0, tzinfo=UTC)
-    )
+    service.project_model_access(service.model_access(), datetime(2026, 7, 27, 12, 0, tzinfo=UTC))
 
     row = store.entities[(partition_key(USER, "2026-07"), "M")]
     assert row["Configured"] is True
@@ -707,9 +1299,7 @@ def test_deny_all_projects_an_empty_membership_set_not_a_missing_row() -> None:
 
     store = FakeLedgerStore()
     service = LedgerSyncService(repository, store)
-    service.project_model_access(
-        service.model_access(), datetime(2026, 7, 27, 12, 0, tzinfo=UTC)
-    )
+    service.project_model_access(service.model_access(), datetime(2026, 7, 27, 12, 0, tzinfo=UTC))
 
     row = store.entities[(partition_key(USER, "2026-07"), "M")]
     assert row["Configured"] is True
@@ -736,9 +1326,7 @@ def test_a_new_period_inherits_the_previous_allowances_instead_of_enforcing_noth
 
     assert service.snapshot(AUGUST) == []
 
-    rolled = repository.roll_forward_budgets(
-        period_start_for(AUGUST), ROLL_FORWARD_ACTOR
-    )
+    rolled = repository.roll_forward_budgets(period_start_for(AUGUST), ROLL_FORWARD_ACTOR)
 
     assert rolled is not None and rolled["scope_count"] == 3
     service.run(AUGUST)
@@ -779,9 +1367,10 @@ def test_a_period_already_being_configured_is_left_alone() -> None:
 
     assert rolled is not None and rolled["scope_count"] == 0
     assert rolled["source_period_start"] is None
-    assert repository.token_budgets[(period, "organization", "org-contoso-global")][
-        "token_limit"
-    ] == 20_000
+    assert (
+        repository.token_budgets[(period, "organization", "org-contoso-global")]["token_limit"]
+        == 20_000
+    )
     assert (period, "user", USER) not in repository.token_budgets
 
 

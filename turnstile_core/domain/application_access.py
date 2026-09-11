@@ -6,7 +6,7 @@ from datetime import date, datetime
 from typing import Literal
 from uuid import UUID, uuid5
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import AwareDatetime, Field, field_validator, model_validator
 
 from .models import StrictModel
 
@@ -25,18 +25,14 @@ _APPLICATION_AVATAR_PREFIXES = {
 }
 
 
-def application_id_for(
-    gateway_profile_id: UUID, apim_subscription_id: str
-) -> UUID:
+def application_id_for(gateway_profile_id: UUID, apim_subscription_id: str) -> UUID:
     return uuid5(
         _APPLICATION_NAMESPACE,
         f"application:{gateway_profile_id}:{apim_subscription_id.casefold()}",
     )
 
 
-def application_subscription_id_for(
-    gateway_profile_id: UUID, apim_subscription_id: str
-) -> UUID:
+def application_subscription_id_for(gateway_profile_id: UUID, apim_subscription_id: str) -> UUID:
     return uuid5(
         _APPLICATION_NAMESPACE,
         f"subscription:{gateway_profile_id}:{apim_subscription_id.casefold()}",
@@ -78,6 +74,48 @@ class GatewayApplicationBudget(StrictModel):
     usage_percent: float = Field(ge=0)
     updated_by: str
     updated_at: datetime
+    pending_reserved_tokens: int | None = Field(default=None, ge=0)
+    pending_reservation_count: int | None = Field(default=None, ge=0)
+    finalized_upper_bound_tokens: int | None = Field(default=None, ge=0)
+    finalized_upper_bound_count: int | None = Field(default=None, ge=0)
+    stale_reservation_count: int | None = Field(default=None, ge=0)
+    oldest_reservation_at: datetime | None = None
+    available_tokens: int | None = Field(default=None, ge=0)
+    ledger_snapshot_at: datetime | None = None
+
+
+class GatewayApplicationLedgerState(StrictModel):
+    period_start: date
+    application_id: UUID
+    token_limit: int = Field(gt=0)
+    confirmed_tokens: int = Field(ge=0)
+    pending_reserved_tokens: int = Field(ge=0)
+    pending_reservation_count: int = Field(ge=0)
+    finalized_upper_bound_tokens: int = Field(ge=0)
+    finalized_upper_bound_count: int = Field(ge=0)
+    stale_reservation_count: int = Field(ge=0)
+    oldest_reservation_at: AwareDatetime | None = None
+    available_tokens: int = Field(ge=0)
+    snapshot_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def validate_balance(self) -> GatewayApplicationLedgerState:
+        if self.period_start.day != 1:
+            raise ValueError("ledger period must start on the first day of the month")
+        if self.stale_reservation_count > self.pending_reservation_count:
+            raise ValueError("stale count cannot exceed pending count")
+        if (self.pending_reservation_count == 0) != (self.oldest_reservation_at is None):
+            raise ValueError("pending reservations require an oldest timestamp")
+        expected = max(
+            self.token_limit
+            - self.confirmed_tokens
+            - self.pending_reserved_tokens
+            - self.finalized_upper_bound_tokens,
+            0,
+        )
+        if self.available_tokens != expected:
+            raise ValueError("available balance must include pending and finalized reservations")
+        return self
 
 
 class GatewayApplicationBudgetUpdate(StrictModel):
@@ -159,8 +197,7 @@ def decode_application_avatar_data_url(value: str) -> tuple[str, bytes]:
     if not image_bytes or len(image_bytes) > _APPLICATION_AVATAR_MAX_BYTES:
         raise ValueError("avatar image must be between 1 byte and 64 KiB")
     if not image_bytes.startswith(prefix) or (
-        media_type == "image/webp"
-        and (len(image_bytes) < 12 or image_bytes[8:12] != b"WEBP")
+        media_type == "image/webp" and (len(image_bytes) < 12 or image_bytes[8:12] != b"WEBP")
     ):
         raise ValueError("avatar image bytes do not match the declared media type")
     return media_type, image_bytes

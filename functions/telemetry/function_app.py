@@ -1,7 +1,7 @@
 import json
 import logging
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, List  # noqa: UP035 - required by the Azure Functions worker
 
 import azure.functions as func
@@ -122,6 +122,7 @@ def sync_budget_ledger(timer: func.TimerRequest) -> None:
         TableStorageLedger,
         period_start_for,
     )
+    from turnstile_core.integrations.reconciliation import LogAnalyticsReservationTerminalLog
     from turnstile_core.persistence.factory import create_repository
 
     settings = get_settings()
@@ -158,10 +159,25 @@ def sync_budget_ledger(timer: func.TimerRequest) -> None:
         logger.warning("Ledger sync skipped: LEDGER_TABLE_ENDPOINT is not configured")
         return
 
-    with TableStorageLedger(
-        settings.ledger_table_endpoint, settings.ledger_table_name
-    ) as store:
-        outcome = LedgerSyncService(repository, store).run()
+    terminal_log = (
+        LogAnalyticsReservationTerminalLog(
+            settings.log_analytics_workspace_id, settings.apim_api_id
+        )
+        if settings.reconciliation_enabled and settings.log_analytics_workspace_id
+        else None
+    )
+    if terminal_log is None:
+        logger.warning(
+            "Reservation recovery disabled or unconfigured; unknown usage remains reserved"
+        )
+    with TableStorageLedger(settings.ledger_table_endpoint, settings.ledger_table_name) as store:
+        outcome = LedgerSyncService(
+            repository,
+            store,
+            terminal_log=terminal_log,
+            recovery_lag=timedelta(minutes=settings.ledger_reservation_recovery_lag_minutes),
+            finalization_lag=timedelta(hours=settings.ledger_reservation_finalization_lag_hours),
+        ).run()
     logger.info(
         "Budget ledger sync projected %s people, %s person model policies, %s applications "
         "and %s application model policies with %s mappings; settled %s person and %s application "
@@ -173,4 +189,13 @@ def sync_budget_ledger(timer: func.TimerRequest) -> None:
         outcome.application_mappings,
         outcome.reservations_settled,
         outcome.application_reservations_settled,
+    )
+    logger.info(
+        "Ledger finalizations: people=%s applications=%s upper_bounds=%s "
+        "upper_bounds_settled=%s stale_application_reservations=%s",
+        outcome.person_finalizations_written,
+        outcome.application_finalizations_written,
+        outcome.reservations_finalized_upper_bound,
+        outcome.upper_bounds_settled,
+        outcome.stale_application_reservations,
     )

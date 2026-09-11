@@ -251,9 +251,7 @@ class EnterpriseEntityCatalog(StrictModel):
 
 BudgetScopeType = Literal["organization", "department", "user"]
 BudgetStatus = Literal["unallocated", "healthy", "warning", "exceeded"]
-PeopleBudgetFilter = Literal[
-    "all", "assigned", "unallocated", "healthy", "warning", "exceeded"
-]
+PeopleBudgetFilter = Literal["all", "assigned", "unallocated", "healthy", "warning", "exceeded"]
 
 
 class TokenBudgetWrite(StrictModel):
@@ -714,6 +712,36 @@ class ReconciledUsage(StrictModel):
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
     cached_tokens: int | None = Field(default=None, ge=0)
+
+
+class ReservationTerminalEvidence(StrictModel):
+    correlation_id: str = Field(min_length=1, max_length=255)
+    observed_at: datetime
+    status_code: int | None = Field(default=None, ge=0, le=599)
+    last_error_reason: str | None = Field(default=None, max_length=255)
+    prompt_tokens: int | None = Field(default=None, ge=0)
+    completion_tokens: int | None = Field(default=None, ge=0)
+    total_tokens: int | None = Field(default=None, ge=0)
+
+    @property
+    def has_exact_usage(self) -> bool:
+        return (
+            self.prompt_tokens is not None
+            and self.completion_tokens is not None
+            and self.total_tokens is not None
+            and self.prompt_tokens + self.completion_tokens == self.total_tokens
+        )
+
+    @property
+    def is_terminal_zero(self) -> bool:
+        return (
+            self.status_code is not None
+            and self.status_code >= 400
+            and all(
+                value in (None, 0)
+                for value in (self.prompt_tokens, self.completion_tokens, self.total_tokens)
+            )
+        )
 
 
 class ReconciliationOutcome(StrictModel):

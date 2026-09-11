@@ -78,9 +78,7 @@ class ApplicationAccessService:
         self._sync_unavailable_reason = sync_unavailable_reason
         self._provisioning_available = provisioning_available
         self._provisioning_unavailable_reason = provisioning_unavailable_reason
-        self._key_management_available = (
-            key_management_available and key_client is not None
-        )
+        self._key_management_available = key_management_available and key_client is not None
         self._key_management_unavailable_reason = key_management_unavailable_reason
         self._key_client = key_client
         self._default_token_limit = default_token_limit
@@ -153,15 +151,11 @@ class ApplicationAccessService:
             ),
             provisioning_available=self._provisioning_available,
             provisioning_unavailable_reason=(
-                None
-                if self._provisioning_available
-                else self._provisioning_unavailable_reason
+                None if self._provisioning_available else self._provisioning_unavailable_reason
             ),
             key_management_available=self._key_management_available,
             key_management_unavailable_reason=(
-                None
-                if self._key_management_available
-                else self._key_management_unavailable_reason
+                None if self._key_management_available else self._key_management_unavailable_reason
             ),
         )
 
@@ -173,9 +167,7 @@ class ApplicationAccessService:
         summary = self._summaries([row], period_start, period_end)[0]
         subscriptions = [
             GatewayApplicationSubscription.model_validate(item)
-            for item in self._repository.list_gateway_application_subscriptions(
-                [application_id]
-            )
+            for item in self._repository.list_gateway_application_subscriptions([application_id])
         ]
         audit = [
             GatewayApplicationAuditEvent.model_validate(item)
@@ -201,9 +193,7 @@ class ApplicationAccessService:
             audit=audit,
             key_management_available=self._key_management_available,
             key_management_unavailable_reason=(
-                None
-                if self._key_management_available
-                else self._key_management_unavailable_reason
+                None if self._key_management_available else self._key_management_unavailable_reason
             ),
         )
 
@@ -246,9 +236,7 @@ class ApplicationAccessService:
         application_subscription_id: UUID,
         key_kind: Literal["primary", "secondary"],
     ) -> GatewayApplicationSubscriptionKeySecret:
-        subscription = self._key_subscription(
-            application_id, application_subscription_id
-        )
+        subscription = self._key_subscription(application_id, application_subscription_id)
         client = self._require_key_client()
         try:
             primary_key, secondary_key = client.application_subscription_keys(
@@ -268,17 +256,13 @@ class ApplicationAccessService:
         key_kind: Literal["primary", "secondary"],
         request: GatewayApplicationSubscriptionKeyRotation,
     ) -> None:
-        subscription = self._key_subscription(
-            application_id, application_subscription_id
-        )
+        subscription = self._key_subscription(application_id, application_subscription_id)
         apim_subscription_id = str(subscription["apim_subscription_id"])
         if request.confirmation != apim_subscription_id:
             raise ValueError("confirmation must match the APIM subscription ID")
         client = self._require_key_client()
         try:
-            client.regenerate_application_subscription_key(
-                apim_subscription_id, key_kind
-            )
+            client.regenerate_application_subscription_key(apim_subscription_id, key_kind)
         except (httpx.HTTPError, PolicyCompilationError) as error:
             self._raise_key_management_error(error)
 
@@ -322,16 +306,12 @@ class ApplicationAccessService:
     ) -> Never:
         if isinstance(error, httpx.HTTPStatusError):
             if error.response.status_code == 404:
-                raise ControlPlaneNotFoundError(
-                    "APIM subscription no longer exists"
-                ) from error
+                raise ControlPlaneNotFoundError("APIM subscription no longer exists") from error
             if error.response.status_code in {401, 403}:
                 raise ControlPlaneUnavailableError(
                     "APIM key management is not authorized"
                 ) from error
-        raise ControlPlaneUnavailableError(
-            "APIM key management request failed"
-        ) from error
+        raise ControlPlaneUnavailableError("APIM key management request failed") from error
 
     def update_application_avatar(
         self,
@@ -342,9 +322,7 @@ class ApplicationAccessService:
         media_type: str | None = None
         image_bytes: bytes | None = None
         if request.avatar_data_url is not None:
-            media_type, image_bytes = decode_application_avatar_data_url(
-                request.avatar_data_url
-            )
+            media_type, image_bytes = decode_application_avatar_data_url(request.avatar_data_url)
         row = self._repository.update_gateway_application_avatar(
             application_id, media_type, image_bytes, actor
         )
@@ -400,9 +378,7 @@ class ApplicationAccessService:
     ) -> list[GatewayApplicationSummary]:
         application_ids = [UUID(str(row["id"])) for row in rows]
         subscriptions: dict[UUID, list[Mapping[str, object]]] = {}
-        for item in self._repository.list_gateway_application_subscriptions(
-            application_ids
-        ):
+        for item in self._repository.list_gateway_application_subscriptions(application_ids):
             subscriptions.setdefault(UUID(str(item["application_id"])), []).append(item)
         budgets = {
             UUID(str(item["application_id"])): item
@@ -410,17 +386,19 @@ class ApplicationAccessService:
                 period_start, application_ids
             )
         }
+        ledger_states = {
+            UUID(str(item["application_id"])): item
+            for item in self._repository.list_gateway_application_ledger_states(
+                period_start, application_ids
+            )
+        }
         configured_policies: set[UUID] = set()
         allowed_models: dict[UUID, list[UUID]] = {}
-        for item in self._repository.list_gateway_application_model_access(
-            application_ids
-        ):
+        for item in self._repository.list_gateway_application_model_access(application_ids):
             application_id = UUID(str(item["application_id"]))
             configured_policies.add(application_id)
             if item.get("model_id") is not None:
-                allowed_models.setdefault(application_id, []).append(
-                    UUID(str(item["model_id"]))
-                )
+                allowed_models.setdefault(application_id, []).append(UUID(str(item["model_id"])))
         usage = {
             UUID(str(item["application_id"])): item
             for item in self._repository.gateway_application_usage(
@@ -429,9 +407,7 @@ class ApplicationAccessService:
         }
         avatars = {
             UUID(str(item["application_id"])): item
-            for item in self._repository.list_gateway_application_avatars(
-                application_ids
-            )
+            for item in self._repository.list_gateway_application_avatars(application_ids)
         }
         summaries: list[GatewayApplicationSummary] = []
         for row, application_id in zip(rows, application_ids, strict=True):
@@ -448,22 +424,34 @@ class ApplicationAccessService:
             if budget_row is not None:
                 token_limit = int(budget_row["token_limit"])
                 remaining = max(token_limit - usage_model.total_tokens, 0)
+                ledger_state = ledger_states.get(application_id)
                 budget = GatewayApplicationBudget.model_validate(
                     {
                         "period_start": budget_row["period_start"],
                         "token_limit": token_limit,
                         "tokens_per_minute": budget_row["tokens_per_minute"],
                         "enforce": budget_row["enforce"],
-                        "warning_threshold_percent": budget_row[
-                            "warning_threshold_percent"
-                        ],
+                        "warning_threshold_percent": budget_row["warning_threshold_percent"],
                         "updated_by": budget_row["updated_by"],
                         "updated_at": budget_row["updated_at"],
                         "used_tokens": usage_model.total_tokens,
                         "remaining_tokens": remaining,
-                        "usage_percent": round(
-                            usage_model.total_tokens / token_limit * 100, 2
-                        ),
+                        "usage_percent": round(usage_model.total_tokens / token_limit * 100, 2),
+                        **{
+                            field: None if ledger_state is None else ledger_state[field]
+                            for field in (
+                                "pending_reserved_tokens",
+                                "pending_reservation_count",
+                                "finalized_upper_bound_tokens",
+                                "finalized_upper_bound_count",
+                                "stale_reservation_count",
+                                "oldest_reservation_at",
+                                "available_tokens",
+                            )
+                        },
+                        "ledger_snapshot_at": None
+                        if ledger_state is None
+                        else ledger_state["snapshot_at"],
                     }
                 )
             summaries.append(
@@ -476,16 +464,12 @@ class ApplicationAccessService:
                         ),
                         "subscription_count": len(application_subscriptions),
                         "active_subscription_count": sum(
-                            item["state"] == "active"
-                            for item in application_subscriptions
+                            item["state"] == "active" for item in application_subscriptions
                         ),
                         "stale_subscription_count": sum(
-                            not bool(item["scope_exists"])
-                            for item in application_subscriptions
+                            not bool(item["scope_exists"]) for item in application_subscriptions
                         ),
-                        "model_policy_configured": (
-                            application_id in configured_policies
-                        ),
+                        "model_policy_configured": (application_id in configured_policies),
                         "allowed_model_ids": sorted(
                             allowed_models.get(application_id, []), key=str
                         ),

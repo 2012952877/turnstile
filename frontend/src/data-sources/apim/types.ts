@@ -864,6 +864,14 @@ export type GatewayApplicationBudget = {
   usage_percent: number
   updated_by: string
   updated_at: string
+  pending_reserved_tokens?: number | null
+  pending_reservation_count?: number | null
+  finalized_upper_bound_tokens?: number | null
+  finalized_upper_bound_count?: number | null
+  stale_reservation_count?: number | null
+  oldest_reservation_at?: string | null
+  available_tokens?: number | null
+  ledger_snapshot_at?: string | null
 }
 
 export type GatewayApplicationUserUsage = {

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import UUID
 
@@ -20,6 +20,7 @@ from tests.platform.api.api_support import _usage_record, client
 from turnstile_core.domain.application_access import (
     GatewayApplicationDiscovery,
     GatewayApplicationDiscoveryItem,
+    GatewayApplicationLedgerState,
     GatewayApplicationSubscriptionCreate,
     UsageApplicationAttribution,
 )
@@ -66,13 +67,69 @@ def _seed(
     return service
 
 
+def test_application_budget_api_distinguishes_missing_zero_and_upper_bound() -> None:
+    repository = InMemoryRepository()
+    moment = datetime.now(UTC)
+    service = _seed(repository, discovered_at=moment)
+    application_id = repository.gateway_applications[0]["id"]
+    app.dependency_overrides[application_access_service] = lambda: service
+    try:
+        url = f"/api/v1/application-access/applications/{application_id}"
+        response = client.get(url)
+        assert response.status_code == 200
+        unknown = response.json()["budget"]
+        assert unknown["pending_reserved_tokens"] is None
+        assert unknown["available_tokens"] is None
+        assert unknown["ledger_snapshot_at"] is None
+        state = GatewayApplicationLedgerState(
+            period_start=moment.date().replace(day=1),
+            application_id=application_id,
+            token_limit=100_000,
+            confirmed_tokens=100,
+            pending_reserved_tokens=200,
+            pending_reservation_count=1,
+            stale_reservation_count=1,
+            finalized_upper_bound_tokens=300,
+            finalized_upper_bound_count=1,
+            oldest_reservation_at=moment - timedelta(hours=2),
+            available_tokens=99_400,
+            snapshot_at=moment,
+        )
+        repository.save_gateway_application_ledger_states([state])
+        observed = client.get(url).json()["budget"]
+        assert observed["pending_reserved_tokens"] == 200
+        assert observed["finalized_upper_bound_tokens"] == 300
+        assert observed["available_tokens"] == 99_400
+        repository.save_gateway_application_ledger_states(
+            [
+                state.model_copy(
+                    update={
+                        "pending_reserved_tokens": 0,
+                        "pending_reservation_count": 0,
+                        "stale_reservation_count": 0,
+                        "oldest_reservation_at": None,
+                        "finalized_upper_bound_tokens": 0,
+                        "finalized_upper_bound_count": 0,
+                        "available_tokens": 99_900,
+                        "snapshot_at": moment + timedelta(minutes=5),
+                    }
+                )
+            ]
+        )
+        repository.save_gateway_application_ledger_states([state])
+        zero = client.get(url).json()["budget"]
+        assert zero["pending_reserved_tokens"] == 0
+        assert zero["finalized_upper_bound_tokens"] == 0
+        assert zero["available_tokens"] == 99_900
+    finally:
+        app.dependency_overrides.pop(application_access_service, None)
+
+
 class StubSubscriptionKeyClient(ApimSubscriptionKeyClient):
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, str | None]] = []
 
-    def application_subscription_keys(
-        self, apim_subscription_id: str
-    ) -> tuple[str, str]:
+    def application_subscription_keys(self, apim_subscription_id: str) -> tuple[str, str]:
         self.calls.append(("reveal", apim_subscription_id, None))
         return "primary-secret", "secondary-secret"
 
@@ -85,9 +142,7 @@ class StubSubscriptionKeyClient(ApimSubscriptionKeyClient):
 
 
 class ForbiddenSubscriptionKeyClient(StubSubscriptionKeyClient):
-    def application_subscription_keys(
-        self, apim_subscription_id: str
-    ) -> tuple[str, str]:
+    def application_subscription_keys(self, apim_subscription_id: str) -> tuple[str, str]:
         request = httpx.Request("POST", "https://management.azure.com/listSecrets")
         response = httpx.Response(
             403,
@@ -150,20 +205,14 @@ def test_application_access_list_detail_and_owner_sync() -> None:
         assert "secondary_key" not in response.text
 
         application_id = payload["items"][0]["id"]
-        detail = client.get(
-            f"/api/v1/application-access/applications/{application_id}"
-        )
+        detail = client.get(f"/api/v1/application-access/applications/{application_id}")
         assert detail.status_code == 200
-        assert detail.json()["subscriptions"][0]["apim_subscription_id"] == (
-            "outline-assistant"
-        )
+        assert detail.json()["subscriptions"][0]["apim_subscription_id"] == ("outline-assistant")
         assert detail.json()["user_count"] == 1
         assert detail.json()["users"][0]["display_name"] == "Alice"
         assert detail.json()["users"][0]["request_count"] == 1
 
-        accepted = client.post(
-            f"/api/v1/application-access/gateways/{APIM_ID}/sync"
-        )
+        accepted = client.post(f"/api/v1/application-access/gateways/{APIM_ID}/sync")
         assert accepted.status_code == 202
         operation = accepted.json()["operation"]
         assert operation["operation_kind"] == "application_sync"
@@ -243,9 +292,7 @@ def test_application_sync_requires_owner() -> None:
     app.dependency_overrides[get_repository] = lambda: repository
     app.dependency_overrides[require_authenticated_session] = lambda: member
     try:
-        response = client.post(
-            f"/api/v1/application-access/gateways/{APIM_ID}/sync"
-        )
+        response = client.post(f"/api/v1/application-access/gateways/{APIM_ID}/sync")
         assert response.status_code == 403
         assert response.json()["detail"] == "Owner role is required"
         provision = client.post(
@@ -257,14 +304,12 @@ def test_application_sync_requires_owner() -> None:
         )
         assert provision.status_code == 403
         avatar = client.put(
-            "/api/v1/application-access/applications/"
-            "00000000-0000-0000-0000-000000000001/avatar",
+            "/api/v1/application-access/applications/00000000-0000-0000-0000-000000000001/avatar",
             json={"avatar_data_url": None},
         )
         assert avatar.status_code == 403
         budget = client.put(
-            "/api/v1/application-access/applications/"
-            "00000000-0000-0000-0000-000000000001/budget",
+            "/api/v1/application-access/applications/00000000-0000-0000-0000-000000000001/budget",
             json={
                 "token_limit": 200_000,
                 "tokens_per_minute": 10_000,
@@ -320,9 +365,7 @@ def test_owner_can_update_application_budget_and_model_access() -> None:
         assert access.status_code == 200
         assert access.json()["model_policy_configured"] is True
         assert access.json()["allowed_model_ids"] == [str(model_id)]
-        operations = [
-            item["operation"] for item in repository.gateway_application_audit
-        ]
+        operations = [item["operation"] for item in repository.gateway_application_audit]
         assert "budget_updated" in operations
         assert "models_updated" in operations
     finally:
@@ -446,9 +489,7 @@ def test_owner_can_update_read_and_remove_application_avatar() -> None:
         assert image.headers["content-type"] == "image/png"
         assert image.headers["x-content-type-options"] == "nosniff"
         assert "immutable" in image.headers["cache-control"]
-        assert "image_bytes" not in json.dumps(
-            repository.gateway_application_audit, default=str
-        )
+        assert "image_bytes" not in json.dumps(repository.gateway_application_audit, default=str)
 
         removed = client.put(
             f"/api/v1/application-access/applications/{application_id}/avatar",
@@ -493,9 +534,7 @@ def test_owner_subscription_provision_returns_key_once() -> None:
         assert operation.status_code == 200
         assert "primary_key" not in operation.text
         assert primary_key not in operation.text
-        ciphertext = repository.gateway_release_operation_secret(
-            UUID(payload["operation"]["id"])
-        )
+        ciphertext = repository.gateway_release_operation_secret(UUID(payload["operation"]["id"]))
         assert ciphertext is not None
         assert primary_key.encode() not in ciphertext
     finally:

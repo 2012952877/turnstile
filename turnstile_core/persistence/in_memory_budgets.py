@@ -5,11 +5,15 @@ from datetime import UTC, date, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
+from ..domain.application_access import UsageApplicationAttribution
+from ..domain.ledger import BudgetReservationFinalization, LedgerScopeType
 from ..domain.models import TokenUsageRecord
 from .repository_support import BudgetConstraintViolation
 
 
 class InMemoryBudgetRepositoryMixin:
+    budget_reservation_finalizations: list[BudgetReservationFinalization]
+    usage_application_attributions: dict[str, UsageApplicationAttribution]
     budget_roll_forward: dict[date, dict[str, Any]]
     department_enforcement: dict[str, dict[str, Any]]
     department_enforcement_audit: list[dict[str, Any]]
@@ -27,23 +31,38 @@ class InMemoryBudgetRepositoryMixin:
             if row_period == period_start
         ]
 
-    def token_usage_by_budget_scope(
-        self, from_: datetime, to: datetime
-    ) -> list[dict[str, Any]]:
+    def token_usage_by_budget_scope(self, from_: datetime, to: datetime) -> list[dict[str, Any]]:
         totals: dict[tuple[str, str], int] = {}
-        for record in self.usage_records:
-            if not from_ <= record.ts < to or record.usage_domain != "apim":
-                continue
-            tokens = record.input_tokens + record.cached_tokens + record.output_tokens
-            for scope_type, scope_id in (
-                ("organization", record.organization_id),
-                ("department", record.department_id),
-                ("user", record.user_id),
-            ):
-                if scope_id == "unattributed":
+        users = {record.user_id for record in self.usage_records if record.usage_domain == "apim"}
+        users.update(
+            item.scope_id
+            for item in self.budget_reservation_finalizations
+            if item.scope_type == "person"
+        )
+        for user_id in users:
+            for row in self._budget_scope_usage("person", user_id):
+                if not from_ <= row["ts"] < to:
                     continue
-                key = (scope_type, scope_id)
-                totals[key] = totals.get(key, 0) + tokens
+                period = row["ts"].astimezone(UTC).date().replace(day=1)
+                person = self.token_budgets.get((period, "user", user_id), {})
+                department_id = (
+                    row.get("department_id") or person.get("parent_scope_id") or "unattributed"
+                )
+                department = self.token_budgets.get((period, "department", department_id), {})
+                organization_id = (
+                    row.get("organization_id")
+                    or department.get("parent_scope_id")
+                    or "unattributed"
+                )
+                tokens = row["input_tokens"] + row["cached_tokens"] + row["output_tokens"]
+                for scope_type, scope_id in (
+                    ("organization", organization_id),
+                    ("department", department_id),
+                    ("user", user_id),
+                ):
+                    if scope_id != "unattributed":
+                        key = (scope_type, scope_id)
+                        totals[key] = totals.get(key, 0) + tokens
         return [
             {"scope_type": scope_type, "scope_id": scope_id, "used_tokens": used_tokens}
             for (scope_type, scope_id), used_tokens in totals.items()
@@ -113,9 +132,7 @@ class InMemoryBudgetRepositoryMixin:
                 "action": "removed",
                 "previous_token_limit": previous["token_limit"],
                 "new_token_limit": None,
-                "previous_warning_threshold_percent": previous[
-                    "warning_threshold_percent"
-                ],
+                "previous_warning_threshold_percent": previous["warning_threshold_percent"],
                 "new_warning_threshold_percent": None,
                 "changed_at": datetime.now(UTC),
                 "changed_by": changed_by,
@@ -123,9 +140,7 @@ class InMemoryBudgetRepositoryMixin:
         )
         return True
 
-    def roll_forward_budgets(
-        self, period_start: date, changed_by: str
-    ) -> dict[str, Any] | None:
+    def roll_forward_budgets(self, period_start: date, changed_by: str) -> dict[str, Any] | None:
         if period_start in self.budget_roll_forward:
             return None
         occupied = any(period == period_start for period, _, _ in self.token_budgets)
@@ -153,9 +168,7 @@ class InMemoryBudgetRepositoryMixin:
                         "previous_token_limit": None,
                         "new_token_limit": row["token_limit"],
                         "previous_warning_threshold_percent": None,
-                        "new_warning_threshold_percent": row[
-                            "warning_threshold_percent"
-                        ],
+                        "new_warning_threshold_percent": row["warning_threshold_percent"],
                         "changed_at": datetime.now(UTC),
                         "changed_by": changed_by,
                     },
@@ -171,16 +184,12 @@ class InMemoryBudgetRepositoryMixin:
         }
         return dict(self.budget_roll_forward[period_start])
 
-    def list_token_budget_audit(
-        self, period_start: date, limit: int
-    ) -> list[dict[str, Any]]:
-        return [
-            row for row in self.token_budget_audit if row["period_start"] == period_start
-        ][:limit]
+    def list_token_budget_audit(self, period_start: date, limit: int) -> list[dict[str, Any]]:
+        return [row for row in self.token_budget_audit if row["period_start"] == period_start][
+            :limit
+        ]
 
-    def list_user_model_policies(
-        self, user_ids: Sequence[str]
-    ) -> list[dict[str, Any]]:
+    def list_user_model_policies(self, user_ids: Sequence[str]) -> list[dict[str, Any]]:
         return [
             self.user_model_policies[user_id]
             for user_id in user_ids
@@ -209,9 +218,7 @@ class InMemoryBudgetRepositoryMixin:
             )
         ]
 
-    def set_department_enforcement(
-        self, department_id: str, mode: str, changed_by: str
-    ) -> bool:
+    def set_department_enforcement(self, department_id: str, mode: str, changed_by: str) -> bool:
         current = self.department_enforcement.get(department_id)
         previous = None if current is None else str(current["mode"])
         if previous == mode:
@@ -281,29 +288,17 @@ class InMemoryBudgetRepositoryMixin:
         )
         return people
 
-    def budget_ledger_snapshot(
-        self, period_start: date, period_end: date
-    ) -> list[dict[str, Any]]:
-        window_start = datetime.combine(period_start, datetime.min.time(), tzinfo=UTC)
-        window_end = datetime.combine(period_end, datetime.min.time(), tzinfo=UTC)
+    def budget_ledger_snapshot(self, period_start: date, period_end: date) -> list[dict[str, Any]]:
         snapshot: list[dict[str, Any]] = []
         for person in self.budget_ledger_people(period_start):
             scope_id = str(person["user_id"])
-            in_period = [
-                record
-                for record in self.usage_records
-                if record.user_id == scope_id
-                and record.usage_domain == "apim"
-                and window_start <= record.ts < window_end
-            ]
             snapshot.append(
                 {
                     "user_id": scope_id,
                     "department_id": person["department_id"],
                     "token_limit": int(person["token_limit"]),
-                    "confirmed_tokens": sum(
-                        record.input_tokens + record.cached_tokens + record.output_tokens
-                        for record in in_period
+                    "confirmed_tokens": self.budget_scope_confirmed_tokens(
+                        "person", scope_id, period_start, period_end
                     ),
                     "mode": person["mode"],
                 }
@@ -311,19 +306,178 @@ class InMemoryBudgetRepositoryMixin:
         return snapshot
 
     def settled_reservation_correlations(
-        self, correlation_ids: Sequence[str]
+        self,
+        correlation_ids: Sequence[str],
+        *,
+        scope_type: LedgerScopeType | None = None,
+        scope_id: str | None = None,
     ) -> set[str]:
+        if (scope_type is None) != (scope_id is None):
+            raise ValueError("ledger scope type and ID must be supplied together")
         wanted = set(correlation_ids)
-        return {
+        settled = {
             record.correlation_id
             for record in self.usage_records
             if record.correlation_id in wanted
-            and record.usage_domain == "apim"
-            and (
-                record.status_code >= 400
-                or not record.estimated
-            )
+            and self._ledger_scope_matches(record, scope_type, scope_id)
+            and self._ledger_usage_final(record)
         }
+        if scope_type is not None and scope_id is not None:
+            settled.update(
+                correlation
+                for correlation, kind in self.reservation_finalization_kinds(
+                    scope_type, scope_id, correlation_ids
+                ).items()
+                if kind != "unverified_upper_bound"
+            )
+        return settled
+
+    @staticmethod
+    def _ledger_usage_final(record: TokenUsageRecord) -> bool:
+        return (
+            not record.estimated
+            or record.status_code >= 400
+            or record.ingest_error == "stream_cache_usage_unavailable"
+        )
+
+    def _ledger_scope_matches(
+        self,
+        record: TokenUsageRecord,
+        scope_type: LedgerScopeType | None,
+        scope_id: str | None,
+    ) -> bool:
+        if record.usage_domain != "apim":
+            return False
+        if scope_type is None:
+            return True
+        if scope_type == "person":
+            return record.user_id == scope_id
+        attribution = self.usage_application_attributions.get(record.id)
+        return attribution is not None and str(attribution.application_id) == scope_id
+
+    def existing_usage_correlations(
+        self,
+        correlation_ids: Sequence[str],
+        *,
+        scope_type: LedgerScopeType,
+        scope_id: str,
+    ) -> set[str]:
+        return {
+            record.correlation_id
+            for record in self.usage_records
+            if record.correlation_id in correlation_ids
+            and self._ledger_scope_matches(record, scope_type, scope_id)
+        }
+
+    def save_budget_reservation_finalizations(
+        self,
+        items: Sequence[BudgetReservationFinalization],
+    ) -> int:
+        written = 0
+        for item in items:
+            identity = (
+                item.scope_type,
+                item.scope_id,
+                item.correlation_id,
+                item.finalization_kind,
+                item.source,
+                item.evidence_at,
+            )
+            if any(
+                (
+                    row.scope_type,
+                    row.scope_id,
+                    row.correlation_id,
+                    row.finalization_kind,
+                    row.source,
+                    row.evidence_at,
+                )
+                == identity
+                for row in self.budget_reservation_finalizations
+            ):
+                continue
+            self.budget_reservation_finalizations.append(item.model_copy(deep=True))
+            written += 1
+        return written
+
+    def _effective_finalizations(
+        self,
+        scope_type: LedgerScopeType,
+        scope_id: str,
+    ) -> dict[str, BudgetReservationFinalization]:
+        rank = {"exact_usage": 3, "terminal_zero": 2, "unverified_upper_bound": 1}
+        effective: dict[str, BudgetReservationFinalization] = {}
+        for item in self.budget_reservation_finalizations:
+            if item.scope_type != scope_type or item.scope_id != scope_id:
+                continue
+            previous = effective.get(item.correlation_id)
+            if previous is None or (rank[item.finalization_kind], item.evidence_at) >= (
+                rank[previous.finalization_kind],
+                previous.evidence_at,
+            ):
+                effective[item.correlation_id] = item
+        return effective
+
+    def reservation_finalization_kinds(
+        self,
+        scope_type: LedgerScopeType,
+        scope_id: str,
+        correlation_ids: Sequence[str],
+    ) -> dict[str, str]:
+        return {
+            correlation: item.finalization_kind
+            for correlation, item in self._effective_finalizations(scope_type, scope_id).items()
+            if correlation in correlation_ids
+        }
+
+    def _budget_scope_usage(
+        self,
+        scope_type: LedgerScopeType,
+        scope_id: str,
+    ) -> list[dict[str, Any]]:
+        records = [
+            record
+            for record in self.usage_records
+            if self._ledger_scope_matches(record, scope_type, scope_id)
+        ]
+        final = {record.correlation_id for record in records if self._ledger_usage_final(record)}
+        recoveries = {
+            correlation: item
+            for correlation, item in self._effective_finalizations(scope_type, scope_id).items()
+            if correlation not in final and item.finalization_kind != "unverified_upper_bound"
+        }
+        rows = [
+            record.model_dump() for record in records if record.correlation_id not in recoveries
+        ]
+        rows.extend(
+            {
+                "correlation_id": item.correlation_id,
+                "ts": item.reservation_created_at,
+                "input_tokens": item.input_tokens,
+                "output_tokens": item.output_tokens,
+                "cached_tokens": 0,
+                "cache_write_tokens": 0,
+                "estimated_cost": 0.0,
+                "status_code": item.status_code or 0,
+                "et": 0.0,
+                "latency_ms": None,
+            }
+            for item in recoveries.values()
+        )
+        return rows
+
+    def budget_scope_confirmed_tokens(
+        self,
+        scope_type: LedgerScopeType,
+        scope_id: str,
+        period_start: date,
+        period_end: date,
+    ) -> int:
+        return sum(
+            row["input_tokens"] + row["cached_tokens"] + row["output_tokens"]
+            for row in self._budget_scope_usage(scope_type, scope_id)
+            if period_start <= row["ts"].astimezone(UTC).date() < period_end
+        )
 
     def model_access_ledger_snapshot(
         self, user_ids: Sequence[str] | None = None
@@ -339,9 +493,7 @@ class InMemoryBudgetRepositoryMixin:
                 {
                     "user_id": user_id,
                     "model_uuids": model_ids,
-                    "model_keys": [
-                        keys[model_id] for model_id in model_ids if model_id in keys
-                    ],
+                    "model_keys": [keys[model_id] for model_id in model_ids if model_id in keys],
                 }
             )
         return snapshot
@@ -352,20 +504,10 @@ class InMemoryBudgetRepositoryMixin:
         budget = self.token_budgets.get((period_start, "user", user_id))
         if budget is None:
             return None
-        window_start = datetime.combine(period_start, datetime.min.time(), tzinfo=UTC)
-        window_end = datetime.combine(period_end, datetime.min.time(), tzinfo=UTC)
         department_id = str(budget.get("parent_scope_id") or "")
         enforcement = self.department_enforcement.get(department_id)
-        in_period = [
-            record
-            for record in self.usage_records
-            if record.user_id == user_id
-            and record.usage_domain == "apim"
-            and window_start <= record.ts < window_end
-        ]
-        used_tokens = sum(
-            record.input_tokens + record.cached_tokens + record.output_tokens
-            for record in in_period
+        used_tokens = self.budget_scope_confirmed_tokens(
+            "person", user_id, period_start, period_end
         )
         return {
             "token_limit": int(budget["token_limit"]),
@@ -386,15 +528,11 @@ class InMemoryBudgetRepositoryMixin:
         model_ids: Sequence[UUID] | None = None,
     ) -> None:
         user_ids = list(selected_user_ids or [user_id for user_id, _ in entries])
-        normalized_model_ids = (
-            list(dict.fromkeys(model_ids)) if model_ids is not None else None
-        )
+        normalized_model_ids = list(dict.fromkeys(model_ids)) if model_ids is not None else None
         if entries:
             parent = self.token_budgets.get((period_start, "department", department_id))
             if parent is None:
-                raise ValueError(
-                    "Assign the department budget before allocating user budgets"
-                )
+                raise ValueError("Assign the department budget before allocating user budgets")
             selected_ids = {user_id for user_id, _ in entries}
             unselected_total = sum(
                 int(row["token_limit"])
@@ -404,9 +542,7 @@ class InMemoryBudgetRepositoryMixin:
                 and row["parent_scope_id"] == department_id
                 and scope_id not in selected_ids
             )
-            if unselected_total + sum(limit for _, limit in entries) > int(
-                parent["token_limit"]
-            ):
+            if unselected_total + sum(limit for _, limit in entries) > int(parent["token_limit"]):
                 raise BudgetConstraintViolation(
                     "User allocations would exceed the department budget of "
                     f"{int(parent['token_limit'])} tokens"
@@ -424,19 +560,13 @@ class InMemoryBudgetRepositoryMixin:
 
         if normalized_model_ids is not None:
             requested_models = set(normalized_model_ids)
-            enabled_models = {
-                model["id"] for model in self.models if model["enabled"]
-            }
+            enabled_models = {model["id"] for model in self.models if model["enabled"]}
             if not requested_models.issubset(enabled_models):
-                raise BudgetConstraintViolation(
-                    "One or more selected models are unavailable"
-                )
+                raise BudgetConstraintViolation("One or more selected models are unavailable")
             now = datetime.now(UTC)
             for user_id in user_ids:
                 previous = self.user_model_policies.get(user_id)
-                if previous is not None and set(previous["model_ids"]) == set(
-                    normalized_model_ids
-                ):
+                if previous is not None and set(previous["model_ids"]) == set(normalized_model_ids):
                     continue
                 self.user_model_policies[user_id] = {
                     "user_id": user_id,

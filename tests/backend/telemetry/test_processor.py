@@ -2,11 +2,16 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
+from unittest.mock import MagicMock, patch, sentinel
 from uuid import UUID
+
+import pytest
 
 from turnstile_core.domain.application_access import (
     GatewayApplicationDiscovery,
     GatewayApplicationDiscoveryItem,
+    UsageApplicationAttribution,
 )
 from turnstile_core.domain.models import ModelIdentity, ModelPrice, TokenUsageRecord
 from turnstile_core.ingestion.processor import (
@@ -15,6 +20,7 @@ from turnstile_core.ingestion.processor import (
     calculate_et,
 )
 from turnstile_core.persistence.in_memory import InMemoryRepository
+from turnstile_core.persistence.repository import PostgreSqlOpsDbProxy
 from turnstile_core.services.application_access import ApplicationAccessService
 
 GATEWAY_ID = UUID("10000000-0000-4000-8000-000000000001")
@@ -152,6 +158,9 @@ def test_apim_subscription_is_resolved_to_immutable_application_attribution() ->
 
     assert processor.process(
         event(
+            id="application-caller-request",
+            request_id="application-caller-request",
+            correlation_id="application-attempt",
             gateway_profile_id=str(GATEWAY_ID),
             apim_subscription_id="outline-assistant",
             application_actor_type="service",
@@ -160,7 +169,7 @@ def test_apim_subscription_is_resolved_to_immutable_application_attribution() ->
         )
     )
 
-    attribution = repository.usage_application_attributions["usage-1"]
+    attribution = repository.usage_application_attributions["application-attempt"]
     assert attribution.application_name_snapshot == "Outline Assistant"
     assert attribution.actor_type == "service"
     assert attribution.actor_id == "service:outline-assistant"
@@ -186,6 +195,135 @@ def test_stream_without_breakdown_is_persisted_without_inventing_a_split() -> No
     assert record.output_tokens == 0
     assert record.estimated is True
     assert record.ingest_error == "stream_usage_breakdown_unavailable"
+
+
+def test_apim_retries_keep_distinct_attempts_for_one_request() -> None:
+    repository = InMemoryRepository()
+    processor = UsageProcessor(repository, CoefficientResolver({"default": 1.0}))
+
+    for correlation_id, status_code in (("attempt-first", 200), ("attempt-second", 429)):
+        assert processor.process(
+            event(
+                id="caller-request",
+                request_id="caller-request",
+                correlation_id=correlation_id,
+                status=str(status_code),
+                status_code=status_code,
+            )
+        )
+
+    assert [record.id for record in repository.usage_records] == [
+        "attempt-first",
+        "attempt-second",
+    ]
+    assert {record.request_id for record in repository.usage_records} == {"caller-request"}
+    assert [record.status_code for record in repository.usage_records] == [200, 429]
+
+
+def test_apim_redelivery_upgrades_one_attempt_despite_different_event_ids() -> None:
+    repository = InMemoryRepository()
+    processor = UsageProcessor(repository, CoefficientResolver({"default": 1.0}))
+    identity = {"request_id": "caller-request", "correlation_id": "gateway-attempt"}
+
+    assert processor.process(
+        event(
+            **identity,
+            id="gateway-event",
+            input_tokens=None,
+            cached_tokens=None,
+            output_tokens=None,
+            budget_admission="ok",
+        )
+    )
+    assert processor.process(event(**identity, id="observer-event", input_tokens=72))
+    assert processor.process(event(**identity, id="redelivered-event", input_tokens=999))
+
+    assert len(repository.usage_records) == 1
+    record = repository.usage_records[0]
+    assert record.id == "gateway-attempt"
+    assert record.request_id == "caller-request"
+    assert record.correlation_id == "gateway-attempt"
+    assert record.estimated is False
+    assert record.input_tokens == 72
+    assert record.budget_admission == "ok"
+
+
+@pytest.mark.parametrize("estimated", [False, True])
+def test_apim_redelivery_preserves_pre_upgrade_identity(estimated: bool) -> None:
+    repository = InMemoryRepository()
+    processor = UsageProcessor(repository, CoefficientResolver({"default": 1.0}))
+    identity = {"request_id": "legacy-caller", "correlation_id": "legacy-attempt"}
+    legacy = processor.normalize(event(**identity, id="legacy-caller", input_tokens=100))
+    assert legacy is not None
+    repository.write_token_usage(
+        legacy.model_copy(update={"id": "legacy-caller", "estimated": estimated})
+    )
+
+    assert processor.process(event(**identity, id="replayed-event", input_tokens=72))
+    assert processor.process(event(**identity, id="second-delivery", input_tokens=999))
+
+    assert len(repository.usage_records) == 1
+    stored = repository.usage_records[0]
+    assert stored.id == "legacy-caller"
+    assert stored.request_id == "legacy-caller"
+    assert stored.correlation_id == "legacy-attempt"
+    assert stored.estimated is False
+    assert stored.input_tokens == (72 if estimated else 100)
+
+
+@pytest.mark.parametrize("existing_id", [None, "legacy-caller"])
+def test_postgres_reuses_attempt_identity_for_usage_and_attribution(
+    existing_id: str | None,
+) -> None:
+    processor = UsageProcessor(RecordingRepository(), CoefficientResolver({"default": 1.0}))
+    record = processor.normalize(event(id="caller", correlation_id="gateway-attempt"))
+    assert record is not None
+    repository = object.__new__(PostgreSqlOpsDbProxy)
+    connection = MagicMock()
+    connection.execute.return_value.fetchone.return_value = (
+        {"id": existing_id} if existing_id is not None else None
+    )
+    application = cast(UsageApplicationAttribution, sentinel.application)
+    expected_id = existing_id or record.id
+    with (
+        patch.object(repository, "_connection") as connect,
+        patch.object(repository, "_write_usage_application_attribution") as attribute,
+    ):
+        connect.return_value.__enter__.return_value = connection
+        repository.write_token_usage(record, application)
+        attribute.assert_called_once_with(connection, expected_id, application)
+
+    assert connection.execute.call_count == 2
+    lookup, write = connection.execute.call_args_list
+    assert "WHERE correlation_id = %s AND usage_domain = 'apim'" in lookup.args[0]
+    assert lookup.args[1] == (record.correlation_id,)
+    assert write.args[1]["id"] == expected_id
+    assert write.args[1]["request_id"] == record.request_id
+    assert write.args[1]["correlation_id"] == record.correlation_id
+    assert record.id == "gateway-attempt"
+
+
+def test_copilot_identity_and_missing_correlation_fallbacks_are_preserved() -> None:
+    processor = UsageProcessor(RecordingRepository(), CoefficientResolver({"default": 1.0}))
+    cases: tuple[tuple[dict[str, object], str, str], ...] = (
+        ({"request_id": "caller-request"}, "caller-request", "apim"),
+        ({}, "source-event", "apim"),
+        (
+            {"ingest_source": "copilot_cli", "correlation_id": "shared-correlation"},
+            "source-event",
+            "github_copilot",
+        ),
+        (
+            {"request_source": "copilot-assistant-tools", "correlation_id": "shared-correlation"},
+            "source-event",
+            "github_copilot",
+        ),
+    )
+    for overrides, expected_id, expected_domain in cases:
+        record = processor.normalize(event(id="source-event", **overrides))
+        assert record is not None
+        assert record.id == expected_id
+        assert record.usage_domain == expected_domain
 
 
 def test_exact_adapter_event_upgrades_only_the_estimated_placeholder() -> None:

@@ -6,7 +6,8 @@ from datetime import date, datetime
 from typing import Any, Protocol
 from uuid import UUID
 
-from ..domain.application_access import UsageApplicationAttribution
+from ..domain.application_access import GatewayApplicationLedgerState, UsageApplicationAttribution
+from ..domain.ledger import BudgetReservationFinalization, LedgerScopeType
 from ..domain.models import (
     ApimCacheReadBucket,
     AuditFindingUpdate,
@@ -198,9 +199,7 @@ class QueryRepository(ABC):
     def list_conversations(self, owner_id: str, limit: int) -> Sequence[dict[str, Any]]: ...
 
     @abstractmethod
-    def get_conversation(
-        self, conversation_id: UUID, owner_id: str
-    ) -> dict[str, Any] | None: ...
+    def get_conversation(self, conversation_id: UUID, owner_id: str) -> dict[str, Any] | None: ...
 
     @abstractmethod
     def append_conversation_turn(
@@ -303,9 +302,7 @@ class QueryRepository(ABC):
     ) -> Sequence[dict[str, Any]]: ...
 
     @abstractmethod
-    def list_user_model_policies(
-        self, user_ids: Sequence[str]
-    ) -> Sequence[dict[str, Any]]: ...
+    def list_user_model_policies(self, user_ids: Sequence[str]) -> Sequence[dict[str, Any]]: ...
 
     @abstractmethod
     def list_user_model_access_audit(
@@ -339,8 +336,57 @@ class QueryRepository(ABC):
 
     @abstractmethod
     def settled_reservation_correlations(
-        self, correlation_ids: Sequence[str]
+        self,
+        correlation_ids: Sequence[str],
+        *,
+        scope_type: LedgerScopeType | None = None,
+        scope_id: str | None = None,
     ) -> set[str]: ...
+
+    @abstractmethod
+    def existing_usage_correlations(
+        self,
+        correlation_ids: Sequence[str],
+        *,
+        scope_type: LedgerScopeType,
+        scope_id: str,
+    ) -> set[str]: ...
+
+    @abstractmethod
+    def save_budget_reservation_finalizations(
+        self,
+        items: Sequence[BudgetReservationFinalization],
+    ) -> int: ...
+
+    @abstractmethod
+    def reservation_finalization_kinds(
+        self,
+        scope_type: LedgerScopeType,
+        scope_id: str,
+        correlation_ids: Sequence[str],
+    ) -> dict[str, str]: ...
+
+    @abstractmethod
+    def budget_scope_confirmed_tokens(
+        self,
+        scope_type: LedgerScopeType,
+        scope_id: str,
+        period_start: date,
+        period_end: date,
+    ) -> int: ...
+
+    @abstractmethod
+    def save_gateway_application_ledger_states(
+        self,
+        states: Sequence[GatewayApplicationLedgerState],
+    ) -> None: ...
+
+    @abstractmethod
+    def list_gateway_application_ledger_states(
+        self,
+        period_start: date,
+        application_ids: Sequence[UUID],
+    ) -> Sequence[dict[str, Any]]: ...
 
     @abstractmethod
     def model_access_ledger_snapshot(
@@ -431,9 +477,7 @@ class QueryRepository(ABC):
     ) -> Sequence[dict[str, Any]]: ...
 
     @abstractmethod
-    def all_gateway_publications(
-        self, gateway_profile_id: UUID
-    ) -> Sequence[dict[str, Any]]: ...
+    def all_gateway_publications(self, gateway_profile_id: UUID) -> Sequence[dict[str, Any]]: ...
 
     @abstractmethod
     def get_gateway_publication(self, publication_id: UUID) -> dict[str, Any] | None: ...
@@ -449,19 +493,13 @@ class QueryRepository(ABC):
     ) -> Sequence[dict[str, Any]]: ...
 
     @abstractmethod
-    def list_gateway_publication_audit(
-        self, publication_id: UUID
-    ) -> Sequence[dict[str, Any]]: ...
+    def list_gateway_publication_audit(self, publication_id: UUID) -> Sequence[dict[str, Any]]: ...
 
     @abstractmethod
-    def effective_gateway_publication(
-        self, gateway_profile_id: UUID
-    ) -> dict[str, Any] | None: ...
+    def effective_gateway_publication(self, gateway_profile_id: UUID) -> dict[str, Any] | None: ...
 
     @abstractmethod
-    def get_gateway_release_protection(
-        self, publication_id: UUID
-    ) -> dict[str, Any] | None: ...
+    def get_gateway_release_protection(self, publication_id: UUID) -> dict[str, Any] | None: ...
 
     @abstractmethod
     def list_gateway_release_protections(
@@ -505,9 +543,7 @@ class QueryRepository(ABC):
     def delete_gateway_release_operation_secret(self, operation_id: UUID) -> None: ...
 
     @abstractmethod
-    def get_gateway_release_operation(
-        self, operation_id: UUID
-    ) -> dict[str, Any] | None: ...
+    def get_gateway_release_operation(self, operation_id: UUID) -> dict[str, Any] | None: ...
 
     @abstractmethod
     def list_gateway_release_operations(
@@ -577,9 +613,7 @@ class QueryRepository(ABC):
     ) -> dict[str, Any]: ...
 
     @abstractmethod
-    def get_gateway_release_gc_plan(
-        self, operation_id: UUID
-    ) -> dict[str, Any] | None: ...
+    def get_gateway_release_gc_plan(self, operation_id: UUID) -> dict[str, Any] | None: ...
 
     @abstractmethod
     def sync_gateway_applications(
@@ -615,9 +649,7 @@ class QueryRepository(ABC):
     ) -> Sequence[dict[str, Any]]: ...
 
     @abstractmethod
-    def get_gateway_application_avatar(
-        self, application_id: UUID
-    ) -> dict[str, Any] | None: ...
+    def get_gateway_application_avatar(self, application_id: UUID) -> dict[str, Any] | None: ...
 
     @abstractmethod
     def update_gateway_application_avatar(
@@ -719,9 +751,7 @@ class QueryRepository(ABC):
     ) -> Sequence[dict[str, Any]]: ...
 
     @abstractmethod
-    def roll_forward_gateway_application_budgets(
-        self, period_start: date, actor: str
-    ) -> int: ...
+    def roll_forward_gateway_application_budgets(self, period_start: date, actor: str) -> int: ...
 
     @abstractmethod
     def claim_gateway_publication(
@@ -744,9 +774,7 @@ class QueryRepository(ABC):
     ) -> dict[str, Any] | None: ...
 
     @abstractmethod
-    def activate_gateway_publication(
-        self, publication_id: UUID, actor: str
-    ) -> dict[str, Any]: ...
+    def activate_gateway_publication(self, publication_id: UUID, actor: str) -> dict[str, Any]: ...
 
     @abstractmethod
     def invocation_route(

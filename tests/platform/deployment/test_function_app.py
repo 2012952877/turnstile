@@ -1,13 +1,22 @@
 import subprocess
 import sys
 import typing
+from datetime import timedelta
 from inspect import signature
 from pathlib import Path
 from typing import get_args, get_origin
+from unittest.mock import MagicMock, patch
 
 import azure.functions as func
+import pytest
 
-from functions.telemetry.function_app import app, process_usage_events, telemetry_health
+from functions.telemetry.function_app import (
+    app,
+    process_usage_events,
+    sync_budget_ledger,
+    telemetry_health,
+)
+from turnstile_core.config import Settings
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -63,3 +72,37 @@ def test_telemetry_health_proves_the_python_worker_is_running() -> None:
     assert response.status_code == 200
     assert response.mimetype == "application/json"
     assert response.get_body() == b'{"status": "ok"}'
+
+
+@pytest.mark.parametrize(
+    "workspace,enabled", [(None, True), ("workspace", False), ("workspace", True)]
+)
+def test_ledger_timer_only_enables_evidence_when_configured(
+    workspace: str | None, enabled: bool
+) -> None:
+    settings = Settings.model_construct(
+        ledger_sync_enabled=True,
+        ledger_table_endpoint="https://ledger.example.com",
+        log_analytics_workspace_id=workspace,
+        reconciliation_enabled=enabled,
+    )
+    repository = MagicMock()
+    repository.roll_forward_budgets.return_value = None
+    repository.roll_forward_gateway_application_budgets.return_value = 0
+    with (
+        patch("turnstile_core.config.get_settings", return_value=settings),
+        patch("turnstile_core.persistence.factory.create_repository", return_value=repository),
+        patch("turnstile_core.integrations.ledger.TableStorageLedger") as store,
+        patch("turnstile_core.integrations.ledger.LedgerSyncService") as service,
+        patch(
+            "turnstile_core.integrations.reconciliation.LogAnalyticsReservationTerminalLog"
+        ) as log,
+    ):
+        sync_budget_ledger.build().get_user_function()(None)
+        assert log.call_count == (1 if workspace and enabled else 0)
+        assert service.call_args.args == (repository, store.return_value.__enter__.return_value)
+        assert service.call_args.kwargs["terminal_log"] == (
+            log.return_value if workspace and enabled else None
+        )
+        assert service.call_args.kwargs["recovery_lag"] == timedelta(minutes=10)
+        assert service.call_args.kwargs["finalization_lag"] == timedelta(hours=24)

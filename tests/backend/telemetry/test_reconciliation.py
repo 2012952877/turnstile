@@ -4,6 +4,9 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import httpx
+import pytest
+
 from turnstile_core.domain.models import (
     ApimCacheReadBucket,
     ModelIdentity,
@@ -16,13 +19,104 @@ from turnstile_core.integrations.reconciliation import (
     CACHE_READ_SOURCE,
     RECONCILIATION_SOURCE,
     CacheReadSyncService,
+    LogAnalyticsReservationTerminalLog,
     ReconciliationService,
     _parse_cache_read_rows,
     _parse_rows,
+    _parse_terminal_rows,
 )
 from turnstile_core.persistence.in_memory import InMemoryRepository
 
 NOW = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
+
+
+def _terminal_payload(rows: list[list[Any]]) -> dict[str, Any]:
+    return {
+        "tables": [
+            {
+                "columns": [
+                    {"name": name}
+                    for name in (
+                        "CorrelationId",
+                        "ObservedAt",
+                        "StatusCode",
+                        "LastErrorReason",
+                        "PromptTokens",
+                        "CompletionTokens",
+                        "TotalTokens",
+                    )
+                ],
+                "rows": rows,
+            }
+        ]
+    }
+
+
+def test_terminal_evidence_preserves_exact_and_partial_usage() -> None:
+    items = _parse_terminal_rows(
+        _terminal_payload(
+            [
+                ["exact", NOW.isoformat(), 200, None, 70, 30, 100],
+                ["failure", NOW.isoformat(), 429, "rate limited", None, None, None],
+                ["partial", NOW.isoformat(), 500, None, 70, None, None],
+                ["inconsistent", NOW.isoformat(), 200, None, 70, 30, 90],
+            ]
+        )
+    )
+    assert items[0].has_exact_usage
+    assert items[1].is_terminal_zero
+    assert not items[2].is_terminal_zero
+    assert not items[2].has_exact_usage
+    assert not items[3].has_exact_usage
+    assert _parse_terminal_rows(_terminal_payload([])) == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"tables": []},
+        {"tables": [{"columns": [], "rows": []}]},
+        {"error": {"code": "PartialError"}, **_terminal_payload([])},
+        _terminal_payload([["short"]]),
+    ],
+)
+def test_terminal_evidence_invalid_results_are_not_successful_empty_queries(
+    payload: dict[str, Any],
+) -> None:
+    with pytest.raises(RuntimeError):
+        _parse_terminal_rows(payload)
+
+
+def test_terminal_evidence_client_batches_and_does_not_accept_partial_http_success() -> None:
+    from unittest.mock import Mock
+
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=_terminal_payload([]))
+
+    token_provider = Mock()
+    token_provider.token.return_value = "test-token"
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        log = LogAnalyticsReservationTerminalLog(
+            "workspace", 'api"name', token_provider, client, max_batch_size=2
+        )
+        assert log.fetch_correlations(["first", "second", "third", "first"], NOW, NOW) == []
+        assert (
+            log.fetch_correlations(
+                ["first", "second", "third", "first"], NOW - timedelta(hours=1), NOW
+            )
+            == []
+        )
+    assert len(requests) == 2
+    token_provider.token.assert_called_once()
+    import json
+
+    query = json.loads(requests[0].content)["query"]
+    assert 'let api_id = "api\\"name";' in query
+    assert 'dynamic(["first", "second"])' in query
 
 
 class RecordingUsageLog:
@@ -95,9 +189,7 @@ def record(
 def test_first_run_uses_lookback_and_stops_short_of_now() -> None:
     repository = InMemoryRepository()
     usage_log = RecordingUsageLog([])
-    service = ReconciliationService(
-        repository, usage_log, lookback_hours=24, safety_lag_minutes=6
-    )
+    service = ReconciliationService(repository, usage_log, lookback_hours=24, safety_lag_minutes=6)
 
     outcome = service.run(now=NOW)
 
@@ -128,9 +220,7 @@ def test_only_unmeasured_successful_rows_are_filled() -> None:
     usage_log = RecordingUsageLog(
         [
             ReconciledUsage(correlation_id="stream-1", input_tokens=1136, output_tokens=487),
-            ReconciledUsage(
-                correlation_id="already-measured", input_tokens=999, output_tokens=999
-            ),
+            ReconciledUsage(correlation_id="already-measured", input_tokens=999, output_tokens=999),
             ReconciledUsage(correlation_id="failed-request", input_tokens=5, output_tokens=5),
         ]
     )
@@ -252,29 +342,27 @@ def test_cache_read_query_uses_only_the_bounded_global_metric() -> None:
 def test_cache_read_sync_upserts_hourly_metric_buckets() -> None:
     repository = InMemoryRepository()
     payload = {
-        "tables": [{
-            "columns": [
-                {"name": "DimensionType"},
-                {"name": "DimensionValue"},
-                {"name": "BucketStart"},
-                {"name": "CacheReadTokens"},
-            ],
-            "rows": [["global", "all", "2026-07-25T10:00:00Z", 420000]],
-        }]
+        "tables": [
+            {
+                "columns": [
+                    {"name": "DimensionType"},
+                    {"name": "DimensionValue"},
+                    {"name": "BucketStart"},
+                    {"name": "CacheReadTokens"},
+                ],
+                "rows": [["global", "all", "2026-07-25T10:00:00Z", 420000]],
+            }
+        ]
     }
     usage_log = RecordingCacheReadLog(payload)
 
-    refreshed = CacheReadSyncService(repository, usage_log, "turnstile-llm").run(
-        now=NOW
-    )
+    refreshed = CacheReadSyncService(repository, usage_log, "turnstile-llm").run(now=NOW)
 
     assert refreshed == 1
     assert usage_log.windows[0][0] == "turnstile-llm"
     assert usage_log.windows[0][1] == NOW - timedelta(days=30)
     assert usage_log.windows[0][2] == NOW - timedelta(minutes=6)
-    assert repository.reconciliation_watermark(CACHE_READ_SOURCE) == (
-        NOW - timedelta(minutes=6)
-    )
+    assert repository.reconciliation_watermark(CACHE_READ_SOURCE) == (NOW - timedelta(minutes=6))
     assert repository.apim_cache_read_buckets == {
         (
             "turnstile-llm",
@@ -304,9 +392,7 @@ def test_empty_cache_read_query_does_not_erase_existing_buckets() -> None:
 
 def test_cache_read_sync_reuses_watermark_with_overlap() -> None:
     repository = InMemoryRepository()
-    repository.save_reconciliation_state(
-        CACHE_READ_SOURCE, NOW - timedelta(hours=2), 0, 0
-    )
+    repository.save_reconciliation_state(CACHE_READ_SOURCE, NOW - timedelta(hours=2), 0, 0)
     usage_log = RecordingCacheReadLog({"tables": []})
 
     CacheReadSyncService(repository, usage_log, "turnstile-llm").run(now=NOW)
@@ -318,18 +404,20 @@ def test_cache_read_sync_reuses_watermark_with_overlap() -> None:
 def test_cache_read_sync_ignores_legacy_dynamic_dimension_rows() -> None:
     repository = InMemoryRepository()
     payload = {
-        "tables": [{
-            "columns": [
-                {"name": "DimensionType"},
-                {"name": "DimensionValue"},
-                {"name": "BucketStart"},
-                {"name": "CacheReadTokens"},
-            ],
-            "rows": [
-                ["model", "model-key", "2026-07-25T10:00:00Z", 400],
-                ["user", "person@example.com", "2026-07-25T10:00:00Z", 20],
-            ],
-        }]
+        "tables": [
+            {
+                "columns": [
+                    {"name": "DimensionType"},
+                    {"name": "DimensionValue"},
+                    {"name": "BucketStart"},
+                    {"name": "CacheReadTokens"},
+                ],
+                "rows": [
+                    ["model", "model-key", "2026-07-25T10:00:00Z", 400],
+                    ["user", "person@example.com", "2026-07-25T10:00:00Z", 20],
+                ],
+            }
+        ]
     }
 
     refreshed = CacheReadSyncService(
@@ -343,30 +431,35 @@ def test_cache_read_sync_ignores_legacy_dynamic_dimension_rows() -> None:
 def test_repository_never_reads_legacy_dynamic_cache_rows() -> None:
     repository = InMemoryRepository()
     bucket = datetime(2026, 7, 25, 10, tzinfo=UTC)
-    repository.apim_cache_read_buckets[
-        ("turnstile-llm", "user", "person@example.com", bucket)
-    ] = 420
+    repository.apim_cache_read_buckets[("turnstile-llm", "user", "person@example.com", bucket)] = (
+        420
+    )
 
-    assert repository.apim_cache_read_totals(
-        bucket, bucket + timedelta(hours=1), "user", ("person@example.com",)
-    ) == {}
+    assert (
+        repository.apim_cache_read_totals(
+            bucket, bucket + timedelta(hours=1), "user", ("person@example.com",)
+        )
+        == {}
+    )
 
 
 def test_cache_read_sync_keeps_global_hours_separate() -> None:
     repository = InMemoryRepository()
     payload = {
-        "tables": [{
-            "columns": [
-                {"name": "DimensionType"},
-                {"name": "DimensionValue"},
-                {"name": "BucketStart"},
-                {"name": "CacheReadTokens"},
-            ],
-            "rows": [
-                ["global", "all", "2026-07-25T10:00:00Z", 400],
-                ["global", "all", "2026-07-25T11:00:00Z", 20],
-            ],
-        }]
+        "tables": [
+            {
+                "columns": [
+                    {"name": "DimensionType"},
+                    {"name": "DimensionValue"},
+                    {"name": "BucketStart"},
+                    {"name": "CacheReadTokens"},
+                ],
+                "rows": [
+                    ["global", "all", "2026-07-25T10:00:00Z", 400],
+                    ["global", "all", "2026-07-25T11:00:00Z", 20],
+                ],
+            }
+        ]
     }
 
     refreshed = CacheReadSyncService(
@@ -374,22 +467,28 @@ def test_cache_read_sync_keeps_global_hours_separate() -> None:
     ).run(now=NOW)
 
     assert refreshed == 2
-    assert repository.apim_cache_read_buckets[
-        (
-            "turnstile-llm",
-            "global",
-            "all",
-            datetime(2026, 7, 25, 10, tzinfo=UTC),
-        )
-    ] == 400
-    assert repository.apim_cache_read_buckets[
-        (
-            "turnstile-llm",
-            "global",
-            "all",
-            datetime(2026, 7, 25, 11, tzinfo=UTC),
-        )
-    ] == 20
+    assert (
+        repository.apim_cache_read_buckets[
+            (
+                "turnstile-llm",
+                "global",
+                "all",
+                datetime(2026, 7, 25, 10, tzinfo=UTC),
+            )
+        ]
+        == 400
+    )
+    assert (
+        repository.apim_cache_read_buckets[
+            (
+                "turnstile-llm",
+                "global",
+                "all",
+                datetime(2026, 7, 25, 11, tzinfo=UTC),
+            )
+        ]
+        == 20
+    )
 
 
 def test_cached_tokens_are_filled_from_the_token_metric() -> None:

@@ -36,12 +36,7 @@ UNDOCUMENTED = {
 
 
 def _operations(paths: dict[str, dict[str, object]]) -> set[tuple[str, str]]:
-    return {
-        (path, method)
-        for path, item in paths.items()
-        for method in item
-        if method in METHODS
-    }
+    return {(path, method) for path, item in paths.items() for method in item if method in METHODS}
 
 
 @cache
@@ -102,9 +97,7 @@ def test_openapi_root_is_a_small_domain_index() -> None:
     assert len(schemas) == 161
     assert all(set(value) == {"$ref"} for value in paths.values())
     assert all(set(value) == {"$ref"} for value in schemas.values())
-    assert {
-        path.name for path in (CONTRACT.parent / "openapi" / "paths").glob("*.yaml")
-    } == {
+    assert {path.name for path in (CONTRACT.parent / "openapi" / "paths").glob("*.yaml")} == {
         "application-access.yaml",
         "assistant.yaml",
         "authentication.yaml",
@@ -115,11 +108,33 @@ def test_openapi_root_is_a_small_domain_index() -> None:
     }
 
 
+def test_application_ledger_fields_preserve_unknown_and_zero() -> None:
+    schema = _documented_schemas()["GatewayApplicationBudget"]
+    properties = cast(dict[str, dict[str, object]], schema["properties"])
+    numeric = (
+        "pending_reserved_tokens",
+        "pending_reservation_count",
+        "finalized_upper_bound_tokens",
+        "finalized_upper_bound_count",
+        "stale_reservation_count",
+        "available_tokens",
+    )
+    for field in numeric:
+        assert properties[field]["type"] == ["integer", "null"]
+        assert properties[field]["default"] is None
+        assert properties[field]["minimum"] == 0
+    required = cast(list[str], schema["required"])
+    assert not set(numeric).intersection(required)
+    for field in ("oldest_reservation_at", "ledger_snapshot_at"):
+        assert properties[field]["type"] == ["string", "null"]
+        assert properties[field]["format"] == "date-time"
+
+
 def test_event_contract_domain_mirror_matches_the_inline_extension() -> None:
     root = _yaml_document(CONTRACT.resolve())
-    mirror = _yaml_document(
-        (CONTRACT.parent / "openapi" / "events" / "eventhub.yaml").resolve()
-    )["eventContracts"]
+    mirror = _yaml_document((CONTRACT.parent / "openapi" / "events" / "eventhub.yaml").resolve())[
+        "eventContracts"
+    ]
 
     def normalize(value: object) -> object:
         if isinstance(value, str):
@@ -174,9 +189,7 @@ def test_foundry_key_runtime_contract_is_distinct_from_managed_identity() -> Non
     assert {"foundry_inference_endpoint"} in {
         frozenset(item["required"]) for item in managed_identity_exclusions
     }
-    assert {"api_key"} in {
-        frozenset(item["required"]) for item in managed_identity_exclusions
-    }
+    assert {"api_key"} in {frozenset(item["required"]) for item in managed_identity_exclusions}
 
 
 def test_gateway_release_reads_separate_recorded_and_live_integrity() -> None:
@@ -189,15 +202,18 @@ def test_gateway_release_reads_separate_recorded_and_live_integrity() -> None:
     assert get_operation("/api/v1/model-management/releases")["operationId"] == (
         "listGatewayReleases"
     )
-    assert get_operation("/api/v1/model-management/releases/{release_id}")[
-        "operationId"
-    ] == "getGatewayRelease"
-    assert get_operation("/api/v1/model-management/releases/{release_id}/diff")[
-        "operationId"
-    ] == "getGatewayReleaseDiff"
-    assert get_operation("/api/v1/model-management/releases/{release_id}/integrity")[
-        "operationId"
-    ] == "getGatewayReleaseIntegrity"
+    assert (
+        get_operation("/api/v1/model-management/releases/{release_id}")["operationId"]
+        == "getGatewayRelease"
+    )
+    assert (
+        get_operation("/api/v1/model-management/releases/{release_id}/diff")["operationId"]
+        == "getGatewayReleaseDiff"
+    )
+    assert (
+        get_operation("/api/v1/model-management/releases/{release_id}/integrity")["operationId"]
+        == "getGatewayReleaseIntegrity"
+    )
     dependencies = cast(
         dict[str, dict[str, object]],
         schemas["GatewayReleaseDependencies"]["properties"],

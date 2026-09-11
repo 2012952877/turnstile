@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 from ..domain.anomaly_engine import evaluate_anomaly_rules
 from ..domain.application_access import UsageApplicationAttribution
 from ..domain.enterprise import enterprise_catalog
+from ..domain.ledger import BudgetReservationFinalization
 from ..domain.models import (
     ApimCacheReadBucket,
     AuditFindingUpdate,
@@ -110,6 +111,7 @@ class InMemoryRepository(
             )
         ]
         self.usage_records: list[TokenUsageRecord] = []
+        self.budget_reservation_finalizations: list[BudgetReservationFinalization] = []
         self.usage_application_attributions: dict[str, UsageApplicationAttribution] = {}
         self.pinned_reports: list[dict[str, Any]] = []
         self.pinned_charts: list[dict[str, Any]] = []
@@ -143,6 +145,7 @@ class InMemoryRepository(
         self.gateway_application_avatars: dict[UUID, dict[str, Any]] = {}
         self.gateway_application_subscriptions: list[dict[str, Any]] = []
         self.gateway_application_budgets: dict[tuple[date, UUID], dict[str, Any]] = {}
+        self.gateway_application_ledger_states: dict[tuple[date, UUID], dict[str, Any]] = {}
         self.gateway_application_model_policies: dict[UUID, dict[str, Any]] = {}
         self.gateway_application_model_access: dict[UUID, set[UUID]] = {}
         self.gateway_application_audit: list[dict[str, Any]] = []
@@ -348,6 +351,19 @@ class InMemoryRepository(
         record: TokenUsageRecord,
         application: UsageApplicationAttribution | None = None,
     ) -> None:
+        if record.usage_domain == "apim":
+            existing_attempt = max(
+                (
+                    item
+                    for item in self.usage_records
+                    if item.usage_domain == "apim"
+                    and item.correlation_id == record.correlation_id
+                ),
+                key=lambda item: (item.ts, item.id),
+                default=None,
+            )
+            if existing_attempt is not None:
+                record = record.model_copy(update={"id": existing_attempt.id})
         if application is not None:
             self._write_usage_application_attribution(record.id, application)
         for index, existing in enumerate(self.usage_records):
@@ -800,13 +816,17 @@ class InMemoryRepository(
         return [self._request_summary(record) for record in records[:limit]]
 
     def get_usage_request(self, request_id: str) -> dict[str, Any] | None:
-        record = next(
-            (
-                record
-                for record in self.usage_records
-                if record.request_id == request_id and record.usage_domain == "apim"
-            ),
-            None,
+        records = [
+            record
+            for record in self.usage_records
+            if record.usage_domain == "apim"
+            and (record.correlation_id == request_id or record.request_id == request_id)
+        ]
+        exact_matches = [record for record in records if record.correlation_id == request_id]
+        record = max(
+            exact_matches or records,
+            key=lambda item: (item.ts, item.id),
+            default=None,
         )
         if record is None:
             return None

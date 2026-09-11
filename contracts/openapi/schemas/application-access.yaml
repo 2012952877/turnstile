@@ -127,6 +127,38 @@ schemas:
       updated_at:
         type: string
         format: date-time
+      pending_reserved_tokens:
+        type: [integer, 'null']
+        minimum: 0
+        default: null
+      pending_reservation_count:
+        type: [integer, 'null']
+        minimum: 0
+        default: null
+      finalized_upper_bound_tokens:
+        type: [integer, 'null']
+        minimum: 0
+        default: null
+      finalized_upper_bound_count:
+        type: [integer, 'null']
+        minimum: 0
+        default: null
+      stale_reservation_count:
+        type: [integer, 'null']
+        minimum: 0
+        default: null
+      oldest_reservation_at:
+        type: [string, 'null']
+        format: date-time
+        default: null
+      available_tokens:
+        type: [integer, 'null']
+        minimum: 0
+        default: null
+      ledger_snapshot_at:
+        type: [string, 'null']
+        format: date-time
+        default: null
   GatewayApplicationBudgetUpdate:
     type: object
     additionalProperties: false

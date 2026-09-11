@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -105,6 +106,95 @@ def test_real_usage_record_drives_enterprise_analytics() -> None:
         assert detail["organization_id"] == "org-contoso-global"
     finally:
         app.dependency_overrides.pop(get_repository, None)
+
+
+@pytest.mark.parametrize("reverse_insertion", [False, True])
+def test_request_trace_preserves_attempts_and_legacy_lookup(reverse_insertion: bool) -> None:
+    repository = InMemoryRepository()
+    records = [
+        _usage_record("attempt-first", "Model Runtime", 100).model_copy(
+            update={"request_id": "caller-request", "correlation_id": "attempt-first"}
+        ),
+        _usage_record("attempt-second", "Model Runtime", 0, status_code=429).model_copy(
+            update={
+                "request_id": "caller-request",
+                "correlation_id": "attempt-second",
+                "ts": datetime(2026, 7, 20, 0, 0, 1, tzinfo=UTC),
+                "error_message": "rate limited",
+            }
+        ),
+    ]
+    for record in reversed(records) if reverse_insertion else records:
+        repository.write_token_usage(record)
+    app.dependency_overrides[get_repository] = lambda: repository
+    try:
+        params = {"from": "2026-07-01T00:00:00Z", "to": "2026-08-01T00:00:00Z"}
+        response = client.get("/api/v1/observability/requests", params=params)
+        assert response.status_code == 200
+        listed = response.json()["items"]
+        assert [item["correlation_id"] for item in listed] == ["attempt-second", "attempt-first"]
+        assert {item["request_id"] for item in listed} == {"caller-request"}
+        assert [item["status_code"] for item in listed] == [429, 200]
+
+        for selector, expected_correlation, expected_status in (
+            ("attempt-first", "attempt-first", 200),
+            ("attempt-second", "attempt-second", 429),
+            ("caller-request", "attempt-second", 429),
+        ):
+            detail = client.get(f"/api/v1/observability/requests/{selector}")
+            assert detail.status_code == 200
+            assert detail.json()["correlation_id"] == expected_correlation
+            assert detail.json()["status_code"] == expected_status
+        assert client.get("/api/v1/observability/requests/unknown-attempt").status_code == 404
+    finally:
+        app.dependency_overrides.pop(get_repository, None)
+
+
+def test_request_trace_prioritizes_correlation_and_keeps_copilot_private() -> None:
+    repository = InMemoryRepository()
+    exact = _usage_record("exact-attempt", "Model Runtime", 100).model_copy(
+        update={"request_id": "caller-request", "correlation_id": "shared-selector"}
+    )
+    newer = _usage_record("newer-attempt", "Model Runtime", 200).model_copy(
+        update={
+            "request_id": "shared-selector",
+            "correlation_id": "newer-correlation",
+            "ts": datetime(2026, 7, 20, 0, 0, 1, tzinfo=UTC),
+        }
+    )
+    copilot = _usage_record("copilot-event", "GitHub Copilot CLI", 50).model_copy(
+        update={
+            "request_id": "shared-selector",
+            "correlation_id": "copilot-correlation",
+            "ts": datetime(2026, 7, 20, 0, 0, 2, tzinfo=UTC),
+            "usage_domain": "github_copilot",
+            "ingest_source": "copilot_cli",
+        }
+    )
+    for record in (copilot, newer, exact):
+        repository.write_token_usage(record)
+    app.dependency_overrides[get_repository] = lambda: repository
+    try:
+        detail = client.get("/api/v1/observability/requests/shared-selector")
+        assert detail.status_code == 200
+        assert detail.json()["correlation_id"] == "shared-selector"
+        assert detail.json()["request_id"] == "caller-request"
+        assert client.get("/api/v1/observability/requests/copilot-correlation").status_code == 404
+    finally:
+        app.dependency_overrides.pop(get_repository, None)
+
+
+def test_postgres_request_detail_prefers_attempt_correlation() -> None:
+    source = (
+        Path(__file__).resolve().parents[3] / "turnstile_core/persistence/repository.py"
+    ).read_text(encoding="utf-8")
+
+    assert "WHERE (usage.correlation_id = %s OR usage.request_id = %s)" in source
+    assert "AND usage.usage_domain = 'apim'" in source
+    assert "ORDER BY CASE WHEN usage.correlation_id = %s THEN 0 ELSE 1 END" in source
+    assert "usage.ts DESC, usage.id DESC" in source
+    assert "(request_id, request_id, request_id)" in source
+
 
 def test_apim_observability_excludes_copilot_cli_usage() -> None:
     """The APIM data domain cannot expose Copilot CLI records, even through a runtime filter."""

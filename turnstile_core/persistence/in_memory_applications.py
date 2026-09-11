@@ -1,16 +1,19 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from ..domain.application_access import UsageApplicationAttribution
+from ..domain.application_access import GatewayApplicationLedgerState, UsageApplicationAttribution
+from ..domain.ledger import LedgerScopeType
 
 
 class InMemoryApplicationRepositoryMixin:
+    _budget_scope_usage: Callable[[LedgerScopeType, str], list[dict[str, Any]]]
+    gateway_application_ledger_states: dict[tuple[date, UUID], dict[str, Any]]
     gateway_applications: list[dict[str, Any]]
     gateway_application_avatars: dict[UUID, dict[str, Any]]
     gateway_application_subscriptions: list[dict[str, Any]]
@@ -172,15 +175,10 @@ class InMemoryApplicationRepositoryMixin:
             if (
                 subscription["gateway_profile_id"] == gateway_profile_id
                 and subscription["apim_subscription_id"] not in discovered
-                and (
-                    subscription["state"] != "cancelled"
-                    or subscription["scope_exists"]
-                )
+                and (subscription["state"] != "cancelled" or subscription["scope_exists"])
             ):
                 before = deepcopy(subscription)
-                subscription.update(
-                    state="cancelled", scope_exists=False, last_synced_at=now
-                )
+                subscription.update(state="cancelled", scope_exists=False, last_synced_at=now)
                 self.gateway_application_audit.append(
                     {
                         "id": uuid4(),
@@ -305,13 +303,10 @@ class InMemoryApplicationRepositoryMixin:
                 "updated_at": avatar["updated_at"],
             }
             for application_id in application_ids
-            if (avatar := self.gateway_application_avatars.get(application_id))
-            is not None
+            if (avatar := self.gateway_application_avatars.get(application_id)) is not None
         ]
 
-    def get_gateway_application_avatar(
-        self, application_id: UUID
-    ) -> dict[str, Any] | None:
+    def get_gateway_application_avatar(self, application_id: UUID) -> dict[str, Any] | None:
         avatar = self.gateway_application_avatars.get(application_id)
         return None if avatar is None else deepcopy(avatar)
 
@@ -428,15 +423,11 @@ class InMemoryApplicationRepositoryMixin:
         if application is None:
             return None
         wanted = set(model_ids)
-        available = {
-            item["id"] for item in self.models if item.get("enabled", True)
-        }
+        available = {item["id"] for item in self.models if item.get("enabled", True)}
         if not wanted.issubset(available):
             raise ValueError("Model access includes an unavailable model")
         now = datetime.now(UTC)
-        before_policy = deepcopy(
-            self.gateway_application_model_policies.get(application_id)
-        )
+        before_policy = deepcopy(self.gateway_application_model_policies.get(application_id))
         before_models = sorted(
             self.gateway_application_model_access.get(application_id, set()), key=str
         )
@@ -491,6 +482,27 @@ class InMemoryApplicationRepositoryMixin:
             if (period_start, application_id) in self.gateway_application_budgets
         ]
 
+    def save_gateway_application_ledger_states(
+        self,
+        states: Sequence[GatewayApplicationLedgerState],
+    ) -> None:
+        for state in states:
+            key = (state.period_start, state.application_id)
+            previous = self.gateway_application_ledger_states.get(key)
+            if previous is None or previous["snapshot_at"] < state.snapshot_at:
+                self.gateway_application_ledger_states[key] = state.model_dump()
+
+    def list_gateway_application_ledger_states(
+        self,
+        period_start: date,
+        application_ids: Sequence[UUID],
+    ) -> Sequence[dict[str, Any]]:
+        return [
+            dict(row)
+            for (period, application_id), row in self.gateway_application_ledger_states.items()
+            if period == period_start and application_id in application_ids
+        ]
+
     def list_gateway_application_model_access(
         self, application_ids: Sequence[UUID]
     ) -> Sequence[dict[str, Any]]:
@@ -514,34 +526,32 @@ class InMemoryApplicationRepositoryMixin:
         period_end: date,
         application_ids: Sequence[UUID],
     ) -> Sequence[dict[str, Any]]:
-        wanted = set(application_ids)
-        grouped: dict[UUID, list[Any]] = {}
-        for record in self.usage_records:
-            attribution = self.usage_application_attributions.get(record.id)
-            if (
-                attribution is not None
-                and attribution.application_id in wanted
-                and period_start <= record.ts.date() < period_end
-                and record.usage_domain == "apim"
-            ):
-                grouped.setdefault(attribution.application_id, []).append(record)
+        grouped = {
+            application_id: [
+                row
+                for row in self._budget_scope_usage("application", str(application_id))
+                if period_start <= row["ts"].astimezone(UTC).date() < period_end
+            ]
+            for application_id in application_ids
+        }
         return [
             {
                 "application_id": application_id,
                 "request_count": len(records),
-                "denied_request_count": sum(row.status_code >= 400 for row in records),
-                "input_tokens": sum(row.input_tokens for row in records),
-                "cached_tokens": sum(row.cached_tokens for row in records),
-                "cache_write_tokens": sum(row.cache_write_tokens for row in records),
-                "output_tokens": sum(row.output_tokens for row in records),
+                "denied_request_count": sum(row["status_code"] >= 400 for row in records),
+                "input_tokens": sum(row["input_tokens"] for row in records),
+                "cached_tokens": sum(row["cached_tokens"] for row in records),
+                "cache_write_tokens": sum(row["cache_write_tokens"] for row in records),
+                "output_tokens": sum(row["output_tokens"] for row in records),
                 "total_tokens": sum(
-                    row.input_tokens + row.cached_tokens + row.output_tokens
+                    row["input_tokens"] + row["cached_tokens"] + row["output_tokens"]
                     for row in records
                 ),
-                "estimated_cost": sum(row.estimated_cost for row in records),
-                "last_request_at": max((row.ts for row in records), default=None),
+                "estimated_cost": sum(row["estimated_cost"] for row in records),
+                "last_request_at": max((row["ts"] for row in records), default=None),
             }
             for application_id, records in grouped.items()
+            if records
         ]
 
     def gateway_application_usage_activity(
@@ -554,17 +564,10 @@ class InMemoryApplicationRepositoryMixin:
     ) -> Sequence[dict[str, Any]]:
         zone = ZoneInfo(timezone)
         grouped: dict[datetime, list[Any]] = {}
-        for record in self.usage_records:
-            attribution = self.usage_application_attributions.get(record.id)
-            if (
-                attribution is None
-                or attribution.application_id != application_id
-                or record.ts < from_
-                or record.ts >= to
-                or record.usage_domain != "apim"
-            ):
+        for record in self._budget_scope_usage("application", str(application_id)):
+            if not from_ <= record["ts"] < to:
                 continue
-            local = record.ts.astimezone(zone)
+            local = record["ts"].astimezone(zone)
             if interval == "week":
                 local -= timedelta(days=local.weekday())
             bucket = local.replace(
@@ -576,12 +579,18 @@ class InMemoryApplicationRepositoryMixin:
             grouped.setdefault(bucket, []).append(record)
         rows: list[dict[str, Any]] = []
         for bucket, records in sorted(grouped.items()):
-            latencies = sorted(float(record.latency_ms) for record in records)
+            latencies = sorted(
+                float(record["latency_ms"])
+                for record in records
+                if record["latency_ms"] is not None
+            )
             rank = (len(latencies) - 1) * 0.95
             lower = int(rank)
             upper = min(lower + 1, len(latencies) - 1)
-            p95 = latencies[lower] + (latencies[upper] - latencies[lower]) * (
-                rank - lower
+            p95 = (
+                latencies[lower] + (latencies[upper] - latencies[lower]) * (rank - lower)
+                if latencies
+                else 0
             )
             rows.append(
                 {
@@ -589,31 +598,27 @@ class InMemoryApplicationRepositoryMixin:
                     "key": "all",
                     "label": "all",
                     "totals": {
-                        "et": sum(record.et for record in records),
+                        "et": sum(record["et"] for record in records),
                         "total_tokens": sum(
-                            record.input_tokens
-                            + record.cached_tokens
-                            + record.output_tokens
+                            record["input_tokens"]
+                            + record["cached_tokens"]
+                            + record["output_tokens"]
                             for record in records
                         ),
-                        "input_tokens": sum(record.input_tokens for record in records),
-                        "cached_tokens": sum(record.cached_tokens for record in records),
+                        "input_tokens": sum(record["input_tokens"] for record in records),
+                        "cached_tokens": sum(record["cached_tokens"] for record in records),
                         "cache_read_tokens": sum(
-                            max(record.cached_tokens - record.cache_write_tokens, 0)
+                            max(record["cached_tokens"] - record["cache_write_tokens"], 0)
                             for record in records
                         ),
                         "cache_write_tokens": sum(
-                            record.cache_write_tokens for record in records
+                            record["cache_write_tokens"] for record in records
                         ),
-                        "output_tokens": sum(record.output_tokens for record in records),
+                        "output_tokens": sum(record["output_tokens"] for record in records),
                         "calls": len(records),
-                        "estimated_cost": sum(
-                            record.estimated_cost for record in records
-                        ),
+                        "estimated_cost": sum(record["estimated_cost"] for record in records),
                         "p95_latency_ms": p95,
-                        "failed_calls": sum(
-                            record.status_code >= 400 for record in records
-                        ),
+                        "failed_calls": sum(record["status_code"] >= 400 for record in records),
                     },
                 }
             )
@@ -659,12 +664,9 @@ class InMemoryApplicationRepositoryMixin:
                     "actor_type": actor_type,
                     "person_id": person_id,
                     "request_count": len(records),
-                    "denied_request_count": sum(
-                        row.status_code >= 400 for row in records
-                    ),
+                    "denied_request_count": sum(row.status_code >= 400 for row in records),
                     "total_tokens": sum(
-                        row.input_tokens + row.cached_tokens + row.output_tokens
-                        for row in records
+                        row.input_tokens + row.cached_tokens + row.output_tokens for row in records
                     ),
                     "estimated_cost": sum(row.estimated_cost for row in records),
                     "last_request_at": max(row.ts for row in records),
@@ -736,9 +738,7 @@ class InMemoryApplicationRepositoryMixin:
                     "token_limit": budget["token_limit"],
                     "tokens_per_minute": budget["tokens_per_minute"],
                     "enforce": budget["enforce"],
-                    "confirmed_tokens": usage.get(application_id, {}).get(
-                        "total_tokens", 0
-                    ),
+                    "confirmed_tokens": usage.get(application_id, {}).get("total_tokens", 0),
                 }
             )
         return rows
@@ -804,13 +804,10 @@ class InMemoryApplicationRepositoryMixin:
                 "scope_exists": subscription["scope_exists"],
             }
             for subscription in self.gateway_application_subscriptions
-            if (application := applications.get(subscription["application_id"]))
-            is not None
+            if (application := applications.get(subscription["application_id"])) is not None
         ]
 
-    def roll_forward_gateway_application_budgets(
-        self, period_start: date, actor: str
-    ) -> int:
+    def roll_forward_gateway_application_budgets(self, period_start: date, actor: str) -> int:
         created = 0
         for application in self.gateway_applications:
             application_id = application["id"]

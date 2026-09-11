@@ -62,8 +62,30 @@ def test_request_trace_kpis_are_diagnostic_not_executive_duplicates() -> None:
     assert 'title="时延占比分布"' in request_trace
     assert '<RequestLatencyChart totals={totals} percentage />' in request_trace
     assert "<RequestHealthChart" not in request_trace
-    assert "const firstRequestId = query.data?.[0]?.request_id ?? null" in request_trace
+    assert "const firstRequestId = query.data?.[0]?.correlation_id ?? null" in request_trace
     assert "if (!selected && firstRequestId) setSelected(firstRequestId)" in request_trace
+
+
+def test_request_trace_selects_attempts_without_losing_the_caller_id() -> None:
+    source = read_apim_dashboard_source()
+    request_trace = source.split("function RequestTrace(", 1)[1].split(
+        "function RequestTraceDetail", 1
+    )[0]
+    trace_row = source.split("function TraceRow(", 1)[1]
+
+    assert "selectedCorrelationId = detail.data?.correlation_id ?? selected" in request_trace
+    assert "key={item.correlation_id}" in request_trace
+    assert "active={selectedCorrelationId === item.correlation_id}" in request_trace
+    assert "onClick={() => setSelected(item.correlation_id)}" in request_trace
+    assert "key={item.request_id}" not in request_trace
+    assert "attemptsByRequest.get(item.request_id)" in request_trace
+    assert "attemptPositions.set(item.correlation_id" in request_trace
+    assert "Date.parse(left.timestamp) - Date.parse(right.timestamp)" in request_trace
+    assert "left.correlation_id.localeCompare(right.correlation_id)" in request_trace
+    assert "attempt={attemptPositions.get(item.correlation_id)}" in request_trace
+    assert "Correlation ID: ${item.correlation_id}" in trace_row
+    assert "#${attempt.index}/${attempt.total}" in trace_row
+    assert "item.request_id" in trace_row
 
 
 def test_model_success_rate_rankings_sort_highest_first() -> None:

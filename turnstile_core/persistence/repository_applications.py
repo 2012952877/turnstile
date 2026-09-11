@@ -9,7 +9,7 @@ from uuid import UUID
 from psycopg.types.json import Jsonb
 from pydantic_core import to_jsonable_python
 
-from ..domain.application_access import UsageApplicationAttribution
+from ..domain.application_access import GatewayApplicationLedgerState, UsageApplicationAttribution
 
 
 def _json_value(value: object) -> object:
@@ -351,9 +351,7 @@ class PostgreSqlApplicationRepositoryMixin:
             ).fetchall()
         return cast(Sequence[dict[str, Any]], rows)
 
-    def get_gateway_application_avatar(
-        self, application_id: UUID
-    ) -> dict[str, Any] | None:
+    def get_gateway_application_avatar(self, application_id: UUID) -> dict[str, Any] | None:
         with self._connection() as connection:
             row = connection.execute(
                 """SELECT application_id, media_type, image_bytes, updated_at
@@ -637,6 +635,62 @@ class PostgreSqlApplicationRepositoryMixin:
             ).fetchall()
         return cast(Sequence[dict[str, Any]], rows)
 
+    def save_gateway_application_ledger_states(
+        self,
+        states: Sequence[GatewayApplicationLedgerState],
+    ) -> None:
+        if not states:
+            return
+        with self._connection() as connection:
+            connection.execute(
+                """INSERT INTO gateway_application_ledger_state AS existing (
+                     period_start, application_id, token_limit, confirmed_tokens,
+                     pending_reserved_tokens, pending_reservation_count,
+                     finalized_upper_bound_tokens,
+                     finalized_upper_bound_count, stale_reservation_count, oldest_reservation_at,
+                     available_tokens, snapshot_at)
+                   SELECT * FROM jsonb_to_recordset(%s::JSONB) AS incoming (
+                     period_start DATE, application_id UUID, token_limit BIGINT,
+                     confirmed_tokens BIGINT, pending_reserved_tokens BIGINT,
+                     pending_reservation_count INTEGER, finalized_upper_bound_tokens BIGINT,
+                     finalized_upper_bound_count INTEGER, stale_reservation_count INTEGER,
+                                         oldest_reservation_at TIMESTAMPTZ, available_tokens BIGINT,
+                                         snapshot_at TIMESTAMPTZ)
+                   ON CONFLICT (period_start, application_id) DO UPDATE SET
+                                         token_limit = EXCLUDED.token_limit,
+                                         confirmed_tokens = EXCLUDED.confirmed_tokens,
+                     pending_reserved_tokens = EXCLUDED.pending_reserved_tokens,
+                     pending_reservation_count = EXCLUDED.pending_reservation_count,
+                     finalized_upper_bound_tokens = EXCLUDED.finalized_upper_bound_tokens,
+                     finalized_upper_bound_count = EXCLUDED.finalized_upper_bound_count,
+                     stale_reservation_count = EXCLUDED.stale_reservation_count,
+                     oldest_reservation_at = EXCLUDED.oldest_reservation_at,
+                     available_tokens = EXCLUDED.available_tokens,
+                     snapshot_at = EXCLUDED.snapshot_at
+                   WHERE existing.snapshot_at < EXCLUDED.snapshot_at""",
+                (Jsonb([state.model_dump(mode="json") for state in states]),),
+            )
+
+    def list_gateway_application_ledger_states(
+        self,
+        period_start: date,
+        application_ids: Sequence[UUID],
+    ) -> Sequence[dict[str, Any]]:
+        if not application_ids:
+            return []
+        with self._connection() as connection:
+            rows = connection.execute(
+                """SELECT period_start, application_id, token_limit, confirmed_tokens,
+                          pending_reserved_tokens, pending_reservation_count,
+                          finalized_upper_bound_tokens, finalized_upper_bound_count,
+                          stale_reservation_count, oldest_reservation_at,
+                          available_tokens, snapshot_at
+                   FROM gateway_application_ledger_state
+                   WHERE period_start = %s AND application_id = ANY(%s)""",
+                (period_start, list(application_ids)),
+            ).fetchall()
+        return cast(Sequence[dict[str, Any]], rows)
+
     def list_gateway_application_model_access(
         self, application_ids: Sequence[UUID]
     ) -> Sequence[dict[str, Any]]:
@@ -666,7 +720,7 @@ class PostgreSqlApplicationRepositoryMixin:
             return []
         with self._connection() as connection:
             rows = connection.execute(
-                """SELECT attribution.application_id,
+                """SELECT usage.scope_id::UUID AS application_id,
                           COUNT(*)::BIGINT AS request_count,
                           COUNT(*) FILTER (WHERE usage.status_code >= 400)::BIGINT
                             AS denied_request_count,
@@ -680,15 +734,18 @@ class PostgreSqlApplicationRepositoryMixin:
                           ), 0)::BIGINT AS total_tokens,
                           COALESCE(SUM(usage.estimated_cost), 0)::DOUBLE PRECISION
                             AS estimated_cost,
-                          MAX(usage.ts) AS last_request_at
-                   FROM token_usage_application_attribution attribution
-                   JOIN token_usage usage ON usage.id = attribution.usage_id
-                   WHERE attribution.application_id = ANY(%s)
-                     AND usage.ts >= %s AND usage.ts < %s
-                     AND usage.usage_domain = 'apim'
-                   GROUP BY attribution.application_id
-                   ORDER BY attribution.application_id""",
-                (list(application_ids), period_start, period_end),
+                                                    MAX(usage.occurred_at) AS last_request_at
+                                     FROM budget_scope_usage usage
+                                     WHERE usage.scope_type = 'application'
+                                         AND usage.scope_id = ANY(%s)
+                                         AND usage.occurred_at >= %s::TIMESTAMP AT TIME ZONE 'UTC'
+                                         AND usage.occurred_at < %s::TIMESTAMP AT TIME ZONE 'UTC'
+                                     GROUP BY usage.scope_id ORDER BY usage.scope_id""",
+                (
+                    [str(value) for value in application_ids],
+                    period_start,
+                    period_end,
+                ),
             ).fetchall()
         return cast(Sequence[dict[str, Any]], rows)
 
@@ -701,7 +758,7 @@ class PostgreSqlApplicationRepositoryMixin:
     ) -> Sequence[dict[str, Any]]:
         with self._connection() as connection:
             rows = connection.execute(
-                                """WITH user_usage AS (
+                """WITH user_usage AS (
                                          SELECT COALESCE(
                                                             attribution.person_id,
                                                             attribution.actor_id
@@ -808,15 +865,16 @@ class PostgreSqlApplicationRepositoryMixin:
                           application.status,
                           budget.token_limit, budget.tokens_per_minute,
                           budget.enforce,
-                          COALESCE(confirmed.confirmed_tokens, 0)::BIGINT
-                            AS confirmed_tokens
+                                                    budget_scope_confirmed_tokens(
+                                                        'application', application.id::TEXT, %s, %s
+                                                    ) AS confirmed_tokens
                    FROM gateway_application_budget budget
                    JOIN gateway_application application
                      ON application.id = budget.application_id
                    LEFT JOIN confirmed ON confirmed.application_id = application.id
                    WHERE budget.period_start = %s
                    ORDER BY application.id""",
-                (period_start, period_end, period_start),
+                (period_start, period_end, period_start, period_end, period_start),
             ).fetchall()
         return cast(Sequence[dict[str, Any]], rows)
 

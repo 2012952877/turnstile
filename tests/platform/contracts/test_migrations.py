@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from backend.migrate import migration_files
 from tests.support.paths import REPOSITORY_ROOT
 
 MIGRATIONS = REPOSITORY_ROOT / "migrations"
@@ -22,11 +23,27 @@ def table_names(sql: str) -> set[str]:
     )
 
 
-def test_repository_starts_with_one_clean_install_migration() -> None:
-    assert [path.name for path in sorted(MIGRATIONS.glob("*.up.sql"))] == [
-        "001_initial_schema.up.sql"
+def test_migration_chain_preserves_clean_install_and_adds_attempt_identity() -> None:
+    assert [path.name for path in migration_files(MIGRATIONS)] == [
+        "001_initial_schema.up.sql",
+        "002_apim_request_attempt_identity.up.sql",
+        "003_budget_reservation_finalization.up.sql",
     ]
     assert not list(MIGRATIONS.glob("*.down.sql"))
+
+
+def test_attempt_identity_upgrade_preserves_existing_usage() -> None:
+    sql = (MIGRATIONS / "002_apim_request_attempt_identity.up.sql").read_text(encoding="utf-8")
+
+    assert "CREATE UNIQUE INDEX token_usage_request_id_idx" in schema()
+    assert "DROP INDEX public.token_usage_request_id_idx;" in sql
+    assert "CREATE INDEX token_usage_request_id_idx" in sql
+    assert "ON public.token_usage (request_id, ts DESC);" in sql
+    assert "COMMENT ON COLUMN public.token_usage.request_id" in sql
+    assert "COMMENT ON COLUMN public.token_usage.correlation_id" in sql
+    assert "CREATE UNIQUE INDEX" not in sql
+    assert "DROP TABLE" not in sql
+    assert not re.search(r"^\s*(INSERT|UPDATE|DELETE|TRUNCATE)\b", sql, re.MULTILINE)
 
 
 def test_initial_schema_excludes_router_and_historical_ledger_objects() -> None:
@@ -38,6 +55,22 @@ def test_initial_schema_excludes_router_and_historical_ledger_objects() -> None:
     assert "create table public.schema_migration" not in sql
     assert "alter table only public.schema_migration" not in sql
     assert "copy public.schema_migration" not in sql
+
+
+def test_ledger_upgrade_is_append_only_and_does_not_rewrite_requests() -> None:
+    sql = (MIGRATIONS / "003_budget_reservation_finalization.up.sql").read_text(encoding="utf-8")
+    assert table_names(sql) == {
+        "budget_reservation_finalization",
+        "gateway_application_ledger_state",
+    }
+    assert "BEFORE UPDATE OR DELETE ON budget_reservation_finalization" in sql
+    assert "total_tokens = reservation_tokens" in sql
+    assert "WHEN 'exact_usage' THEN 3 WHEN 'terminal_zero' THEN 2 ELSE 1 END DESC" in sql
+    assert "CREATE VIEW budget_scope_usage" in sql
+    assert "CREATE VIEW budget_reservation_recovery" in sql
+    assert "stream_cache_usage_unavailable" in sql
+    assert "pending_reserved_tokens - finalized_upper_bound_tokens" in sql
+    assert not re.search(r"^\s*(INSERT|UPDATE|DELETE|TRUNCATE|DROP)\b", sql, re.MULTILINE)
 
 
 def test_initial_schema_contains_no_customer_or_model_seed_data() -> None:

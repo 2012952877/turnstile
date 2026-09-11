@@ -6,6 +6,9 @@ from datetime import UTC, date, datetime, time
 from typing import Any, cast
 from uuid import UUID, uuid4
 
+from psycopg.types.json import Jsonb
+
+from ..domain.ledger import BudgetReservationFinalization, LedgerScopeType
 from .repository_support import BudgetConstraintViolation
 
 _LEDGER_CORRELATION_BATCH_SIZE = 5000
@@ -35,9 +38,34 @@ class PostgreSqlBudgetRepositoryMixin:
                 """WITH period_usage AS (
                        SELECT organization_id, department_id, user_id,
                               input_tokens + cached_tokens + output_tokens AS total_tokens
-                       FROM token_usage
-                                             WHERE ts >= %s AND ts < %s
-                                                 AND usage_domain = 'apim'
+                                             FROM token_usage usage
+                                             WHERE ts >= %s AND ts < %s AND usage_domain = 'apim'
+                                                 AND NOT EXISTS (
+                                                     SELECT 1
+                                                     FROM budget_reservation_recovery recovery
+                                                     WHERE recovery.scope_type = 'person'
+                                                         AND recovery.scope_id = usage.user_id
+                                                         AND recovery.correlation_id =
+                                                             usage.correlation_id
+                                                 )
+                                             UNION ALL
+                                             SELECT COALESCE(
+                                                 department.parent_scope_id, 'unattributed'
+                                             ), COALESCE(
+                                                 person.parent_scope_id, 'unattributed'
+                                             ), recovery.scope_id, recovery.total_tokens
+                                             FROM budget_reservation_recovery recovery
+                                             LEFT JOIN token_budget person
+                                                 ON person.period_start = recovery.period_start
+                                                 AND person.scope_type = 'user'
+                                                 AND person.scope_id = recovery.scope_id
+                                             LEFT JOIN token_budget department
+                                                 ON department.period_start = recovery.period_start
+                                                 AND department.scope_type = 'department'
+                                                 AND department.scope_id = person.parent_scope_id
+                                             WHERE recovery.scope_type = 'person'
+                                                 AND recovery.reservation_created_at >= %s
+                                                 AND recovery.reservation_created_at < %s
                    ), scoped_usage AS (
                        SELECT 'organization'::TEXT AS scope_type,
                               organization_id AS scope_id,
@@ -54,7 +82,7 @@ class PostgreSqlBudgetRepositoryMixin:
                    SELECT scope_type, scope_id, used_tokens
                    FROM scoped_usage
                    WHERE scope_id <> 'unattributed'""",
-                (from_, to),
+                (from_, to, from_, to),
             ).fetchall()
         return cast(Sequence[dict[str, Any]], rows)
 
@@ -70,9 +98,7 @@ class PostgreSqlBudgetRepositoryMixin:
     ) -> None:
         with self._connection() as connection, connection.transaction():
             lock_key = f"{period_start}:{scope_type}:{scope_id}"
-            connection.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (lock_key,)
-            )
+            connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (lock_key,))
             parent_type = {
                 "department": "organization",
                 "user": "department",
@@ -135,8 +161,7 @@ class PostgreSqlBudgetRepositoryMixin:
             if previous is not None and (
                 previous["parent_scope_id"] == parent_scope_id
                 and previous["token_limit"] == token_limit
-                and previous["warning_threshold_percent"]
-                == warning_threshold_percent
+                and previous["warning_threshold_percent"] == warning_threshold_percent
             ):
                 return
             connection.execute(
@@ -186,9 +211,7 @@ class PostgreSqlBudgetRepositoryMixin:
     ) -> bool:
         with self._connection() as connection, connection.transaction():
             lock_key = f"{period_start}:{scope_type}:{scope_id}"
-            connection.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (lock_key,)
-            )
+            connection.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (lock_key,))
             child_type = {
                 "organization": "department",
                 "department": "user",
@@ -234,9 +257,7 @@ class PostgreSqlBudgetRepositoryMixin:
             )
         return True
 
-    def roll_forward_budgets(
-        self, period_start: date, changed_by: str
-    ) -> dict[str, Any] | None:
+    def roll_forward_budgets(self, period_start: date, changed_by: str) -> dict[str, Any] | None:
         """Give a period the previous period's budgets, at most once.
 
         Returns the outcome the first time it decides anything for this period, and None
@@ -335,9 +356,7 @@ class PostgreSqlBudgetRepositoryMixin:
             "scope_count": len(copied),
         }
 
-    def list_token_budget_audit(
-        self, period_start: date, limit: int
-    ) -> Sequence[dict[str, Any]]:
+    def list_token_budget_audit(self, period_start: date, limit: int) -> Sequence[dict[str, Any]]:
         with self._connection() as connection:
             rows = connection.execute(
                 """SELECT id, period_start, scope_type, scope_id, action,
@@ -352,9 +371,7 @@ class PostgreSqlBudgetRepositoryMixin:
             ).fetchall()
         return cast(Sequence[dict[str, Any]], rows)
 
-    def list_user_model_policies(
-        self, user_ids: Sequence[str]
-    ) -> Sequence[dict[str, Any]]:
+    def list_user_model_policies(self, user_ids: Sequence[str]) -> Sequence[dict[str, Any]]:
         if not user_ids:
             return []
         with self._connection() as connection:
@@ -404,9 +421,7 @@ class PostgreSqlBudgetRepositoryMixin:
             ).fetchall()
         return cast(Sequence[dict[str, Any]], rows)
 
-    def set_department_enforcement(
-        self, department_id: str, mode: str, changed_by: str
-    ) -> bool:
+    def set_department_enforcement(self, department_id: str, mode: str, changed_by: str) -> bool:
         """Return True when the mode actually changed, so no-op saves stay out of the audit."""
         with self._connection() as connection, connection.transaction():
             connection.execute(
@@ -459,7 +474,7 @@ class PostgreSqlBudgetRepositoryMixin:
         """Budgeted people whose Table Storage partitions must be synchronized."""
         with self._connection() as connection:
             rows = connection.execute(
-              """WITH active AS (
+                """WITH active AS (
                   SELECT scope_id AS user_id,
                       parent_scope_id AS department_id,
                       token_limit
@@ -487,7 +502,7 @@ class PostgreSqlBudgetRepositoryMixin:
                  SELECT retired.user_id, '' AS department_id, 0 AS token_limit, 'audit' AS mode
                  FROM retired
                  ORDER BY user_id""",
-              {"period_start": period_start},
+                {"period_start": period_start},
             ).fetchall()
         return cast(Sequence[dict[str, Any]], rows)
 
@@ -505,7 +520,7 @@ class PostgreSqlBudgetRepositoryMixin:
             rows = [
                 dict(row)
                 for row in connection.execute(
-                                """WITH active AS (
+                    """WITH active AS (
                        SELECT scope_id AS user_id,
                               parent_scope_id AS department_id,
                               token_limit
@@ -548,25 +563,31 @@ class PostgreSqlBudgetRepositoryMixin:
                    SELECT budgets.user_id,
                           budgets.department_id,
                           budgets.token_limit,
-                          COALESCE(confirmed.confirmed_tokens, 0)::BIGINT
-                              AS confirmed_tokens,
+                          budget_scope_confirmed_tokens(
+                              'person', budgets.user_id, %(period_start)s, %(period_end)s
+                          ) AS confirmed_tokens,
                           COALESCE(enforcement.mode, 'audit') AS mode
                    FROM budgets
                    LEFT JOIN confirmed ON confirmed.user_id = budgets.user_id
                    LEFT JOIN department_enforcement enforcement
                           ON enforcement.department_id = budgets.department_id
                    ORDER BY budgets.user_id""",
-                {
-                    "period_start": period_start,
-                    "from": datetime.combine(period_start, time.min, tzinfo=UTC),
-                    "to": datetime.combine(period_end, time.min, tzinfo=UTC),
-                },
+                    {
+                        "period_start": period_start,
+                        "period_end": period_end,
+                        "from": datetime.combine(period_start, time.min, tzinfo=UTC),
+                        "to": datetime.combine(period_end, time.min, tzinfo=UTC),
+                    },
                 ).fetchall()
             ]
         return rows
 
     def settled_reservation_correlations(
-        self, correlation_ids: Sequence[str]
+        self,
+        correlation_ids: Sequence[str],
+        *,
+        scope_type: LedgerScopeType | None = None,
+        scope_id: str | None = None,
     ) -> set[str]:
         """Correlations whose reservation can be replaced by stored usage.
 
@@ -575,6 +596,8 @@ class PostgreSqlBudgetRepositoryMixin:
         stored token counts. Inputs are chunked so a catch-up run cannot create one
         unbounded PostgreSQL parameter.
         """
+        if (scope_type is None) != (scope_id is None):
+            raise ValueError("ledger scope type and ID must be supplied together")
         wanted = sorted({value for value in correlation_ids if value})
         settled: set[str] = set()
         if not wanted:
@@ -585,13 +608,103 @@ class PostgreSqlBudgetRepositoryMixin:
                 rows = connection.execute(
                     """SELECT DISTINCT usage.correlation_id
                        FROM token_usage usage
-                       WHERE usage.correlation_id = ANY(%s)
-                                                 AND usage.usage_domain = 'apim'
-                         AND (usage.status_code >= 400 OR NOT usage.estimated)""",
-                    (chunk,),
+                       LEFT JOIN token_usage_application_attribution attribution
+                         ON attribution.usage_id = usage.id
+                       WHERE usage.correlation_id = ANY(%(ids)s) AND usage.usage_domain = 'apim'
+                         AND (%(scope_type)s::TEXT IS NULL
+                           OR (%(scope_type)s = 'person' AND usage.user_id = %(scope_id)s)
+                           OR (%(scope_type)s = 'application'
+                             AND attribution.application_id::TEXT = %(scope_id)s))
+                         AND (usage.status_code >= 400 OR NOT usage.estimated
+                           OR (usage.reconciled_at IS NOT NULL
+                             AND usage.ingest_error = 'stream_cache_usage_unavailable'))""",
+                    {"ids": chunk, "scope_type": scope_type, "scope_id": scope_id},
                 ).fetchall()
                 settled.update(str(row["correlation_id"]) for row in rows)
+        if scope_type is not None and scope_id is not None:
+            settled.update(
+                correlation
+                for correlation, kind in self.reservation_finalization_kinds(
+                    scope_type, scope_id, wanted
+                ).items()
+                if kind != "unverified_upper_bound"
+            )
         return settled
+
+    def existing_usage_correlations(
+        self,
+        correlation_ids: Sequence[str],
+        *,
+        scope_type: LedgerScopeType,
+        scope_id: str,
+    ) -> set[str]:
+        if not correlation_ids:
+            return set()
+        with self._connection() as connection:
+            rows = connection.execute(
+                """SELECT DISTINCT usage.correlation_id FROM token_usage usage
+                   LEFT JOIN token_usage_application_attribution attribution
+                     ON attribution.usage_id = usage.id
+                   WHERE usage.usage_domain = 'apim' AND usage.correlation_id = ANY(%s)
+                     AND ((%s = 'person' AND usage.user_id = %s)
+                       OR (%s = 'application' AND attribution.application_id::TEXT = %s))""",
+                (list(correlation_ids), scope_type, scope_id, scope_type, scope_id),
+            ).fetchall()
+        return {str(row["correlation_id"]) for row in rows}
+
+    def save_budget_reservation_finalizations(
+        self,
+        items: Sequence[BudgetReservationFinalization],
+    ) -> int:
+        if not items:
+            return 0
+        with self._connection() as connection:
+            rows = connection.execute(
+                """INSERT INTO budget_reservation_finalization (
+                     scope_type, scope_id, period_start, correlation_id, reservation_created_at,
+                     reservation_tokens, evidence_at, status_code, input_tokens, output_tokens,
+                     total_tokens, finalization_kind, source)
+                   SELECT * FROM jsonb_to_recordset(%s::JSONB) AS incoming(
+                     scope_type TEXT, scope_id TEXT, period_start DATE, correlation_id TEXT,
+                     reservation_created_at TIMESTAMPTZ, reservation_tokens BIGINT,
+                     evidence_at TIMESTAMPTZ, status_code INTEGER, input_tokens BIGINT,
+                     output_tokens BIGINT, total_tokens BIGINT, finalization_kind TEXT, source TEXT)
+                   ON CONFLICT (scope_type, scope_id, correlation_id, finalization_kind,
+                                source, evidence_at) DO NOTHING RETURNING id""",
+                (Jsonb([item.model_dump(mode="json") for item in items]),),
+            ).fetchall()
+        return len(rows)
+
+    def reservation_finalization_kinds(
+        self,
+        scope_type: LedgerScopeType,
+        scope_id: str,
+        correlation_ids: Sequence[str],
+    ) -> dict[str, str]:
+        if not correlation_ids:
+            return {}
+        with self._connection() as connection:
+            rows = connection.execute(
+                """SELECT correlation_id, finalization_kind
+                   FROM budget_reservation_finalization_effective
+                   WHERE scope_type = %s AND scope_id = %s AND correlation_id = ANY(%s)""",
+                (scope_type, scope_id, list(correlation_ids)),
+            ).fetchall()
+        return {str(row["correlation_id"]): str(row["finalization_kind"]) for row in rows}
+
+    def budget_scope_confirmed_tokens(
+        self,
+        scope_type: LedgerScopeType,
+        scope_id: str,
+        period_start: date,
+        period_end: date,
+    ) -> int:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT budget_scope_confirmed_tokens(%s, %s, %s, %s) AS total",
+                (scope_type, scope_id, period_start, period_end),
+            ).fetchone()
+        return int(row["total"])
 
     def model_access_ledger_snapshot(
         self, user_ids: Sequence[str] | None = None
@@ -646,7 +759,9 @@ class PostgreSqlBudgetRepositoryMixin:
                 """SELECT budget.token_limit,
                           budget.parent_scope_id AS department_id,
                           COALESCE(enforcement.mode, 'audit') AS mode,
-                          COALESCE(usage.used_tokens, 0)::BIGINT AS used_tokens
+                          budget_scope_confirmed_tokens(
+                              'person', budget.scope_id, %(period_start)s, %(period_end)s
+                          ) AS used_tokens
                    FROM token_budget budget
                    LEFT JOIN department_enforcement enforcement
                           ON enforcement.department_id = budget.parent_scope_id
@@ -665,6 +780,7 @@ class PostgreSqlBudgetRepositoryMixin:
                 {
                     "user_id": user_id,
                     "period_start": period_start,
+                    "period_end": period_end,
                     "from": datetime.combine(period_start, time.min, tzinfo=UTC),
                     "to": datetime.combine(period_end, time.min, tzinfo=UTC),
                 },
@@ -685,9 +801,7 @@ class PostgreSqlBudgetRepositoryMixin:
         model_ids: Sequence[UUID] | None = None,
     ) -> None:
         user_ids = list(selected_user_ids or [user_id for user_id, _ in entries])
-        normalized_model_ids = (
-            list(dict.fromkeys(model_ids)) if model_ids is not None else None
-        )
+        normalized_model_ids = list(dict.fromkeys(model_ids)) if model_ids is not None else None
         with self._connection() as connection, connection.transaction():
             if entries:
                 parent_lock_key = f"{period_start}:department:{department_id}"
@@ -715,9 +829,7 @@ class PostgreSqlBudgetRepositoryMixin:
                          AND NOT (scope_id = ANY(%s))""",
                     (period_start, department_id, user_ids),
                 ).fetchone()
-                proposed_total = int(unselected["total"]) + sum(
-                    limit for _, limit in entries
-                )
+                proposed_total = int(unselected["total"]) + sum(limit for _, limit in entries)
                 if proposed_total > int(parent["token_limit"]):
                     raise BudgetConstraintViolation(
                         "User allocations would exceed the department budget of "
@@ -740,16 +852,14 @@ class PostgreSqlBudgetRepositoryMixin:
                     if user_id not in previous
                     or previous[user_id]["parent_scope_id"] != department_id
                     or previous[user_id]["token_limit"] != token_limit
-                    or previous[user_id]["warning_threshold_percent"]
-                    != warning_threshold_percent
+                    or previous[user_id]["warning_threshold_percent"] != warning_threshold_percent
                 ]
                 audit_entries = [
                     (user_id, token_limit)
                     for user_id, token_limit in entries
                     if user_id not in previous
                     or previous[user_id]["token_limit"] != token_limit
-                    or previous[user_id]["warning_threshold_percent"]
-                    != warning_threshold_percent
+                    or previous[user_id]["warning_threshold_percent"] != warning_threshold_percent
                 ]
                 if changed_entries:
                     with connection.cursor() as cursor:
@@ -838,9 +948,7 @@ class PostgreSqlBudgetRepositoryMixin:
                        GROUP BY policy.user_id""",
                     (user_ids,),
                 ).fetchall()
-                previous_models = {
-                    row["user_id"]: list(row["model_ids"]) for row in previous_rows
-                }
+                previous_models = {row["user_id"]: list(row["model_ids"]) for row in previous_rows}
                 changed_user_ids = [
                     user_id
                     for user_id in user_ids

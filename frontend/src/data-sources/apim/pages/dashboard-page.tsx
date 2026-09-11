@@ -1143,7 +1143,8 @@ function RequestTrace({
   const overview = useQuery(finopsQueries.executiveOverview(filters))
   const volumeTrend = useQuery(finopsQueries.trends(filters, "none", "day"))
   const detail = useQuery(finopsQueries.requestDetail(selected ?? ""))
-  const firstRequestId = query.data?.[0]?.request_id ?? null
+  const firstRequestId = query.data?.[0]?.correlation_id ?? null
+  const selectedCorrelationId = detail.data?.correlation_id ?? selected
   useEffect(() => {
     if (!selected && firstRequestId) setSelected(firstRequestId)
   }, [firstRequestId, selected])
@@ -1157,6 +1158,20 @@ function RequestTrace({
       />
     );
   const requestRows = priceRequests(query.data, models);
+  const attemptsByRequest = new Map<string, UsageRequestSummary[]>();
+  for (const item of requestRows) {
+    const attempts = attemptsByRequest.get(item.request_id) ?? [];
+    attempts.push(item);
+    attemptsByRequest.set(item.request_id, attempts);
+  }
+  const attemptPositions = new Map<string, { index: number; total: number }>();
+  for (const attempts of attemptsByRequest.values()) {
+    attempts.sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp)
+      || left.correlation_id.localeCompare(right.correlation_id));
+    attempts.forEach((item, index) => {
+      attemptPositions.set(item.correlation_id, { index: index + 1, total: attempts.length });
+    });
+  }
   const normalizedSearch = searchText.trim().toLocaleLowerCase();
   const visibleRows = requestRows.filter((item) => {
     const matchesStatus = statusFilter === "all"
@@ -1230,11 +1245,12 @@ function RequestTrace({
           </div>
           {visibleRows.map((item) => (
             <TraceRow
-              key={item.request_id}
+              key={item.correlation_id}
               item={item}
-              active={selected === item.request_id}
-              onClick={() => setSelected(item.request_id)}
+              active={selectedCorrelationId === item.correlation_id}
+              onClick={() => setSelected(item.correlation_id)}
               costAvailable={costAvailable}
+              attempt={attemptPositions.get(item.correlation_id)}
             />
           ))}
           {!visibleRows.length && <div className="trace-no-results">没有符合条件的请求</div>}
@@ -1416,11 +1432,13 @@ function TraceRow({
   active,
   onClick,
   costAvailable,
+  attempt,
 }: {
   item: UsageRequestSummary;
   active: boolean;
   onClick: () => void;
   costAvailable: boolean;
+  attempt: { index: number; total: number } | undefined;
 }) {
   // The list contract carries no `estimated` flag, but a successful call never truly consumes zero
   // tokens: those zeros identify a row that is still waiting for reconciliation.
@@ -1433,7 +1451,7 @@ function TraceRow({
       </span>
       <div>
         <b>{item.model_name}</b>
-        <code>{item.request_id}</code>
+        <code title={`Correlation ID: ${item.correlation_id}`}>{attempt && attempt.total > 1 ? `#${attempt.index}/${attempt.total} · ${item.request_id}` : item.request_id}</code>
       </div>
       <small>{state === "measured" ? `${compact.format(item.total_tokens)} tokens` : placeholder}</small>
       <strong>

@@ -78,7 +78,7 @@ class PostgreSqlOpsDbProxy(
             rows = connection.execute(
                 """SELECT
                                          date_trunc(
-                                             %s, usage.ts AT TIME ZONE %s
+                                             %s, usage.occurred_at AT TIME ZONE %s
                                          ) AT TIME ZONE %s AS bucket_start,
                                          'all' AS key,
                                          'all' AS label,
@@ -109,14 +109,12 @@ class PostgreSqlOpsDbProxy(
                                                  WHERE usage.status_code >= 400
                                              )::BIGINT
                                          ) AS totals
-                             FROM token_usage_application_attribution attribution
-                             JOIN token_usage usage ON usage.id = attribution.usage_id
-                             WHERE attribution.application_id = %s
-                                 AND usage.ts >= %s AND usage.ts < %s
-                                 AND usage.usage_domain = 'apim'
+                             FROM budget_scope_usage usage
+                             WHERE usage.scope_type = 'application' AND usage.scope_id = %s
+                                 AND usage.occurred_at >= %s AND usage.occurred_at < %s
                              GROUP BY 1
                              ORDER BY 1""",
-                (interval, timezone, timezone, application_id, from_, to),
+                (interval, timezone, timezone, str(application_id), from_, to),
             ).fetchall()
         return cast(Sequence[dict[str, Any]], rows)
 
@@ -173,6 +171,15 @@ class PostgreSqlOpsDbProxy(
         values = record.model_dump()
         values["user_ref"] = values.pop("user")
         with self._connection() as connection:
+            if record.usage_domain == "apim":
+                existing_attempt = connection.execute(
+                    """SELECT id FROM token_usage
+                       WHERE correlation_id = %s AND usage_domain = 'apim'
+                       ORDER BY ts DESC, id DESC LIMIT 1""",
+                    (record.correlation_id,),
+                ).fetchone()
+                if existing_attempt is not None:
+                    values["id"] = str(existing_attempt["id"])
             connection.execute(
                 """
                 INSERT INTO token_usage AS existing (
@@ -272,7 +279,7 @@ class PostgreSqlOpsDbProxy(
             )
             if application is not None:
                 self._write_usage_application_attribution(
-                    connection, record.id, application
+                    connection, values["id"], application
                 )
 
     def model_prices(self) -> dict[str, ModelPrice]:
@@ -981,9 +988,12 @@ class PostgreSqlOpsDbProxy(
                         usage.reconciled_at, usage.budget_admission,
                         usage.model_admission
                     FROM token_usage usage
-                    WHERE usage.request_id = %s
-                        AND usage.usage_domain = 'apim'""",
-                (request_id,),
+                    WHERE (usage.correlation_id = %s OR usage.request_id = %s)
+                        AND usage.usage_domain = 'apim'
+                    ORDER BY CASE WHEN usage.correlation_id = %s THEN 0 ELSE 1 END,
+                        usage.ts DESC, usage.id DESC
+                    LIMIT 1""",
+                (request_id, request_id, request_id),
             ).fetchone()
         return dict(row) if row is not None else None
 

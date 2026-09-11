@@ -1,14 +1,41 @@
 from tests.support.paths import FRONTEND_SOURCE
 
 
+def test_ledger_display_uses_api_balances_and_preserves_unknown_values() -> None:
+    page = (FRONTEND_SOURCE / "pages/applications-page.tsx").read_text(encoding="utf-8")
+    types = (FRONTEND_SOURCE / "data-sources/apim/types.ts").read_text(encoding="utf-8")
+    styles = (FRONTEND_SOURCE / "styles/applications.css").read_text(encoding="utf-8")
+    for field in (
+        "pending_reserved_tokens",
+        "finalized_upper_bound_tokens",
+        "available_tokens",
+        "pending_reservation_count",
+    ):
+        assert f"{field}?: number | null" in types
+        assert f'budget.{field} == null ? "—" : formatFullCount(budget.{field})' in page
+    assert 'budget?.ledger_snapshot_at ? "已投影"' in page
+    assert "dateTime={budget.ledger_snapshot_at ?? undefined}" in page
+    assert ".application-budget-stats > div:nth-child(2n)" in styles
+    for language in ("en", "ja", "ko"):
+        phrases = (FRONTEND_SOURCE / f"locales/{language}/phrases-core.ts").read_text(
+            encoding="utf-8"
+        )
+        for phrase in (
+            "预留占用",
+            "上限占用",
+            "可用额度",
+            "待处理请求",
+            "账本快照",
+            "未同步",
+            "延迟结算",
+        ):
+            assert f'"{phrase}":' in phrases
+
+
 def test_subscriptions_are_a_model_platform_domain() -> None:
     app = (FRONTEND_SOURCE / "app.tsx").read_text(encoding="utf-8")
-    source = (
-        FRONTEND_SOURCE / "data-sources/apim/source.tsx"
-    ).read_text(encoding="utf-8")
-    page = (FRONTEND_SOURCE / "pages/applications-page.tsx").read_text(
-        encoding="utf-8"
-    )
+    source = (FRONTEND_SOURCE / "data-sources/apim/source.tsx").read_text(encoding="utf-8")
+    page = (FRONTEND_SOURCE / "pages/applications-page.tsx").read_text(encoding="utf-8")
     assert '| "applications"' in app
     assert 'label: "模型平台"' in app
     assert '{ label: "订阅", icon: KeyRound, page: "applications" }' in app
@@ -25,15 +52,9 @@ def test_subscriptions_are_a_model_platform_domain() -> None:
 
 def test_applications_use_only_typed_read_inventory_and_async_sync() -> None:
     api = (FRONTEND_SOURCE / "data-sources/apim/api.ts").read_text(encoding="utf-8")
-    queries = (
-        FRONTEND_SOURCE / "data-sources/apim/queries.ts"
-    ).read_text(encoding="utf-8")
-    types = (
-        FRONTEND_SOURCE / "data-sources/apim/types.ts"
-    ).read_text(encoding="utf-8")
-    page = (FRONTEND_SOURCE / "pages/applications-page.tsx").read_text(
-        encoding="utf-8"
-    )
+    queries = (FRONTEND_SOURCE / "data-sources/apim/queries.ts").read_text(encoding="utf-8")
+    types = (FRONTEND_SOURCE / "data-sources/apim/types.ts").read_text(encoding="utf-8")
+    page = (FRONTEND_SOURCE / "pages/applications-page.tsx").read_text(encoding="utf-8")
     activity_card = (
         FRONTEND_SOURCE / "components/finops/application-usage-activity-card.tsx"
     ).read_text(encoding="utf-8")
@@ -52,8 +73,7 @@ def test_applications_use_only_typed_read_inventory_and_async_sync() -> None:
     assert "users: GatewayApplicationUserUsage[]" in types
     assert (
         'operation_kind: "rollback" | "integrity_check" | "gc_plan" '
-        '| "application_sync" | "application_provision"'
-        in types
+        '| "application_sync" | "application_provision"' in types
     )
     assert "provisionGatewayApplicationSubscription" in api
     assert "updateGatewayApplicationAvatar" in api
@@ -85,10 +105,8 @@ def test_applications_use_only_typed_read_inventory_and_async_sync() -> None:
     assert "navigator.clipboard.writeText" in subscription_card
     assert "useMutation" in subscription_card
     assert "useQuery" not in subscription_card
-    assert "secret.value" not in subscription_card.replace(
-        "copySecret(secret.value)", ""
-    )
-    assert 'application.subscriptions.length > 1' in subscription_card
+    assert "secret.value" not in subscription_card.replace("copySecret(secret.value)", "")
+    assert "application.subscriptions.length > 1" in subscription_card
     assert 'subscription.state !== "active"' in subscription_card
     assert "mock" not in page.lower()
     assert "demo" not in page.lower()
@@ -96,12 +114,8 @@ def test_applications_use_only_typed_read_inventory_and_async_sync() -> None:
 
 def test_applications_use_two_level_inventory_and_detail_routes() -> None:
     app = (FRONTEND_SOURCE / "app.tsx").read_text(encoding="utf-8")
-    page = (FRONTEND_SOURCE / "pages/applications-page.tsx").read_text(
-        encoding="utf-8"
-    )
-    styles = (FRONTEND_SOURCE / "styles/applications.css").read_text(
-        encoding="utf-8"
-    )
+    page = (FRONTEND_SOURCE / "pages/applications-page.tsx").read_text(encoding="utf-8")
+    styles = (FRONTEND_SOURCE / "styles/applications.css").read_text(encoding="utf-8")
     subscription_card = (
         FRONTEND_SOURCE / "components/finops/application-subscription-card.tsx"
     ).read_text(encoding="utf-8")
@@ -126,8 +140,7 @@ def test_applications_use_two_level_inventory_and_detail_routes() -> None:
     assert "subscriptions-category-card" in page
     assert (
         ".subscriptions-category-card.active { border-color: transparent; "
-        "background: var(--muted); color: var(--foreground); box-shadow: none; }"
-        in styles
+        "background: var(--muted); color: var(--foreground); box-shadow: none; }" in styles
     )
     assert "createPortal" in page
     assert 'id="mobile-topbar-end-actions"' in app
@@ -144,11 +157,7 @@ def test_applications_use_two_level_inventory_and_detail_routes() -> None:
     assert "--model-table-min-width: 638px" in styles
     assert ".application-avatar-editor" in styles
     assert "container: subscription-content / inline-size" in styles
-    assert (
-        "grid-template-columns: var(--subscriptions-nav-width, 276px) "
-        "minmax(0, 1fr)"
-        in styles
-    )
+    assert "grid-template-columns: var(--subscriptions-nav-width, 276px) minmax(0, 1fr)" in styles
     assert ".subscriptions-pane-handle { z-index: 3; grid-column: 2;" in styles
     assert ".application-model-table .model-list-row" in styles
     assert ".application-detail-workspace" in styles

@@ -51,7 +51,11 @@ def test_repository_documents_one_database_entry_point() -> None:
         *sorted((REPOSITORY_ROOT / "docs").glob("*.md")),
     ]
 
-    assert [path.name for path in migrations] == ["001_initial_schema.up.sql"]
+    assert migrations[0].name == "001_initial_schema.up.sql"
+    testing = (REPOSITORY_ROOT / "docs/testing.md").read_text(encoding="utf-8")
+    assert "uv run python -m backend.migrate" in testing
+    for migration in migrations:
+        assert migration.name.removesuffix(".up.sql") in testing
     for path in documents:
         text = path.read_text(encoding="utf-8")
         assert "database-baseline" not in text

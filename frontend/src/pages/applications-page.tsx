@@ -649,7 +649,13 @@ function ApplicationDetailView({
               <div><span>已使用</span><b>{budget.usage_percent.toFixed(2)}%</b></div>
               <div><span>TPM</span><b>{formatFullCount(budget.tokens_per_minute)}</b></div>
               <div><span>预警</span><b>{budget.warning_threshold_percent}%</b></div>
+              <div><span>预留占用</span><b>{budget.pending_reserved_tokens == null ? "—" : formatFullCount(budget.pending_reserved_tokens)}</b></div>
+              <div><span>上限占用</span><b>{budget.finalized_upper_bound_tokens == null ? "—" : formatFullCount(budget.finalized_upper_bound_tokens)}</b></div>
+              <div><span>可用额度</span><b>{budget.available_tokens == null ? "—" : formatFullCount(budget.available_tokens)}</b></div>
+              <div><span>待处理请求</span><b>{budget.pending_reservation_count == null ? "—" : formatFullCount(budget.pending_reservation_count)}</b></div>
             </div>
+            <div className="application-ledger-snapshot"><span>账本快照</span><time dateTime={budget.ledger_snapshot_at ?? undefined}>{budget.ledger_snapshot_at ? formatTimestamp(budget.ledger_snapshot_at, timezone) : "未同步"}</time></div>
+            {budget.stale_reservation_count != null && budget.stale_reservation_count > 0 && <div className="application-ledger-snapshot"><span>延迟结算</span><b>{formatFullCount(budget.stale_reservation_count)}</b></div>}
           </div> : <div className="application-card-empty"><WalletCards size={18} />未配置本月额度</div>}
         </section>
 
@@ -670,7 +676,7 @@ function ApplicationDetailView({
           <dl>
             <div><dt>{consumer}</dt><dd>已绑定</dd></div>
             <div><dt>调用身份</dt><dd>{isAgent ? "智能体" : application.application_type === "delegated_user" ? "应用 + 人员" : application.system_managed ? "系统" : "服务"}</dd></div>
-            <div><dt>额度账本</dt><dd>{budget ? "已投影" : "未配置"}</dd></div>
+            <div><dt>额度账本</dt><dd>{budget?.ledger_snapshot_at ? "已投影" : budget ? "未同步" : "未配置"}</dd></div>
             <div><dt>密钥</dt><dd>{application.key_management_available && canManage ? "按需读取" : "不存储"}</dd></div>
           </dl>
         </section>

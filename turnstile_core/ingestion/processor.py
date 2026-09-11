@@ -198,10 +198,14 @@ class UsageProcessor:
             if price
             else 0.0
         )
+        is_copilot_usage = event.ingest_source == "copilot_cli" or (
+            event.request_source or ""
+        ).startswith("copilot-assistant")
+        correlation_id = event.correlation_id or event.request_id or event.id
         return TokenUsageRecord(
-            id=event.id,
+            id=event.id if is_copilot_usage else correlation_id,
             request_id=event.request_id or event.id,
-            correlation_id=event.correlation_id or event.request_id or event.id,
+            correlation_id=correlation_id,
             ts=event.ts,
             team=event.team or "unattributed",
             organization=event.organization or "unattributed",
@@ -222,12 +226,7 @@ class UsageProcessor:
             model_id=model_id,
             runtime=event.runtime or "unattributed",
             request_source=event.request_source or "unattributed",
-            usage_domain=(
-                "github_copilot"
-                if event.ingest_source == "copilot_cli"
-                or (event.request_source or "").startswith("copilot-assistant")
-                else "apim"
-            ),
+            usage_domain="github_copilot" if is_copilot_usage else "apim",
             input_tokens=input_tokens,
             cached_tokens=cached_tokens,
             cache_write_tokens=cache_write_tokens,

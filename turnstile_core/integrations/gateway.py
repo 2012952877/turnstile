@@ -88,7 +88,11 @@ def _estimate_usage(prompt: str, response: str) -> InvocationUsage:
 def _openai_usage(raw_usage: Mapping[str, Any]) -> InvocationUsage:
     details = raw_usage.get("prompt_tokens_details")
     prompt_details = details if isinstance(details, Mapping) else {}
-    cache_read = int(prompt_details.get("cached_tokens", 0) or 0)
+    nested_cache_read = prompt_details.get("cached_tokens")
+    cache_read = int(
+        (raw_usage.get("cached_tokens", 0) if nested_cache_read is None else nested_cache_read)
+        or 0
+    )
     cache_write = int(prompt_details.get("cache_write_tokens", 0) or 0)
     cached = cache_read + cache_write
     prompt = int(raw_usage.get("prompt_tokens", 0) or 0)

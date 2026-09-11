@@ -9,7 +9,6 @@ import {
   Camera,
   CheckCircle2,
   ChevronRight,
-  Copy,
   Edit3,
   Gauge,
   KeyRound,
@@ -43,17 +42,18 @@ import { Textarea } from "../components/ui/textarea"
 import { useResizablePane } from "../components/ui/use-resizable-pane"
 import { ApplicationUsageActivityCard } from "../components/finops/application-usage-activity-card"
 import { ApplicationSubscriptionCard } from "../components/finops/application-subscription-card"
+import { ApplicationCreateDialog } from "../components/applications/application-create-dialog"
+import { APPLICATION_OPERATION_PARAMETER, applicationOperationIdFromUrl, applicationOperationTerminal, applicationProvisionStage } from "../components/applications/application-create-form"
 import { ApiError, dataSource } from "../data-sources/apim/api"
 import { finopsKeys, finopsQueries } from "../data-sources/apim/queries"
 import type {
   GatewayApplicationAuditEvent,
   GatewayApplicationDetail,
   GatewayApplicationStatus,
-  GatewayApplicationSubscriptionCreate,
-  GatewayApplicationSubscriptionProvisionAccepted,
   GatewayApplicationSummary,
   GatewayApplicationType,
   GatewayReleaseOperation,
+  GatewayReleaseOperationAccepted,
   ManagedModel,
 } from "../data-sources/apim/types"
 import { FINOPS_NAVIGATE_EVENT } from "../lib/navigation"
@@ -425,130 +425,15 @@ function ApplicationSyncStatus({ operation }: { operation: GatewayReleaseOperati
 }
 
 function ApplicationProvisionStatus({ operation }: { operation: GatewayReleaseOperation }) {
-  const terminal = ["succeeded", "failed", "restored"].includes(operation.status)
+  const terminal = applicationOperationTerminal(operation)
   const unavailable = operation.worker_available === false && !terminal
-  const consumer = operation.semantic_preview.application_type === "agent" ? "智能体" : "应用"
-  const title = unavailable ? "创建未启动"
-    : operation.status === "failed" ? `${consumer} 创建失败`
-    : operation.status === "succeeded" ? `${consumer} 已创建`
-    : "正在创建 APIM 订阅"
+  const title = applicationProvisionStage(operation)
   const message = unavailable ? operation.worker_unavailable_reason ?? "Release Worker 未部署。"
     : operation.error_message ?? (operation.status === "succeeded" ? "订阅已启用。" : "等待后台创建完成。")
   return <div className={`application-sync-status ${unavailable ? "unavailable" : operation.status}`} role="status" aria-live="polite">
     {unavailable || operation.status === "failed" ? <AlertTriangle size={15} /> : terminal ? <CheckCircle2 size={15} /> : <RefreshCw className="spin" size={15} />}
     <div><b>{title}</b><span>{message}</span></div>
   </div>
-}
-
-function subscriptionIdFromName(value: string) {
-  return value.toLocaleLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 127)
-}
-
-function ApplicationCreateDialog({
-  open,
-  gatewayId,
-  applicationType,
-  operation,
-  onOpenChange,
-  onAccepted,
-}: {
-  open: boolean
-  gatewayId: string | null
-  applicationType: "service" | "agent"
-  operation: GatewayReleaseOperation | undefined
-  onOpenChange: (open: boolean) => void
-  onAccepted: (accepted: GatewayApplicationSubscriptionProvisionAccepted) => void
-}) {
-  const consumer = applicationType === "agent" ? "智能体" : "应用"
-  const [displayName, setDisplayName] = useState("")
-  const [subscriptionId, setSubscriptionId] = useState("")
-  const [subscriptionIdEdited, setSubscriptionIdEdited] = useState(false)
-  const [description, setDescription] = useState("")
-  const [accepted, setAccepted] = useState<GatewayApplicationSubscriptionProvisionAccepted | null>(null)
-  const [formError, setFormError] = useState<string | null>(null)
-  const [copied, setCopied] = useState(false)
-  const mutation = useMutation({
-    mutationFn: ({ gatewayId: id, value }: { gatewayId: string; value: GatewayApplicationSubscriptionCreate }) => dataSource.provisionGatewayApplicationSubscription(id, value),
-    onSuccess: (value) => {
-      setAccepted(value)
-      setFormError(null)
-      onAccepted(value)
-    },
-  })
-  const reset = () => {
-    setDisplayName("")
-    setSubscriptionId("")
-    setSubscriptionIdEdited(false)
-    setDescription("")
-    setAccepted(null)
-    setFormError(null)
-    setCopied(false)
-    mutation.reset()
-  }
-  const close = () => {
-    onOpenChange(false)
-    reset()
-  }
-  const changeName = (value: string) => {
-    setDisplayName(value)
-    if (!subscriptionIdEdited) setSubscriptionId(subscriptionIdFromName(value))
-    setFormError(null)
-  }
-  const submit = (event: React.FormEvent) => {
-    event.preventDefault()
-    if (!gatewayId) return setFormError("没有可用的 Azure API Management 网关。")
-    if (!displayName.trim()) return setFormError(`请输入 ${consumer} 名称。`)
-    if (!/^[a-z0-9][a-z0-9-]{0,126}$/.test(subscriptionId)) {
-      return setFormError("订阅 ID 只能包含小写字母、数字和连字符。")
-    }
-    mutation.mutate({
-      gatewayId,
-      value: {
-        subscription_id: subscriptionId,
-        display_name: displayName.trim(),
-        description: description.trim() || null,
-        application_type: applicationType,
-      },
-    })
-  }
-  const copyKey = async () => {
-    if (!accepted) return
-    await navigator.clipboard.writeText(accepted.primary_key)
-    setCopied(true)
-  }
-  const currentOperation = accepted && operation?.id === accepted.operation.id ? operation : accepted?.operation
-  const pending = currentOperation && !["succeeded", "failed", "restored"].includes(currentOperation.status)
-
-  return <Dialog open={open} onOpenChange={(next) => { if (!next && !mutation.isPending) close() }}>
-    <DialogContent className="registry-editor-dialog application-create-dialog" finalFocus={false}>
-      <form className="registry-editor application-create-form" onSubmit={submit}>
-        <DialogHeader className="registry-editor-header">
-          <DialogTitle>{accepted ? "保存订阅密钥" : `添加${consumer}`}</DialogTitle>
-          <DialogDescription>{accepted ? accepted.operation.semantic_preview.display_name as string : `创建一个由 Turnstile 管理的${consumer}订阅`}</DialogDescription>
-        </DialogHeader>
-        <button type="button" className="registry-editor-close" onClick={close} disabled={mutation.isPending} aria-label="关闭"><X size={16} /></button>
-
-        {accepted ? <div className="registry-editor-body application-key-body">
-          <div className="application-key-warning"><KeyRound size={16} /><div><b>此密钥仅显示一次</b><span>关闭窗口后无法再次查看；如遗失，后续需轮换密钥。</span></div></div>
-          <div className="application-key-value"><code data-no-localize>{accepted.primary_key}</code><Button type="button" variant="outline" size="icon-sm" onClick={() => void copyKey()} aria-label="复制订阅密钥" title="复制订阅密钥"><Copy size={14} /></Button></div>
-          {currentOperation && <div className={`application-create-operation ${currentOperation.status}`}><span>{pending && <RefreshCw className="spin" size={13} />}{currentOperation.status === "succeeded" && <CheckCircle2 size={13} />}{currentOperation.status === "failed" && <AlertTriangle size={13} />}</span><b>{currentOperation.status === "succeeded" ? "订阅已启用" : currentOperation.status === "failed" ? "创建失败" : "正在创建订阅"}</b></div>}
-          {copied && <div className="application-key-copied" role="status">已复制</div>}
-        </div> : <div className="registry-editor-body application-create-body">
-          <label className="registry-field"><span className="registry-field-label">{consumer} 名称</span><Input autoFocus value={displayName} onChange={(event) => changeName(event.target.value)} disabled={mutation.isPending} maxLength={100} placeholder={applicationType === "agent" ? "例如：Invoice Agent" : "例如：Invoice Service"} /></label>
-          <label className="registry-field"><span className="registry-field-label">订阅 ID</span><Input value={subscriptionId} onChange={(event) => { setSubscriptionIdEdited(true); setSubscriptionId(event.target.value.toLocaleLowerCase()); setFormError(null) }} disabled={mutation.isPending} maxLength={127} placeholder="invoice-assistant" data-no-localize /></label>
-          <label className="registry-field"><span className="registry-field-label">说明</span><Textarea value={description} onChange={(event) => setDescription(event.target.value)} disabled={mutation.isPending} maxLength={1000} placeholder="可选" /></label>
-          {(formError || mutation.error) && <div className="registry-error">{formError ?? String(mutation.error)}</div>}
-        </div>}
-
-        <DialogFooter className="registry-editor-footer">
-          {accepted ? <Button type="button" onClick={close}>完成</Button> : <><Button type="button" variant="outline" onClick={close} disabled={mutation.isPending}>取消</Button><Button type="submit" disabled={mutation.isPending || !gatewayId}>{mutation.isPending ? <RefreshCw className="spin" size={14} /> : <Plus size={14} />}{mutation.isPending ? "正在创建" : "创建并生成密钥"}</Button></>}
-        </DialogFooter>
-      </form>
-    </DialogContent>
-  </Dialog>
 }
 
 function Metric({ label, value, detail }: { label: string; value: string; detail?: string }) {
@@ -720,7 +605,7 @@ export function ApplicationsPage() {
   const registry = useQuery(finopsQueries.registry())
   const [search, setSearch] = useState("")
   const [filter, setFilter] = useState<ApplicationFilter>("all")
-  const [activeOperationId, setActiveOperationId] = useState<string | null>(null)
+  const [activeOperationId, setActiveOperationId] = useState<string | null>(() => applicationOperationIdFromUrl(window.location.href))
   const [createOpen, setCreateOpen] = useState(false)
   const detail = useQuery(finopsQueries.gatewayApplication(applicationId))
   const items = applications.data?.items ?? []
@@ -745,6 +630,7 @@ export function ApplicationsPage() {
     const sync = () => {
       setApplicationId(applicationFromUrl())
       setCategory(subscriptionCategoryFromUrl())
+      setActiveOperationId(applicationOperationIdFromUrl(window.location.href))
     }
     window.addEventListener("popstate", sync)
     window.addEventListener(FINOPS_NAVIGATE_EVENT, sync)
@@ -758,19 +644,25 @@ export function ApplicationsPage() {
     setSearch("")
   }, [category])
   const operation = useQuery(finopsQueries.gatewayReleaseOperation(activeOperationId))
-  const operationTerminal = operation.data && ["succeeded", "failed", "restored"].includes(operation.data.status)
+  const operationTerminal = applicationOperationTerminal(operation.data)
   useEffect(() => {
     if (!operationTerminal) return
     void queryClient.invalidateQueries({ queryKey: finopsKeys.gatewayApplications })
-  }, [operationTerminal, queryClient])
+  }, [operationTerminal, operation.data?.id, queryClient])
+  const acceptOperation = (accepted: GatewayReleaseOperationAccepted) => {
+    setActiveOperationId(accepted.operation.id)
+    const url = new URL(window.location.href)
+    url.searchParams.set(APPLICATION_OPERATION_PARAMETER, accepted.operation.id)
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`)
+  }
   const syncMutation = useMutation({
     mutationFn: (gatewayId: string) => dataSource.syncGatewayApplications(gatewayId),
-    onSuccess: (accepted) => setActiveOperationId(accepted.operation.id),
+    onSuccess: acceptOperation,
   })
   const gatewayId = items[0]?.gateway_profile_id
     ?? registry.data?.gateways.find((gateway) => gateway.implementation === "apim")?.id
     ?? null
-  const busy = syncMutation.isPending || Boolean(operation.data?.worker_available && !operationTerminal)
+  const busy = syncMutation.isPending || Boolean(activeOperationId && !operationTerminal && !operation.isError)
   const modelNames = useMemo(() => new Map((registry.data?.models ?? []).map((model) => [model.id, model.display_name])), [registry.data?.models])
   const apiMissing = applications.error instanceof ApiError && applications.error.status === 404
   const consumer = category === "agents" ? "智能体" : "应用"
@@ -805,12 +697,12 @@ export function ApplicationsPage() {
   return <div className="smh-workspace applications-workspace">
     {user?.role === "owner" && mobileActionsTarget && createPortal(<div className="subscriptions-mobile-topbar-actions">
       <Button type="button" variant="ghost" size="icon-sm" disabled={!gatewayId || !applications.data?.sync_available || busy} onClick={() => gatewayId && syncMutation.mutate(gatewayId)} aria-label="同步 APIM" title={applications.data?.sync_available ? "从 APIM 刷新订阅库存" : applications.data?.sync_unavailable_reason ?? "发布工作进程未部署"}>{busy ? <RefreshCw className="spin" size={15} /> : <RefreshCw size={15} />}</Button>
-      <Button type="button" variant="ghost" size="icon-sm" disabled={!gatewayId || !applications.data?.provisioning_available || busy} onClick={() => setCreateOpen(true)} aria-label={`添加${consumer}`} title={applications.data?.provisioning_available ? `添加${consumer}` : "订阅创建尚未部署"}><Plus size={16} /></Button>
+      <Button type="button" variant="ghost" size="icon-sm" disabled={busy} onClick={() => setCreateOpen(true)} aria-label={`添加${consumer}`} title={`添加${consumer}`}><Plus size={16} /></Button>
     </div>, mobileActionsTarget)}
     <header className="smh-page-header applications-header">
       <div><span className="smh-header-icon"><KeyRound size={17} /></span><h1>订阅对象</h1><span>{applications.isLoading ? "—" : items.length}</span></div>
       <div className="smh-header-actions">
-        {user?.role === "owner" ? <><Button variant="outline" disabled={!gatewayId || !applications.data?.sync_available || busy} onClick={() => gatewayId && syncMutation.mutate(gatewayId)} title={applications.data?.sync_available ? "从 APIM 刷新订阅库存" : applications.data?.sync_unavailable_reason ?? "发布工作进程未部署"}>{busy ? <RefreshCw className="spin" size={13} /> : <RefreshCw size={13} />}同步 APIM</Button><Button disabled={!gatewayId || !applications.data?.provisioning_available || busy} onClick={() => setCreateOpen(true)} title={applications.data?.provisioning_available ? `添加${consumer}` : "订阅创建尚未部署"}><Plus size={14} />添加{consumer}</Button></> : <span className="applications-readonly"><ShieldAlert size={13} />只读</span>}
+        {user?.role === "owner" ? <><Button variant="outline" disabled={!gatewayId || !applications.data?.sync_available || busy} onClick={() => gatewayId && syncMutation.mutate(gatewayId)} title={applications.data?.sync_available ? "从 APIM 刷新订阅库存" : applications.data?.sync_unavailable_reason ?? "发布工作进程未部署"}>{busy ? <RefreshCw className="spin" size={13} /> : <RefreshCw size={13} />}同步 APIM</Button><Button disabled={busy} onClick={() => setCreateOpen(true)} title={`添加${consumer}`}><Plus size={14} />添加{consumer}</Button></> : <span className="applications-readonly"><ShieldAlert size={13} />只读</span>}
       </div>
     </header>
     {syncMutation.error && <div className="application-error-band" role="alert"><AlertTriangle size={14} /><span>{String(syncMutation.error)}</span></div>}
@@ -853,6 +745,19 @@ export function ApplicationsPage() {
       </div>}
       </section>
     </div>
-    <ApplicationCreateDialog open={createOpen} gatewayId={gatewayId} applicationType={category === "agents" ? "agent" : "service"} operation={operation.data} onOpenChange={setCreateOpen} onAccepted={(accepted) => setActiveOperationId(accepted.operation.id)} />
+    {createOpen && user?.role === "owner" && <ApplicationCreateDialog
+      gateways={registry.data?.gateways ?? []} inventory={applications.data}
+      inventoryError={applications.isError || registry.isError}
+      applicationType={category === "agents" ? "agent" : "service"}
+      operation={operation.data} operationError={operation.error ? String(operation.error) : null}
+      refreshing={applications.isFetching || registry.isFetching || operation.isFetching}
+      onRefresh={() => { void applications.refetch(); void registry.refetch(); if (activeOperationId) void operation.refetch() }}
+      onClose={() => setCreateOpen(false)} onAccepted={acceptOperation}
+      onOpenApplication={(id) => {
+        setCreateOpen(false)
+        window.history.pushState(null, "", applicationRouteHref(id, category))
+        window.dispatchEvent(new Event(FINOPS_NAVIGATE_EVENT))
+      }}
+    />}
   </div>
 }

@@ -247,6 +247,14 @@
 .application-model-options b { font-size: 12px; line-height: 17px; font-weight: 500; }
 .application-model-options small { color: var(--muted-foreground); font-size: 10px; line-height: 14px; }
 .application-create-body { gap: 12px; }
+.application-create-defaults { min-width: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0; padding-block: 12px; border-top: 1px solid var(--border); }
+.application-create-defaults > div { min-width: 0; display: grid; gap: 4px; }
+.application-create-defaults dt { color: var(--muted-foreground); font-size: 11px; }
+.application-create-defaults dd { min-width: 0; margin: 0; overflow-wrap: anywhere; font-size: 12px; }
+.application-create-defaults code { white-space: normal; overflow-wrap: anywhere; }
+.application-create-unavailable { min-width: 0; display: grid; gap: 6px; border-left: 3px solid var(--warning); padding-left: 10px; color: var(--muted-foreground); font-size: 12px; overflow-wrap: anywhere; }
+.application-create-unavailable b { color: var(--warning); }
+.application-create-unavailable button { justify-self: start; }
 .application-key-body { gap: 12px; padding-top: 8px; }
 .application-key-warning { min-width: 0; display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: start; gap: 10px; border: 1px solid var(--border); border-left: 3px solid var(--warning); border-radius: 8px; padding: 10px 12px; background: color-mix(in oklch, var(--warning) 7%, transparent); color: var(--warning); }
 .application-key-warning > svg { margin-top: 1px; }

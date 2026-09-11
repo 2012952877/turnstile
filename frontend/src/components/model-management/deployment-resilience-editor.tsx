@@ -20,6 +20,8 @@ import type {
 } from "../../data-sources/apim/types"
 import { useAuth } from "../../providers/auth-provider"
 import { equivalentNativeRouteRuntimes } from "./apim-native-route-eligibility"
+import { FieldHelp } from "./field-help"
+import { poolPublicationPayload } from "./pool-session-affinity"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -96,6 +98,7 @@ function draftFromPool(
         weight,
       })),
       rate_limit: pool.rate_limit,
+      session_affinity: pool.session_affinity === true,
     }
   }
   return {
@@ -103,6 +106,7 @@ function draftFromPool(
       ? [{ runtime_id: primaryRuntimeId, priority: 0, weight: 1 }]
       : [],
     rate_limit: structuredClone(DEFAULT_RATE_LIMIT),
+    session_affinity: false,
   }
 }
 
@@ -157,6 +161,7 @@ export function DeploymentResilienceEditor({
   const { user } = useAuth()
   const canManage = user?.role === "owner"
   const registry = useQuery(finopsQueries.registry())
+  const affinitySupported = registry.data?.backend_pool_session_affinity_supported === true
   const pool = useQuery(finopsQueries.modelBackendPool(model.id))
   const primaryRuntime = registry.data?.runtimes.find(
     (runtime) => runtime.id === model.runtime_id,
@@ -216,7 +221,9 @@ export function DeploymentResilienceEditor({
   }, [model.id, onActivated, publication.data, publicationAction, publicationId, queryClient])
 
   const save = useMutation({
-    mutationFn: () => dataSource.saveModelBackendPool(model.id, draft),
+    mutationFn: () => dataSource.saveModelBackendPool(
+      model.id, poolPublicationPayload(draft, affinitySupported),
+    ),
     onSuccess: (accepted) => {
       setNotice(null)
       setPublicationAction("configure")
@@ -255,6 +262,7 @@ export function DeploymentResilienceEditor({
   const selectedWeights = draft.members.map((member) => member.weight)
   const weightedIsDistinct = mode !== "weighted" || new Set(selectedWeights).size > 1
   const validDraft = validMemberCount && weightedIsDistinct
+    && (!draft.session_affinity || affinitySupported)
   const hasEffectivePool = Boolean(pool.data)
   const hasPendingPool = !hasEffectivePool && validMemberCount
   const visiblePublicationStatus = publicationStatus ?? notice?.status
@@ -335,6 +343,18 @@ export function DeploymentResilienceEditor({
         <button type="button" className={validMemberCount && mode === "balanced" ? "active" : ""} aria-pressed={validMemberCount && mode === "balanced"} onClick={() => changeMode("balanced")} disabled={!canManage || busy || !validMemberCount}><span className="gateway-mode-label-full">均衡分流</span><span className="gateway-mode-label-short">均衡</span></button>
         <button type="button" className={validMemberCount && mode === "weighted" ? "active" : ""} aria-pressed={validMemberCount && mode === "weighted"} onClick={() => changeMode("weighted")} disabled={!canManage || busy || !validMemberCount}><span className="gateway-mode-label-full">加权分流</span><span className="gateway-mode-label-short">加权</span></button>
       </ButtonGroup>
+      <div className="gateway-pool-affinity">
+        <label htmlFor={`pool-affinity-${model.id}`}>
+          <Checkbox id={`pool-affinity-${model.id}`} checked={draft.session_affinity === true}
+            disabled={!canManage || busy || !affinitySupported}
+            onCheckedChange={(checked) => setDraft((current) => ({
+              ...current, session_affinity: checked === true,
+            }))} />
+          <span>会话亲和</span>
+        </label>
+        <FieldHelp>同一会话需保留 APIM 返回的 Cookie；权重、优先级和故障转移规则不变。</FieldHelp>
+        {!affinitySupported && <span className="gateway-pool-affinity-unavailable" role="status">后端尚不支持会话亲和。</span>}
+      </div>
       {mode === "custom" && <div className="gateway-resilience-state warning"><CircleAlert size={14} />历史自定义配置只读</div>}
       {mode === "weighted" && !weightedIsDistinct && <div className="gateway-resilience-state warning"><CircleAlert size={14} />请设置至少两个不同权重；相同权重请使用均衡分流。</div>}
       <div className="gateway-resilience-runtime-list" role="list" aria-label={`${model.display_name} APIM Backend Pool Runtime`}>

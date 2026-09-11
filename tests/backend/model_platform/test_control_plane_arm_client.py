@@ -20,6 +20,7 @@ from tests.backend.model_platform.control_plane_support import (
     publisher_settings,
 )
 from turnstile_core.domain.control_plane import (
+    ApiFormat,
     GatewayBackendPoolConfig,
     GatewayBackendPoolMember,
     GatewayPublication,
@@ -32,6 +33,7 @@ from turnstile_core.domain.control_plane import (
 from turnstile_core.domain.runtime_models import ProviderTarget
 from turnstile_core.integrations.apim_control_plane import (
     ApimPolicyCompiler,
+    AuthorizationRequiredError,
     AzureApimPublisherClient,
     BackendCircuitBreakerResource,
     BackendPoolMemberResource,
@@ -83,6 +85,122 @@ def test_arm_client_accepts_redacted_existing_backend_headers() -> None:
             ),
         )
     )
+
+@pytest.mark.parametrize(
+    "method_name",
+    ("_probe_model", "_probe_responses_model", "_probe_responses_compact_model"),
+)
+@pytest.mark.parametrize("baseline_status", (403, 200, 401, 429, 503))
+def test_surviving_candidate_failure_requires_a_matching_nontransient_baseline(
+    method_name: str, baseline_status: int
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        code = baseline_status if ";rev=current" in request.url.path else 403
+        return httpx.Response(code, json={"error": "provider_error"})
+
+    client = AzureApimPublisherClient(
+        publisher_settings(),
+        StubTokenProvider(),  # type: ignore[arg-type]
+        httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    probe = getattr(client, method_name)
+    candidate = "https://gateway.example.com/turnstile/llm;rev=candidate"
+    baseline = "https://gateway.example.com/turnstile/llm;rev=current"
+    if baseline_status == 403:
+        probe(candidate, {"x-test-scope": "survivor"}, "existing-model", baseline_base=baseline)
+    else:
+        with pytest.raises(RetryablePublicationError):
+            probe(candidate, {"x-test-scope": "survivor"}, "existing-model", baseline_base=baseline)
+    assert len(requests) == 2
+    assert requests[0].content == requests[1].content
+    assert requests[0].headers == requests[1].headers
+    assert json.loads(requests[1].content)["model"] == "existing-model"
+
+
+@pytest.mark.parametrize(
+    "method_name",
+    ("_probe_model", "_probe_responses_model", "_probe_responses_compact_model"),
+)
+def test_new_candidate_failure_has_no_baseline_exemption(method_name: str) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(403, json={"error": "forbidden"})
+
+    client = AzureApimPublisherClient(
+        publisher_settings(),
+        StubTokenProvider(),  # type: ignore[arg-type]
+        httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(AuthorizationRequiredError):
+        getattr(client, method_name)(
+            "https://gateway.example.com/turnstile/llm;rev=candidate",
+            {},
+            "new-model",
+            authorization_required=True,
+        )
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize(
+    "method_name",
+    ("_probe_model", "_probe_responses_model", "_probe_responses_compact_model"),
+)
+@pytest.mark.parametrize("status_code", (429, 503))
+def test_transient_candidate_failure_never_uses_a_baseline_exemption(
+    method_name: str, status_code: int
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(status_code)
+
+    client = AzureApimPublisherClient(
+        publisher_settings(),
+        StubTokenProvider(),  # type: ignore[arg-type]
+        httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(RetryablePublicationError):
+        getattr(client, method_name)(
+            "https://gateway.example.com/turnstile/llm;rev=candidate",
+            {},
+            "existing-model",
+            baseline_base="https://gateway.example.com/turnstile/llm;rev=current",
+        )
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize("field", ("max_tokens", "max_completion_tokens"))
+def test_openai_candidate_probe_uses_the_connections_token_field(field: str) -> None:
+    bodies: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+
+    client = AzureApimPublisherClient(
+        publisher_settings(),
+        StubTokenProvider(),  # type: ignore[arg-type]
+        httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    client._probe_model(
+        "https://gateway.example.com/turnstile/llm;rev=candidate", {}, "compatible-chat",
+        api_format=ApiFormat.OPENAI_CHAT, max_tokens_field=field,
+    )
+    assert bodies[0][field] == 8
+    assert len({"max_tokens", "max_completion_tokens"} & bodies[0].keys()) == 1
+    with pytest.raises(RuntimeError, match="unsupported token field"):
+        client._probe_model(
+            "https://gateway.example.com/turnstile/llm;rev=candidate", {}, "compatible-chat",
+            api_format=ApiFormat.OPENAI_CHAT, max_tokens_field="unknown",
+        )
+    assert len(bodies) == 1
+
 
 def test_arm_client_creates_native_pool_and_rate_limit_breakers() -> None:
     writes: dict[str, dict[str, Any]] = {}

@@ -11,10 +11,11 @@ import httpx
 import pytest
 from cryptography.fernet import Fernet
 from fastapi import HTTPException
-from pydantic import SecretStr
+from pydantic import HttpUrl, SecretStr
 
 from backend.services.runtime_service import ModelRuntimeService
 from turnstile_core.config import Settings
+from turnstile_core.domain.control_plane import RuntimeTarget
 from turnstile_core.domain.models import TokenUsageRecord
 from turnstile_core.domain.runtime_models import (
     AuthType,
@@ -23,12 +24,17 @@ from turnstile_core.domain.runtime_models import (
     GatewayProfileWrite,
     InvocationMetadata,
     ManagedModelWrite,
+    ModelConnectionCreate,
     ModelFamilyKey,
     ModelInvocationRequest,
+    ModelVendorKey,
     ProviderKind,
+    ProviderTarget,
     ProviderWrite,
     RuntimeKind,
     RuntimeWrite,
+    openai_compatible_endpoint_values,
+    openai_compatible_runtime_name,
 )
 from turnstile_core.integrations.gateway import (
     AnthropicMessagesGatewayAdapter,
@@ -36,6 +42,7 @@ from turnstile_core.integrations.gateway import (
     GatewayInvocationError,
     GatewayRouter,
     OpenAICompatibleGatewayAdapter,
+    _openai_usage,
 )
 from turnstile_core.persistence.in_memory import InMemoryRepository
 from turnstile_core.security import CredentialCipher
@@ -64,6 +71,136 @@ def request(*, model: str = "gpt-4.1", runtime: str = "Foundry Test") -> ModelIn
         ),
         messages=[ChatMessage(role="user", content="Return OK")],
     )
+
+
+@pytest.mark.parametrize("url,path", (
+    ("https://api.example.test", "/chat/completions"),
+    ("https://api.example.test/v1/", "/v1/chat/completions"),
+    ("https://api.example.test/v1/chat/completions", "/v1/chat/completions"),
+))
+def test_openai_connection_endpoint_keeps_origin_and_provider_path_separate(
+    url: str, path: str,
+) -> None:
+    base, origin, backend_path = openai_compatible_endpoint_values(url)
+    assert origin == "https://api.example.test"
+    assert backend_path == path
+    assert base == origin + path.removesuffix("/chat/completions")
+
+
+@pytest.mark.parametrize("url", (
+    "http://api.example.test/v1",
+    "https://sample-user:sample-value@api.example.test/v1",
+    "https://api.example.test/v1?key=sample",
+    "https://api.example.test/v1#fragment",
+    "/v1/chat/completions",
+))
+def test_openai_connection_endpoint_rejects_unsafe_shapes(url: str) -> None:
+    with pytest.raises(ValueError, match="HTTPS without credentials"):
+        openai_compatible_endpoint_values(url)
+
+
+def test_openai_connection_names_are_bounded_and_retain_vendor_metadata() -> None:
+    base = "https://api.example.test/" + "segment/" * 40
+    name = openai_compatible_runtime_name(base, ModelVendorKey.KIMI)
+    assert name.startswith("Kimi ") and name.endswith(" via APIM")
+    assert len(name) == 160
+    assert name == openai_compatible_runtime_name(base, ModelVendorKey.KIMI)
+    assert name != openai_compatible_runtime_name(base + "another", ModelVendorKey.KIMI)
+
+
+def test_openai_connection_contract_does_not_mix_provider_or_authentication_shapes() -> None:
+    values = {
+        "gateway_profile_id": UUID(int=1),
+        "provider": ProviderTarget(template="openai_compatible"),
+        "openai_base_url": HttpUrl("https://api.example.test/v1"),
+        "model_vendor": ModelVendorKey.DEEPSEEK,
+    }
+    connection = ModelConnectionCreate.model_validate(values)
+    assert connection.model_vendor is ModelVendorKey.DEEPSEEK
+    assert "api_key" not in ModelConnectionCreate.model_fields
+    with pytest.raises(ValueError, match="accepts only its Base URL"):
+        ModelConnectionCreate.model_validate({**values, "auth_mode": "managed_identity"})
+    with pytest.raises(ValueError, match="select one"):
+        ModelConnectionCreate.model_validate({
+            **values,
+            "bedrock_runtime_url": "https://bedrock-runtime.us-east-1.amazonaws.com",
+        })
+    with pytest.raises(ValueError, match="requires its Base URL and API key"):
+        RuntimeTarget(openai_base_url=connection.openai_base_url)
+    with pytest.raises(ValueError, match="cannot redefine"):
+        RuntimeTarget(existing_id=UUID(int=2), openai_base_url=connection.openai_base_url)
+    runtime = RuntimeTarget(
+        openai_base_url=connection.openai_base_url, api_key=SecretStr("sample-test-key")
+    )
+    assert runtime.existing_id is None
+
+
+def test_openai_connection_registration_defers_credentials_and_model_publication(
+    tmp_path: Path,
+) -> None:
+    repository = InMemoryRepository()
+    service = ModelRuntimeService(repository, Settings(credential_key_file=tmp_path / "key"))
+    model_count = len(repository.models)
+    gateway_id = next(
+        item["id"] for item in repository.gateways if item["implementation"] == "apim"
+    )
+    registry = service.save_connection(ModelConnectionCreate(
+        gateway_profile_id=gateway_id,
+        provider=ProviderTarget(template="openai_compatible"),
+        openai_base_url=HttpUrl("https://api.example.test/v1/chat/completions"),
+        model_vendor=ModelVendorKey.KIMI,
+    ))
+
+    runtime = next(item for item in registry.runtimes if item.config.get("model_vendor") == "kimi")
+    assert runtime.name == "Kimi api.example.test/v1 via APIM"
+    assert runtime.config["base_url"] == "https://api.example.test/v1"
+    assert runtime.config["backend_url"] == "https://api.example.test"
+    assert runtime.config["backend_path"] == "/v1/chat/completions"
+    assert runtime.config["auth_strategy"] == "named_value_bearer"
+    assert runtime.config["max_tokens_field"] == "max_tokens"
+    assert runtime.config["credential_provisioned"] is False
+    assert runtime.is_default is False
+    assert len(repository.models) == model_count
+    assert repository.gateway_publications == []
+    assert repository.gateway_publication_secrets == {}
+
+    with pytest.raises(HTTPException) as duplicate:
+        service.save_connection(ModelConnectionCreate(
+            gateway_profile_id=gateway_id,
+            provider=ProviderTarget(existing_id=runtime.provider_id),
+            openai_base_url=HttpUrl("https://api.example.test/v1/"),
+        ))
+    assert duplicate.value.status_code == 409
+    with pytest.raises(HTTPException) as mismatched_vendor:
+        service.save_connection(ModelConnectionCreate(
+            gateway_profile_id=gateway_id,
+            provider=ProviderTarget(existing_id=runtime.provider_id),
+            openai_base_url=HttpUrl("https://another.example.test/v1"),
+            model_vendor=ModelVendorKey.DEEPSEEK,
+        ))
+    assert mismatched_vendor.value.status_code == 409
+
+
+@pytest.mark.parametrize("details,top_level,expected", (
+    (None, 6, 6),
+    ({"cached_tokens": 0}, 6, 0),
+    ({"cached_tokens": 3}, 6, 3),
+    ({"cached_tokens": None}, 6, 6),
+    (None, None, 0),
+))
+def test_openai_cache_usage_prefers_explicit_nested_measurement(
+    details: dict[str, int | None] | None, top_level: int | None, expected: int,
+) -> None:
+    usage = _openai_usage({
+        "prompt_tokens": 10,
+        "completion_tokens": 2,
+        "prompt_tokens_details": details,
+        "cached_tokens": top_level,
+    })
+    assert usage.cached_tokens == expected
+    assert usage.input_tokens == 10 - expected
+    assert usage.output_tokens == 2
+    assert usage.estimated is False
 
 
 def test_credential_cipher_round_trip() -> None:

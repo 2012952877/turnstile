@@ -34,6 +34,32 @@ Set `AZURE_SUBSCRIPTION_ID`, `APIM_RESOURCE_GROUP`, `APIM_SERVICE_NAME`, `APIM_P
 
 `APIM_REGRESSION_MODEL_KEY` has no default. Set it only after onboarding a model that can be used for publication probes.
 
+### OpenAI-compatible connections
+
+Register an OpenAI-compatible Connection with an HTTPS Base URL and optional API-provider display metadata. URLs must not contain credentials, query parameters, or fragments. A trailing `/chat/completions` is normalized into the provider path; the public gateway path remains `/chat/completions`.
+
+Connection registration does not accept an API key or publish a model. Add the first model on that existing Connection and provide its one-time bearer key. The publisher encrypts the temporary key, materializes an APIM Secret Named Value, and erases the temporary ciphertext. Subsequent models reuse the Connection credential. The API and Control-plane packages must both support this schema before onboarding.
+
+Compatible Chat Completions connections use `max_tokens`; Foundry keeps its configured `max_completion_tokens` behavior. Measured cache usage prefers `prompt_tokens_details.cached_tokens`, including explicit zero, and falls back to top-level `cached_tokens` only when the nested measurement is absent. Provider display metadata does not change routing, credentials, or pricing. Configure actual model rates explicitly.
+
+### Pool conversation affinity
+
+Session affinity is opt-in and off by default. The Registry API advertises `backend_pool_session_affinity_supported`; older backends receive no affinity field. When enabled, APIM uses a model-scoped session cookie to prefer the same eligible Pool member. Clients must retain cookies separately per conversation. This is not physical-region pinning and does not change weights, priorities, circuit breakers or failover.
+
+The setting is stored alongside the historical version-1 Pool JSON as `apim_backend_pool_session_affinity`. Stable affinity backend identities preserve cookies across unrelated publications. Only affinity Pool management uses API version `2025-09-01-preview`; the publisher checks the actual cookie configuration after creation. Candidate regression probes use previous member selectors only when they are present in the snapshotted revision policy. Unsupported or unverifiable configuration never silently downgrades to successful validation.
+
+### Application creation
+
+Enable `GATEWAY_APPLICATION_PROVISIONING_ENABLED` only after the API and Release Worker have their explicit APIM target, credential encryption, and Table ledger endpoint configured. The API also requires `GATEWAY_RELEASE_WORKER_ENABLED`; the Function requires both that flag and its own `CONTROL_PLANE_ENABLED`. The worker needs subscription read/write, product and API policy read access, and ledger entity access; it does not require subscription key-list permissions for creation.
+
+In Bicep, `gatewayApplicationProvisioningEnabled` preserves the requested capability while the existing staged deployment keeps the Release Worker disabled until the Observer is ready. Set `gatewayApplicationDefaultMonthlyTokenLimit` and `gatewayApplicationDefaultTokensPerMinute` to positive values; both packages receive the same defaults. The existing Publisher role is unchanged. Only the Control-plane identity receives an additional role on the exact Ledger table when creation is enabled.
+
+`APIM_PRODUCT_ID` defaults to `finops-ai-consumers` and must match the deployed product in both packages. The product must be published, require subscriptions, and contain the managed API. The worker verifies that the live API policy serves the selected gateway's Application ledger partition before creating or activating a subscription.
+
+New operations snapshot the gateway, product and positive `GATEWAY_APPLICATION_DEFAULT_MONTHLY_TOKEN_LIMIT` / `GATEWAY_APPLICATION_DEFAULT_TOKENS_PER_MINUTE` values. They create a suspended APIM subscription, materialize the Application, prepare and read back its quota, model access, confirmed balance and subscription mapping, then activate using an ETag and verify the result. Retries never reset an existing confirmed balance or modify reservations. Historical version-1 queued operations retain their original behavior.
+
+The initial key is returned once with `Cache-Control: no-store`. The browser keeps it only in memory for copying, never in the DOM, URL or query cache. Terminal operation state and temporary ciphertext deletion commit together. Failed operations retain their resource and checkpoint evidence; they do not automatically delete subscriptions or regenerate credentials. Inspect an interrupted activation's live state before taking further action.
+
 ## Budget ledger recovery
 
 The existing Telemetry timer uses managed identity and the configured `LOG_ANALYTICS_WORKSPACE_ID` and `APIM_API_ID` to recover reservation evidence. It creates no cloud resources and requires the existing Table and Log Analytics data-plane permissions.
@@ -45,6 +71,10 @@ The existing Telemetry timer uses managed identity and the configured `LOG_ANALY
 | `LEDGER_RESERVATION_FINALIZATION_LAG_HOURS` | Grace before conservative upper-bound finalization; default 24, range 1-168, and must exceed the recovery lag. |
 
 When reconciliation is disabled or the workspace is absent, unknown reservations stay pending and charged. Failed, partial or malformed log queries cannot authorize finalization. A successful complete query with no conclusive evidence after the grace period ends Pending status but retains the original reserved amount. Exact evidence can later replace that amount. Neither a timeout nor HTTP query failure releases budget.
+
+## Runtime attribution
+
+The usage Observer can mark a measured physical backend Runtime as authoritative for ingestion. Only exact APIM Event Hub events with a concrete Runtime may correct an existing exact row's Runtime. Token counts, recorded unit prices, costs, latency and caller identity remain unchanged. Estimated or Copilot events cannot make that correction. The authority flag is transient and is not a database column; historical rows are not backfilled by deployment.
 
 ## Frontend proxy
 

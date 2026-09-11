@@ -61,10 +61,29 @@ import type {
 } from "./types"
 import { getIntlLocale } from "../../locales/index"
 import { ApiError, request, writeJson } from "../../api/client"
+import { isUnsupportedOpenAICompatibleDetails } from "../../components/model-management/openai-compatible"
 
 export { ApiError } from "../../api/client"
 
 const DAY_MS = 24 * 60 * 60 * 1000
+
+async function requireOpenAICompatibleApi<Value>(operation: Promise<Value>): Promise<Value> {
+  try {
+    return await operation
+  } catch (error) {
+    if (!(error instanceof ApiError) || error.status !== 422) throw error
+    const payloadStart = error.message.indexOf("{")
+    if (payloadStart < 0) throw error
+    let unsupported = false
+    try {
+      unsupported = isUnsupportedOpenAICompatibleDetails(JSON.parse(error.message.slice(payloadStart)))
+    } catch {
+      throw error
+    }
+    if (!unsupported) throw error
+    throw new ApiError(422, "当前 API 尚未部署 OpenAI-compatible 连接支持。表单内容已保留，请在后端更新后重试。")
+  }
+}
 
 export const usageWindow = (days: number, now = Date.now()): UsageFilters => {
   const to = new Date(now)
@@ -104,6 +123,7 @@ function normalizeRegistry(registry: ModelRegistry): ModelRegistry {
   )
   const runtimeIds = new Set(runtimes.map((runtime) => runtime.id))
   return {
+    backend_pool_session_affinity_supported: registry.backend_pool_session_affinity_supported === true,
     gateways: registry.gateways.filter(
       (gateway) => gateway.id !== RETIRED_LITELLM_GATEWAY_ID,
     ),
@@ -296,9 +316,8 @@ export const dataSource = {
   ).then(normalizeRegistry),
   saveProvider: (value: Record<string, unknown>, id?: string) => saveRegistry("/api/v1/model-management/providers", value, id),
   saveRuntime: (value: Record<string, unknown>, id?: string) => saveRegistry("/api/v1/model-management/runtimes", value, id),
-  saveConnection: (value: ModelConnectionCreate) => writeJson<ModelRegistry>(
-    "/api/v1/model-management/connections",
-    value,
+  saveConnection: (value: ModelConnectionCreate) => requireOpenAICompatibleApi(
+    writeJson<ModelRegistry>("/api/v1/model-management/connections", value),
   ).then(normalizeRegistry),
   updateConnection: (id: string, value: ModelConnectionUpdate) => writeJson<ModelRegistry>(
     `/api/v1/model-management/connections/${encodeURIComponent(id)}`,
@@ -330,9 +349,8 @@ export const dataSource = {
     `/api/v1/model-management/models/${encodeURIComponent(id)}/backend-pool`,
     { method: "DELETE" },
   ).then(normalizeGatewayPublicationAccepted),
-  publishModel: (value: GatewayPublicationCreate) => writeJson<GatewayPublicationAccepted>(
-    "/api/v1/model-management/publications",
-    value,
+  publishModel: (value: GatewayPublicationCreate) => requireOpenAICompatibleApi(
+    writeJson<GatewayPublicationAccepted>("/api/v1/model-management/publications", value),
   ).then(normalizeGatewayPublicationAccepted),
   gatewayPublication: (id: string) => request<GatewayPublication>(
     `/api/v1/model-management/publications/${encodeURIComponent(id)}`,

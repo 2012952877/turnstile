@@ -37,6 +37,52 @@ from turnstile_core.services.control_plane import (
 )
 
 
+def test_openai_publication_worker_activates_only_after_verification() -> None:
+    repository = InMemoryRepository()
+    cipher = CredentialCipher(Fernet.generate_key())
+    original_default = [model["id"] for model in repository.models if model["is_default"]]
+    publication = GatewayControlPlaneService(repository, cipher).publish(
+        GatewayPublicationCreate(
+            gateway_profile_id=APIM_ID,
+            provider=ProviderTarget(template="openai_compatible"),
+            runtime=RuntimeTarget(
+                openai_base_url=HttpUrl("https://api.example.test/v1"),
+                api_key=SecretStr("one-time-compatible-key"),
+            ),
+            model=ModelCreateTarget(
+                model_key="compatible-chat",
+                display_name="Compatible chat",
+                upstream_model_id="chat-v1",
+            ),
+        ),
+        "owner@example.com",
+    )
+    client = FakeApimClient()
+    worker = GatewayPublicationWorker(repository, client, client.policy, cipher=cipher)
+    for expected in (
+        "validating", "provisioning", "building_revision", "verifying", "promoting", "active",
+    ):
+        result = worker.run_once("compatible-worker")
+        assert result is not None and result.status.value == expected
+        if expected != "active":
+            assert not any(model["model_key"] == "compatible-chat" for model in repository.models)
+        if expected != "validating":
+            assert repository.gateway_publication_credential(publication.id) is None
+    assert repository.effective_gateway_releases[APIM_ID] == publication.id
+    model = next(model for model in repository.models if model["model_key"] == "compatible-chat")
+    runtime = next(item for item in repository.runtimes if item["id"] == model["runtime_id"])
+    assert runtime["config"]["backend_path"] == "/v1/chat/completions"
+    assert runtime["config"]["max_tokens_field"] == "max_tokens"
+    assert runtime["config"]["credential_kind"] == "api_key"
+    assert runtime["config"].get("credential_provisioned") is not False
+    assert result is not None
+    named_values = result.resource_manifest.get("named_values")
+    assert isinstance(named_values, list)
+    assert runtime["config"]["named_value_name"] in named_values
+    assert model["assignment_required"] is True
+    assert [model["id"] for model in repository.models if model["is_default"]] == original_default
+
+
 def test_publication_is_a_draft_until_apim_promotion() -> None:
     repository = InMemoryRepository()
     service = GatewayControlPlaneService(repository)

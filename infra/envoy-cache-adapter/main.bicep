@@ -17,6 +17,7 @@ param appServicePlanWorkerCount int = 1
 param webAppName string
 param acrName string
 param provisionAcr bool = true
+param acrResourceGroupName string = provisionAcr ? resourceGroupName : apimResourceGroupName
 param imageRepository string = 'turnstile/envoy-cache-adapter'
 param imageTag string
 param eventHubNamespaceName string
@@ -38,9 +39,13 @@ resource apimResourceGroup 'Microsoft.Resources/resourceGroups@2024-03-01' exist
   name: apimResourceGroupName
 }
 
+resource acrResourceGroup 'Microsoft.Resources/resourceGroups@2024-03-01' existing = {
+  name: acrResourceGroupName
+}
+
 module registry 'br/public:avm/res/container-registry/registry:0.13.0' = if (provisionAcr) {
   name: 'envoy-cache-adapter-registry'
-  scope: apimResourceGroup
+  scope: acrResourceGroup
   params: {
     name: acrName
     location: location
@@ -68,7 +73,7 @@ module app 'app.bicep' = {
 }
 
 module acrRole 'acr-role.bicep' = {
-  scope: apimResourceGroup
+  scope: acrResourceGroup
   name: 'envoy-cache-adapter-acr-role'
   dependsOn: [
     registry
@@ -97,4 +102,5 @@ output observerAppServicePlanWorkerCount int = appServicePlanWorkerCount
 output webAppPrincipalId string = app.outputs.principalId
 output adapterKeyNamedValueName string = apimIntegration.outputs.namedValueName
 output acrName string = acrName
+output acrResourceGroupName string = acrResourceGroupName
 output image string = image

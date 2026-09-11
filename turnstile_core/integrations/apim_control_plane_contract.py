@@ -57,6 +57,7 @@ class BackendPoolMemberResource:
 @dataclass(frozen=True)
 class BackendPoolResource(BackendResource):
     members: tuple[BackendPoolMemberResource, ...] = ()
+    session_cookie_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -133,6 +134,13 @@ class ApimPublisherClient(Protocol):
     ) -> GatewayApplicationDiscovery: ...
 
     def ensure_application_subscription(
+        self,
+        spec: GatewayApplicationSubscriptionProvisionSpec,
+        primary_key: str,
+        secondary_key: str,
+    ) -> None: ...
+
+    def activate_application_subscription(
         self,
         spec: GatewayApplicationSubscriptionProvisionSpec,
         primary_key: str,

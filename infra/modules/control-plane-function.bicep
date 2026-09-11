@@ -13,6 +13,7 @@ param applicationInsightsConnectionString string
 param apimResourceGroupName string
 param apimName string
 param apimApiId string = 'turnstile-llm'
+param apimProductId string = 'finops-ai-consumers'
 param probeSubscriptionId string = 'turnstile-publisher-probe'
 param chatCompletionsOperationId string = 'chat-completions'
 param responsesOperationId string = 'responses'
@@ -27,6 +28,14 @@ param usageObserverKeyNamedValue string = ''
 param subscriptionAgentMap object = {}
 param publicationWorkerEnabled bool = false
 param releaseWorkerEnabled bool = false
+param applicationProvisioningEnabled bool = false
+@minValue(1)
+param applicationDefaultMonthlyTokenLimit int = 100000
+@minValue(1)
+param applicationDefaultTokensPerMinute int = 100000
+param ledgerStorageName string
+param ledgerTableName string = 'TurnstileLedger'
+param ledgerTableEndpoint string
 
 var storageName = 'stturnstilecp${take(suffix, 11)}'
 var planName = 'plan-${resourcePrefix}-control-${suffix}'
@@ -145,13 +154,17 @@ resource functionApp 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'CONTROL_PLANE_ENABLED', value: string(effectiveEnabled) }
         { name: 'GATEWAY_PUBLICATION_WORKER_ENABLED', value: string(effectivePublicationWorkerEnabled) }
         { name: 'GATEWAY_RELEASE_WORKER_ENABLED', value: string(effectiveReleaseWorkerEnabled) }
-        { name: 'GATEWAY_APPLICATION_DEFAULT_MONTHLY_TOKEN_LIMIT', value: '100000' }
-        { name: 'GATEWAY_APPLICATION_DEFAULT_TOKENS_PER_MINUTE', value: '100000' }
+        { name: 'GATEWAY_APPLICATION_PROVISIONING_ENABLED', value: string(applicationProvisioningEnabled) }
+        { name: 'GATEWAY_APPLICATION_DEFAULT_MONTHLY_TOKEN_LIMIT', value: string(applicationDefaultMonthlyTokenLimit) }
+        { name: 'GATEWAY_APPLICATION_DEFAULT_TOKENS_PER_MINUTE', value: string(applicationDefaultTokensPerMinute) }
+        { name: 'LEDGER_TABLE_ENDPOINT', value: ledgerTableEndpoint }
+        { name: 'LEDGER_TABLE_NAME', value: ledgerTableName }
         { name: 'APIM_SUBSCRIPTION_AGENT_MAP', value: string(subscriptionAgentMap) }
         { name: 'AZURE_SUBSCRIPTION_ID', value: subscription().subscriptionId }
         { name: 'APIM_RESOURCE_GROUP', value: apimResourceGroupName }
         { name: 'APIM_SERVICE_NAME', value: apimName }
         { name: 'APIM_API_ID', value: apimApiId }
+        { name: 'APIM_PRODUCT_ID', value: apimProductId }
         { name: 'APIM_CHAT_COMPLETIONS_OPERATION_ID', value: chatCompletionsOperationId }
         { name: 'APIM_RESPONSES_OPERATION_ID', value: responsesOperationId }
         { name: 'APIM_RESPONSES_COMPACT_OPERATION_ID', value: responsesCompactOperationId }
@@ -224,6 +237,30 @@ resource functionStorageQueueContributor 'Microsoft.Authorization/roleAssignment
 resource functionStorageTableContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(storage.id, functionApp.id, 'storage-table-data-contributor')
   scope: storage
+  properties: {
+    principalId: functionApp.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')
+  }
+}
+
+resource ledgerStorage 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
+  name: ledgerStorageName
+}
+
+resource ledgerTableService 'Microsoft.Storage/storageAccounts/tableServices@2023-05-01' existing = {
+  parent: ledgerStorage
+  name: 'default'
+}
+
+resource ledgerTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' existing = {
+  parent: ledgerTableService
+  name: ledgerTableName
+}
+
+resource applicationLedgerContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (applicationProvisioningEnabled) {
+  name: guid(ledgerTable.id, functionApp.id, 'application-provisioning-table-contributor')
+  scope: ledgerTable
   properties: {
     principalId: functionApp.identity.principalId
     principalType: 'ServicePrincipal'

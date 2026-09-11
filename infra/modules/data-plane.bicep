@@ -22,10 +22,16 @@ param apimPrincipalId string
 param apimResourceGroupName string
 param apimName string
 param apimApiId string = 'turnstile-llm'
+param apimProductId string = 'finops-ai-consumers'
 param apimGatewayUrl string
 param ledgerTableName string
 param gatewayReleaseWorkerEnabled bool = false
 param gatewayApplicationKeyManagementEnabled bool = false
+param gatewayApplicationProvisioningEnabled bool = false
+@minValue(1)
+param gatewayApplicationDefaultMonthlyTokenLimit int = 100000
+@minValue(1)
+param gatewayApplicationDefaultTokensPerMinute int = 100000
 param entraClientId string = ''
 param entraAllowedEmailDomains array = []
 param bootstrapOwnerEmail string
@@ -589,9 +595,16 @@ resource api 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'AZURE_SUBSCRIPTION_ID', value: subscription().subscriptionId }
         { name: 'APIM_RESOURCE_GROUP', value: apimResourceGroupName }
         { name: 'APIM_SERVICE_NAME', value: apimName }
+        { name: 'APIM_API_ID', value: apimApiId }
+        { name: 'APIM_PRODUCT_ID', value: apimProductId }
         { name: 'APIM_GATEWAY_URL', value: apimGatewayUrl }
         { name: 'APIM_DASHBOARD_SUBSCRIPTION_KEY', value: apimSubscriptionKey }
         { name: 'GATEWAY_RELEASE_WORKER_ENABLED', value: string(gatewayReleaseWorkerEnabled) }
+        { name: 'GATEWAY_APPLICATION_PROVISIONING_ENABLED', value: string(gatewayApplicationProvisioningEnabled) }
+        { name: 'GATEWAY_APPLICATION_DEFAULT_MONTHLY_TOKEN_LIMIT', value: string(gatewayApplicationDefaultMonthlyTokenLimit) }
+        { name: 'GATEWAY_APPLICATION_DEFAULT_TOKENS_PER_MINUTE', value: string(gatewayApplicationDefaultTokensPerMinute) }
+        { name: 'LEDGER_TABLE_ENDPOINT', value: ledgerTableEndpoint }
+        { name: 'LEDGER_TABLE_NAME', value: ledgerTableName }
         { name: 'GATEWAY_APPLICATION_KEY_MANAGEMENT_ENABLED', value: string(gatewayApplicationKeyManagementEnabled) }
         { name: 'ENTRA_CLIENT_ID', value: entraClientId }
         { name: 'ENTRA_ALLOWED_EMAIL_DOMAINS', value: string(entraAllowedEmailDomains) }

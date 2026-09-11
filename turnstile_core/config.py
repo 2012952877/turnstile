@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     apim_service_name: str | None = None
     apim_principal_id: str | None = None
     apim_api_id: str = "turnstile-llm"
+    apim_product_id: str = Field(default="finops-ai-consumers", min_length=1, max_length=255)
     apim_chat_completions_operation_id: str = "chat-completions"
     apim_responses_operation_id: str = "responses"
     apim_responses_compact_operation_id: str = "responses-compact"

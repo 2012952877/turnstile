@@ -185,6 +185,15 @@ param gatewayReleaseWorkerEnabled bool = false
 @description('Allow Owners to reveal and rotate governed APIM subscription keys through the Turnstile API.')
 param gatewayApplicationKeyManagementEnabled bool = false
 
+@description('Allow governed Application creation after ledger and APIM dependencies are ready.')
+param gatewayApplicationProvisioningEnabled bool = false
+
+@minValue(1)
+param gatewayApplicationDefaultMonthlyTokenLimit int = 100000
+
+@minValue(1)
+param gatewayApplicationDefaultTokensPerMinute int = 100000
+
 @description('All-or-nothing transparent usage observer configuration.')
 @discriminator('mode')
 param apimUsageObserver DisabledUsageObserver | EnabledUsageObserver = {
@@ -255,10 +264,14 @@ module dataPlane 'modules/data-plane.bicep' = {
     apimResourceGroupName: effectiveApimResourceGroupName
     apimName: effectiveApimName
     apimApiId: apimApiId
+    apimProductId: apimProductId
     apimGatewayUrl: effectiveGatewayApiPath
     ledgerTableName: ledgerTableName
     gatewayReleaseWorkerEnabled: provisionControlPlane && gatewayReleaseWorkerEnabled && apimUsageObserver.mode == 'enabled'
     gatewayApplicationKeyManagementEnabled: gatewayApplicationKeyManagementEnabled
+    gatewayApplicationProvisioningEnabled: provisionControlPlane && gatewayApplicationProvisioningEnabled
+    gatewayApplicationDefaultMonthlyTokenLimit: gatewayApplicationDefaultMonthlyTokenLimit
+    gatewayApplicationDefaultTokensPerMinute: gatewayApplicationDefaultTokensPerMinute
     entraClientId: entraClientId
     entraAllowedEmailDomains: entraAllowedEmailDomains
     bootstrapOwnerEmail: bootstrapOwnerEmail
@@ -322,6 +335,7 @@ module controlPlane 'modules/control-plane-function.bicep' = if (provisionContro
     apimResourceGroupName: effectiveApimResourceGroupName
     apimName: effectiveApimName
     apimApiId: apimApiId
+    apimProductId: apimProductId
     probeSubscriptionId: apimProbeSubscriptionId
     apimGatewayUrl: effectiveGatewayApiPath
     regressionModelKey: apimRegressionModelKey
@@ -330,6 +344,12 @@ module controlPlane 'modules/control-plane-function.bicep' = if (provisionContro
     subscriptionAgentMap: subscriptionAgentMap
     publicationWorkerEnabled: controlPlaneEnabled
     releaseWorkerEnabled: gatewayReleaseWorkerEnabled
+    applicationProvisioningEnabled: gatewayApplicationProvisioningEnabled
+    applicationDefaultMonthlyTokenLimit: gatewayApplicationDefaultMonthlyTokenLimit
+    applicationDefaultTokensPerMinute: gatewayApplicationDefaultTokensPerMinute
+    ledgerStorageName: dataPlane.outputs.ledgerStorageName
+    ledgerTableName: ledgerTableName
+    ledgerTableEndpoint: dataPlane.outputs.ledgerTableEndpoint
   }
 }
 

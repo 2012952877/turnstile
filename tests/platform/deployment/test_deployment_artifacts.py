@@ -139,6 +139,23 @@ def test_observer_registry_accepts_managed_identity_arm_tokens() -> None:
     assert "azureADAuthenticationAsArmPolicyStatus: 'enabled'" in template
 
 
+def test_observer_registry_and_role_use_the_registry_resource_group() -> None:
+    template = (
+        REPOSITORY_ROOT / "infra/envoy-cache-adapter/main.bicep"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        "param acrResourceGroupName string = provisionAcr ? resourceGroupName : "
+        "apimResourceGroupName"
+    ) in template
+    assert "name: acrResourceGroupName" in template
+    for module_name in ("registry", "acrRole"):
+        module = re.search(rf"module {module_name}\b.*?\n}}", template, re.DOTALL)
+        assert module is not None
+        assert "scope: acrResourceGroup" in module.group()
+    assert "output acrResourceGroupName string = acrResourceGroupName" in template
+
+
 def test_api_staging_contains_runtime_contract(tmp_path: Path, staging_root: Path) -> None:
     destination = tmp_path / "api"
     stage_deployment("api", destination, root=staging_root)

@@ -5,7 +5,7 @@ from typing import Annotated
 
 from fastapi import Depends, Header
 
-from turnstile_core.config import get_settings
+from turnstile_core.config import Settings, get_settings
 from turnstile_core.domain.control_plane import GatewayReleaseRetentionPolicy
 from turnstile_core.integrations.apim_subscription_key_client import (
     AzureApimSubscriptionKeyClient,
@@ -30,6 +30,18 @@ RuntimeService = Annotated[ModelRuntimeService, Depends(runtime_service)]
 Authorization = Annotated[str | None, Header()]
 
 
+def _application_provisioning_available(settings: Settings) -> bool:
+    return all((
+        settings.gateway_release_worker_enabled,
+        settings.gateway_application_provisioning_enabled,
+        settings.ledger_table_endpoint,
+        settings.credential_encryption_key,
+        settings.azure_subscription_id,
+        settings.apim_resource_group,
+        settings.apim_service_name,
+    ))
+
+
 def control_plane_service(repository: Repository) -> GatewayControlPlaneService:
     settings = get_settings()
     return GatewayControlPlaneService(
@@ -43,9 +55,10 @@ def control_plane_service(repository: Repository) -> GatewayControlPlaneService:
             protected_labels=settings.gateway_release_protected_labels,
         ),
         release_worker_enabled=settings.gateway_release_worker_enabled,
-        application_provisioning_enabled=(
-            settings.gateway_application_provisioning_enabled
-        ),
+        application_provisioning_enabled=_application_provisioning_available(settings),
+        application_default_token_limit=settings.gateway_application_default_monthly_token_limit,
+        application_default_tokens_per_minute=settings.gateway_application_default_tokens_per_minute,
+        application_product_id=settings.apim_product_id,
     )
 
 
@@ -54,6 +67,7 @@ ControlPlaneService = Annotated[GatewayControlPlaneService, Depends(control_plan
 
 def application_access_service(repository: Repository) -> ApplicationAccessService:
     settings = get_settings()
+    provisioning_available = _application_provisioning_available(settings)
     key_settings_available = all(
         (
             settings.azure_subscription_id,
@@ -73,15 +87,11 @@ def application_access_service(repository: Repository) -> ApplicationAccessServi
             if settings.gateway_release_worker_enabled
             else "Gateway Release Worker is not enabled."
         ),
-        provisioning_available=(
-            settings.gateway_release_worker_enabled
-            and settings.gateway_application_provisioning_enabled
-        ),
+        provisioning_available=provisioning_available,
         provisioning_unavailable_reason=(
             None
-            if settings.gateway_release_worker_enabled
-            and settings.gateway_application_provisioning_enabled
-            else "Application subscription provisioning is not deployed."
+            if provisioning_available
+            else "Application provisioning requires its worker, ledger, encryption and APIM target."
         ),
         key_management_available=key_management_available,
         key_management_unavailable_reason=(

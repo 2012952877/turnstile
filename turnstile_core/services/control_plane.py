@@ -58,6 +58,8 @@ from ..domain.control_plane import (
     PublicationKind,
     PublicationStatus,
     StreamingMode,
+    publication_materialized_named_values,
+    publication_retry_requires_credential,
 )
 from ..domain.runtime_models import (
     FOUNDRY_INFERENCE_RESOURCE,
@@ -66,6 +68,8 @@ from ..domain.runtime_models import (
     ModelCapability,
     ModelFamilyKey,
     foundry_runtime_name,
+    openai_compatible_endpoint_values,
+    openai_compatible_runtime_name,
 )
 from ..persistence.repository import QueryRepository
 from ..security import CredentialCipher
@@ -101,12 +105,18 @@ class GatewayControlPlaneService:
         retention_policy: GatewayReleaseRetentionPolicy | None = None,
         release_worker_enabled: bool = True,
         application_provisioning_enabled: bool = True,
+        application_default_token_limit: int = 100_000,
+        application_default_tokens_per_minute: int = 100_000,
+        application_product_id: str = _APPLICATION_PRODUCT_ID,
     ) -> None:
         self._repository = repository
         self._cipher = cipher
         self._apim_principal_id = apim_principal_id
         self._release_worker_enabled = release_worker_enabled
         self._application_provisioning_enabled = application_provisioning_enabled
+        self._application_default_token_limit = application_default_token_limit
+        self._application_default_tokens_per_minute = application_default_tokens_per_minute
+        self._application_product_id = application_product_id
         self._retention_policy = retention_policy or GatewayReleaseRetentionPolicy(
             retained_count=20,
             retained_days=180,
@@ -126,7 +136,28 @@ class GatewayControlPlaneService:
         row = self._repository.get_gateway_publication(publication_id)
         if row is None:
             raise ControlPlaneNotFoundError("Gateway publication not found")
-        return GatewayPublication.model_validate(row)
+        publication = GatewayPublication.model_validate(row)
+        if not publication_retry_requires_credential(publication):
+            return publication
+        audit = self._repository.list_gateway_publication_audit(publication_id)
+        materialized = publication_materialized_named_values(
+            publication,
+            provisioning_completed=any(
+                item.get("from_status") == "validating"
+                and item.get("to_status") == "provisioning"
+                for item in audit
+            ),
+        )
+        if not materialized:
+            return publication
+        return publication.model_copy(
+            update={
+                "resource_manifest": {
+                    **publication.resource_manifest,
+                    "named_values": materialized,
+                }
+            }
+        )
 
     def releases(
         self, gateway_profile_id: UUID | None = None, limit: int = 100
@@ -426,6 +457,10 @@ class GatewayControlPlaneService:
             raise ControlPlaneUnavailableError(_APPLICATION_PROVISIONING_UNAVAILABLE)
         if self._cipher is None:
             raise ControlPlaneUnavailableError("Credential encryption is unavailable")
+        if request.subscription_id in {
+            "master", "turnstile-dashboard", "turnstile-publisher-probe"
+        }:
+            raise ControlPlaneConflictError("This APIM subscription ID is reserved for the system")
         gateway = next(
             (
                 item
@@ -436,6 +471,8 @@ class GatewayControlPlaneService:
         )
         if gateway is None or gateway.get("implementation") != "apim":
             raise ControlPlaneNotFoundError("APIM gateway not found")
+        if not gateway.get("enabled"):
+            raise ControlPlaneConflictError("APIM gateway is disabled")
         if any(
             str(item["apim_subscription_id"]).casefold()
             == request.subscription_id.casefold()
@@ -445,6 +482,10 @@ class GatewayControlPlaneService:
         ):
             raise ControlPlaneConflictError("APIM subscription ID already exists")
         spec = GatewayApplicationSubscriptionProvisionSpec(
+            provisioning_version=2,
+            gateway_profile_id=gateway_profile_id,
+            initial_monthly_token_limit=self._application_default_token_limit,
+            initial_tokens_per_minute=self._application_default_tokens_per_minute,
             application_id=application_id_for(
                 gateway_profile_id, request.subscription_id
             ),
@@ -456,7 +497,7 @@ class GatewayControlPlaneService:
             display_name=request.display_name,
             description=request.description,
             application_type=request.application_type,
-            scope_id=_APPLICATION_PRODUCT_ID,
+            scope_id=self._application_product_id,
         )
         primary_key = secrets.token_urlsafe(32)
         ciphertext = self._cipher.encrypt(
@@ -773,7 +814,8 @@ class GatewayControlPlaneService:
         shared = before_keys & after_keys
 
         def pool(binding: GatewayModelBinding) -> object | None:
-            return binding.runtime_config.get("apim_backend_pool")
+            configured = binding.backend_pool
+            return configured.model_dump(mode="json") if configured is not None else None
 
         before_pools = {key: pool(value) for key, value in before_by_model.items() if pool(value)}
         after_pools = {key: pool(value) for key, value in after_by_model.items() if pool(value)}
@@ -1007,11 +1049,15 @@ class GatewayControlPlaneService:
         pool = GatewayBackendPoolConfig(
             members=members,
             rate_limit=write.rate_limit,
+            session_affinity=write.session_affinity,
         )
         runtime_config = {
             **target.runtime_config,
-            "apim_backend_pool": pool.model_dump(mode="json"),
+            "apim_backend_pool": pool.model_dump(mode="json", exclude={"session_affinity"}),
         }
+        runtime_config.pop("apim_backend_pool_session_affinity", None)
+        if pool.session_affinity:
+            runtime_config["apim_backend_pool_session_affinity"] = True
         updated_target = target.model_copy(
             update={"runtime_config": runtime_config}
         )
@@ -1047,14 +1093,10 @@ class GatewayControlPlaneService:
             ),
             None,
         )
-        raw_pool = (
-            binding.runtime_config.get("apim_backend_pool")
-            if binding is not None
-            else None
-        )
-        if raw_pool is None:
+        pool = binding.backend_pool if binding is not None else None
+        if pool is None:
             raise ControlPlaneNotFoundError("Model backend pool not found")
-        return GatewayBackendPoolConfig.model_validate(raw_pool)
+        return pool
 
     def remove_model_backend_pool(
         self,
@@ -1093,6 +1135,7 @@ class GatewayControlPlaneService:
             raise ControlPlaneConflictError("The model has no APIM backend pool")
         runtime_config = dict(target.runtime_config)
         runtime_config.pop("apim_backend_pool")
+        runtime_config.pop("apim_backend_pool_session_affinity", None)
         updated_target = target.model_copy(
             update={"runtime_config": runtime_config}
         )
@@ -1329,6 +1372,7 @@ class GatewayControlPlaneService:
             )
             runtime_config = dict(template.runtime_config)
             runtime_config.pop("apim_backend_pool", None)
+            runtime_config.pop("apim_backend_pool_session_affinity", None)
             additions.append(
                 template.model_copy(
                     update={
@@ -1367,7 +1411,7 @@ class GatewayControlPlaneService:
                 "Submit a fresh route reconciliation against the effective release"
             )
         binding = publication.desired_spec.bindings[-1]
-        requires_credential = (
+        accepts_credential = (
             binding.auth_strategy
             in {
                 AuthStrategy.NAMED_VALUE_BEARER,
@@ -1375,21 +1419,20 @@ class GatewayControlPlaneService:
             }
             and binding.key_vault_secret_id is None
         )
-        if requires_credential and not binding.named_value_name:
+        if accepts_credential and not binding.named_value_name:
             raise ControlPlaneConflictError(
                 "This publication does not use a directly managed API key"
             )
-        if requires_credential:
-            if write.api_key is None:
-                raise ControlPlaneConflictError("A replacement API key is required")
+        requires_credential = publication_retry_requires_credential(publication)
+        if write.api_key is not None:
+            if not accepts_credential:
+                raise ControlPlaneConflictError("This publication does not accept an API key")
             if self._cipher is None:
                 raise ControlPlaneConflictError("Credential encryption is unavailable")
             encrypted = self._cipher.encrypt(write.api_key.get_secret_value())
         else:
-            if write.api_key is not None:
-                raise ControlPlaneConflictError(
-                    "This publication does not accept an API key"
-                )
+            if requires_credential:
+                raise ControlPlaneConflictError("A replacement API key is required")
             encrypted = None
         normalized_spec = self._normalize_release_spec(publication.desired_spec)
         desired_spec, desired_hash = self._release_payload(normalized_spec)
@@ -1770,11 +1813,11 @@ class GatewayControlPlaneService:
             return provider
         assert target.template is not None
         template = target.template
-        provider_name = (
-            "Amazon Bedrock"
-            if template == "amazon_bedrock"
-            else "Microsoft Foundry"
-        )
+        provider_name = {
+            "amazon_bedrock": "Amazon Bedrock",
+            "microsoft_foundry": "Microsoft Foundry",
+            "openai_compatible": "OpenAI-compatible",
+        }[template]
         if any(
             str(row["name"]).casefold() == provider_name.casefold()
             for row in providers
@@ -1789,6 +1832,14 @@ class GatewayControlPlaneService:
                 "provider_kind": "microsoft_foundry",
                 "brand_key": BrandKey.MICROSOFT_FOUNDRY,
                 "config": {"hosting_platform": "microsoft_foundry"},
+            }
+        if template == "openai_compatible":
+            return {
+                "id": None,
+                "name": provider_name,
+                "provider_kind": "openai_compatible",
+                "brand_key": BrandKey.GENERIC,
+                "config": {"hosting_platform": "openai_compatible"},
             }
         return {
             "id": None,
@@ -1881,6 +1932,51 @@ class GatewayControlPlaneService:
                 "config": config,
             }
         brand = BrandKey(provider["brand_key"])
+        if provider["provider_kind"] == "openai_compatible":
+            if target.openai_base_url is None or target.api_key is None:
+                raise ControlPlaneConflictError(
+                    "OpenAI-compatible publication requires a Base URL and API key"
+                )
+            try:
+                base_url, backend_url, backend_path = openai_compatible_endpoint_values(
+                    str(target.openai_base_url)
+                )
+            except ValueError as error:
+                raise ControlPlaneConflictError(str(error)) from error
+            if any(
+                row.get("gateway_profile_id") == write.gateway_profile_id
+                and str((row.get("config") or {}).get("base_url", "")).rstrip("/").casefold()
+                == base_url.casefold()
+                for row in runtimes
+            ):
+                raise ControlPlaneConflictError(
+                    "An OpenAI-compatible runtime already exists for this gateway and Base URL"
+                )
+            scope = f"{write.gateway_profile_id}:{base_url.casefold()}"
+            named_value = (
+                "turnstile-openai-" + hashlib.sha256(scope.encode("utf-8")).hexdigest()[:16]
+            )
+            return {
+                "id": None,
+                "routing_managed": True,
+                "name": openai_compatible_runtime_name(base_url),
+                "runtime_kind": "openai_compatible",
+                "brand_key": brand,
+                "api_format": ApiFormat.OPENAI_CHAT,
+                "backend_url": backend_url,
+                "backend_path": backend_path,
+                "auth_strategy": AuthStrategy.NAMED_VALUE_BEARER,
+                "named_value_name": named_value,
+                "key_vault_secret_id": None,
+                "managed_identity_resource": None,
+                "streaming_mode": StreamingMode.NATIVE,
+                "config": {
+                    "base_url": base_url,
+                    "credential_kind": "api_key",
+                    "max_tokens_field": "max_tokens",
+                    "supports_temperature": True,
+                },
+            }
         if brand is BrandKey.AMAZON_BEDROCK:
             assert target.bedrock_runtime_url is not None
             assert target.api_key is not None
@@ -2190,6 +2286,26 @@ class GatewayControlPlaneService:
             return
         url = str(runtime["backend_url"])
         host = (urlsplit(url).hostname or "").casefold()
+        if provider["provider_kind"] == "openai_compatible":
+            if urlsplit(url).scheme != "https" or not host:
+                raise ControlPlaneConflictError("OpenAI-compatible backends require HTTPS")
+            if runtime["api_format"] != ApiFormat.OPENAI_CHAT:
+                raise ControlPlaneConflictError(
+                    "OpenAI-compatible runtimes require the Chat Completions format"
+                )
+            if runtime["auth_strategy"] != AuthStrategy.NAMED_VALUE_BEARER:
+                raise ControlPlaneConflictError(
+                    "OpenAI-compatible runtimes require bearer API-key authentication"
+                )
+            if not runtime["routing_managed"] or not runtime.get("backend_path"):
+                raise ControlPlaneConflictError(
+                    "The selected runtime is not a managed OpenAI-compatible connection"
+                )
+            if runtime["streaming_mode"] != StreamingMode.NATIVE:
+                raise ControlPlaneConflictError(
+                    "OpenAI-compatible runtimes require native streaming"
+                )
+            return
         if brand is BrandKey.AMAZON_BEDROCK:
             if runtime["api_format"] != ApiFormat.ANTHROPIC_MESSAGES:
                 raise ControlPlaneConflictError(

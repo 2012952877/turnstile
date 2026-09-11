@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+from unittest.mock import MagicMock
 from uuid import UUID
 from xml.etree import ElementTree
 
@@ -9,6 +11,7 @@ from fastapi import HTTPException
 from pydantic import HttpUrl, SecretStr
 
 from backend.http.publication_auth import require_publication_owner
+from backend.services.runtime_service import ModelRuntimeService
 from tests.backend.model_platform.control_plane_support import (
     APIM_ID,
     FakeApimClient,
@@ -32,21 +35,112 @@ from turnstile_core.domain.control_plane import (
     GatewayCredentialRotation,
     GatewayPublicationCreate,
     GatewayPublicationRetry,
+    GatewayPublicationView,
     GatewayRateLimitCircuitBreaker,
     GatewayRateLimitResilience,
     ModelCreateTarget,
     RuntimeTarget,
+    publication_materialized_named_values,
+    publication_retry_requires_credential,
 )
-from turnstile_core.domain.runtime_models import ProviderTarget
+from turnstile_core.domain.runtime_models import ModelConnectionCreate, ProviderTarget
 from turnstile_core.integrations.apim_control_plane import (
     ApimPolicyCompiler,
     BackendPoolResource,
 )
 from turnstile_core.persistence.in_memory import InMemoryRepository
+from turnstile_core.persistence.repository_publications import PostgreSqlPublicationRepositoryMixin
 from turnstile_core.security import CredentialCipher
 from turnstile_core.services.control_plane import (
     ControlPlaneConflictError,
 )
+
+
+def test_openai_existing_connection_publishes_with_a_one_time_encrypted_key(tmp_path: Path) -> None:
+    repository = InMemoryRepository()
+    registry = ModelRuntimeService(
+        repository, Settings(credential_key_file=tmp_path / "key")
+    ).save_connection(ModelConnectionCreate(
+        gateway_profile_id=APIM_ID,
+        provider=ProviderTarget(template="openai_compatible"),
+        openai_base_url=HttpUrl("https://api.example.test/v1"),
+    ))
+    runtime = next(
+        item for item in registry.runtimes if item.config.get("base_url") == "https://api.example.test/v1"
+    )
+    cipher = CredentialCipher(Fernet.generate_key())
+    service = GatewayControlPlaneService(repository, cipher)
+    request = GatewayPublicationCreate(
+        gateway_profile_id=APIM_ID,
+        provider=ProviderTarget(existing_id=runtime.provider_id),
+        runtime=RuntimeTarget(existing_id=runtime.id),
+        model=ModelCreateTarget(
+            model_key="compatible-chat", display_name="Compatible chat", upstream_model_id="chat-v1"
+        ),
+    )
+    with pytest.raises(ControlPlaneConflictError, match="one-time API key"):
+        service.publish(request, "owner@example.com")
+    request.runtime.api_key = SecretStr("compatible-test-key")
+    publication = service.publish(request, "owner@example.com")
+    binding = publication.desired_spec.bindings[-1]
+    encrypted = repository.gateway_publication_credential(publication.id)
+
+    assert binding.runtime_id == runtime.id
+    assert binding.api_format is ApiFormat.OPENAI_CHAT
+    assert binding.backend_path == "/v1/chat/completions"
+    assert binding.auth_strategy is AuthStrategy.NAMED_VALUE_BEARER
+    assert binding.runtime_config["max_tokens_field"] == "max_tokens"
+    assert encrypted is not None and cipher.decrypt(encrypted) == "compatible-test-key"
+    assert "compatible-test-key" not in publication.model_dump_json()
+    policy = ApimPolicyCompiler().compile(publication).chat_completions_policy
+    assert "compatible-test-key" not in policy
+
+
+def test_openai_direct_publication_uses_the_same_https_connection_rules() -> None:
+    repository = InMemoryRepository()
+    request = GatewayPublicationCreate(
+        gateway_profile_id=APIM_ID,
+        provider=ProviderTarget(template="openai_compatible"),
+        runtime=RuntimeTarget(
+            openai_base_url=HttpUrl("https://api.example.test/v1/chat/completions"),
+            api_key=SecretStr("compatible-test-key"),
+        ),
+        model=ModelCreateTarget(
+            model_key="compatible-chat", display_name="Compatible chat", upstream_model_id="chat-v1"
+        ),
+    )
+    binding = GatewayControlPlaneService(repository).publish(
+        request, "owner@example.com"
+    ).desired_spec.bindings[-1]
+    assert str(binding.backend_url).rstrip("/") == "https://api.example.test"
+    assert binding.backend_path == "/v1/chat/completions"
+    assert binding.named_value_name is not None
+    assert binding.named_value_name.startswith("turnstile-openai-")
+
+
+@pytest.mark.parametrize("field,value", (
+    ("backend_url", "http://api.example.test"),
+    ("api_format", "anthropic_messages"),
+    ("auth_strategy", "none"),
+    ("routing_managed", False),
+    ("backend_path", ""),
+    ("streaming_mode", "buffered"),
+))
+def test_openai_new_runtime_validation_remains_strict(field: str, value: object) -> None:
+    runtime: dict[str, object] = {
+        "id": None,
+        "backend_url": "https://api.example.test",
+        "api_format": "openai_chat",
+        "auth_strategy": "named_value_bearer",
+        "routing_managed": True,
+        "backend_path": "/v1/chat/completions",
+        "streaming_mode": "native",
+    }
+    runtime[field] = value
+    with pytest.raises(ControlPlaneConflictError):
+        GatewayControlPlaneService._validate_connection(
+            {"provider_kind": "openai_compatible", "brand_key": "generic"}, runtime
+        )
 
 
 def test_enabled_control_plane_requires_usage_observer() -> None:
@@ -999,6 +1093,68 @@ def test_external_tenant_key_is_materialized_once_then_erased() -> None:
     assert client.named_values[-1].value == "external-foundry-key"
     assert repository.gateway_publication_credential(publication.id) is None
 
+@pytest.mark.parametrize("evidence", ("none", "manifest", "revision", "runtime"))
+def test_retry_credential_evidence_controls_the_public_view(evidence: str) -> None:
+    repository = InMemoryRepository()
+    publication = GatewayControlPlaneService(repository).publish(
+        external_tenant_foundry_publication(repository), "owner@example.com"
+    )
+    binding = publication.desired_spec.bindings[-1]
+    if evidence == "manifest":
+        publication = publication.model_copy(
+            update={"resource_manifest": {"named_values": [binding.named_value_name]}}
+        )
+    elif evidence == "revision":
+        publication = publication.model_copy(update={"apim_revision": "candidate-revision"})
+    elif evidence == "runtime":
+        updated_binding = binding.model_copy(
+            update={"runtime_config": {**binding.runtime_config, "credential_provisioned": True}}
+        )
+        publication = publication.model_copy(
+            update={
+                "desired_spec": publication.desired_spec.model_copy(
+                    update={"bindings": [*publication.desired_spec.bindings[:-1], updated_binding]}
+                )
+            }
+        )
+
+    required = evidence == "none"
+    assert publication_retry_requires_credential(publication) is required
+    view = GatewayPublicationView.from_publication(publication)
+    assert view.retry_requires_credential is required
+    assert publication_materialized_named_values(publication) == (
+        [] if required else [binding.named_value_name]
+    )
+
+
+def test_retry_credential_evidence_does_not_invent_a_key_for_an_unrelated_resource() -> None:
+    repository = InMemoryRepository()
+    publication = GatewayControlPlaneService(repository).publish(
+        external_tenant_foundry_publication(repository), "owner@example.com"
+    )
+    publication = publication.model_copy(
+        update={"resource_manifest": {"named_values": [None, False, "unrelated-key"]}}
+    )
+    assert publication_retry_requires_credential(publication) is True
+    assert publication_materialized_named_values(publication) == ["unrelated-key"]
+    materialized = publication_materialized_named_values(publication, provisioning_completed=True)
+    assert publication.desired_spec.bindings[-1].named_value_name in materialized
+    assert publication.resource_manifest["named_values"] == [None, False, "unrelated-key"]
+
+
+def test_retry_credential_evidence_never_requires_a_key_for_managed_identity() -> None:
+    repository = InMemoryRepository()
+    request = external_tenant_foundry_publication(repository)
+    request.runtime = RuntimeTarget(
+        foundry_project_endpoint=request.runtime.foundry_project_endpoint
+    )
+    publication = GatewayControlPlaneService(
+        repository, apim_principal_id="00000000-0000-4000-8000-000000000001"
+    ).publish(request, "owner@example.com")
+    assert publication_retry_requires_credential(publication) is False
+    assert publication_materialized_named_values(publication, provisioning_completed=True) == []
+
+
 def test_foundry_activation_normalizes_older_release_token_field() -> None:
     repository = InMemoryRepository()
     publication = GatewayControlPlaneService(repository).publish(
@@ -1061,6 +1217,103 @@ def test_external_tenant_foundry_failed_release_requires_replacement_key() -> No
     assert retried.status == "queued"
     assert encrypted is not None
     assert cipher.decrypt(encrypted) == "replacement-foundry-key"
+
+@pytest.mark.parametrize("legacy_manifest", (False, True))
+def test_retry_reuses_materialized_credentials_and_the_same_publication(
+    legacy_manifest: bool,
+) -> None:
+    repository = InMemoryRepository()
+    cipher = CredentialCipher(Fernet.generate_key())
+    service = GatewayControlPlaneService(repository, cipher)
+    publication = service.publish(
+        external_tenant_foundry_publication(repository), "owner@example.com"
+    )
+    client = FakeApimClient()
+    worker = GatewayPublicationWorker(repository, client, client.policy, cipher=cipher)
+    worker.run_once("worker")
+    provisioned = worker.run_once("worker")
+    assert provisioned is not None and provisioned.status.value == "provisioning"
+    updates: dict[str, object] = {"resource_manifest": {}} if legacy_manifest else {}
+    repository.transition_gateway_publication(
+        publication.id, "provisioning", "failed", updates, "worker"
+    )
+
+    observed = service.publication(publication.id)
+    assert GatewayPublicationView.from_publication(observed).retry_requires_credential is False
+    retried = service.retry(publication.id, GatewayPublicationRetry(), "owner@example.com")
+
+    assert retried.id == publication.id
+    assert retried.generation == publication.generation
+    assert retried.status.value == "queued"
+    assert retried.apim_revision is None
+    assert retried.resource_manifest == {
+        "named_values": [publication.desired_spec.bindings[-1].named_value_name]
+    }
+    assert repository.gateway_publication_credential(publication.id) is None
+    assert len(repository.gateway_publications) == 1
+    assert len(repository.gateway_publication_outbox) == 1
+    worker.run_once("retry-worker")
+    repeated = worker.run_once("retry-worker")
+    assert repeated is not None and repeated.status.value == "provisioning"
+    assert repository.gateway_publication_credential(publication.id) is None
+
+
+def test_retry_replacement_key_clears_old_materialization_for_reprovisioning() -> None:
+    repository = InMemoryRepository()
+    cipher = CredentialCipher(Fernet.generate_key())
+    service = GatewayControlPlaneService(repository, cipher)
+    publication = service.publish(
+        external_tenant_foundry_publication(repository), "owner@example.com"
+    )
+    repository.transition_gateway_publication(
+        publication.id,
+        "queued",
+        "failed",
+        {"resource_manifest": {
+            "named_values": [publication.desired_spec.bindings[-1].named_value_name]
+        }},
+        "worker",
+    )
+
+    retried = service.retry(
+        publication.id,
+        GatewayPublicationRetry(api_key=SecretStr("replacement-test-key")),
+        "owner@example.com",
+    )
+
+    assert retried.resource_manifest == {}
+    encrypted = repository.gateway_publication_credential(publication.id)
+    assert encrypted is not None and cipher.decrypt(encrypted) == "replacement-test-key"
+
+
+def test_retry_postgresql_preserves_audit_proven_credentials_in_one_requeue() -> None:
+    repository = InMemoryRepository()
+    publication = GatewayControlPlaneService(repository).publish(
+        external_tenant_foundry_publication(repository), "owner@example.com"
+    )
+    row = publication.model_dump(mode="python")
+    row["status"] = "failed"
+    row["resource_manifest"] = {}
+    connection = MagicMock()
+    connection.execute.return_value.fetchone.side_effect = [None, {"exists": 1}, row]
+
+    PostgreSqlPublicationRepositoryMixin._requeue_gateway_publication(
+        connection, row, "owner@example.com", None
+    )
+
+    calls = connection.execute.call_args_list
+    audit = next(
+        call for call in calls if "SELECT 1 FROM gateway_publication_audit" in call.args[0]
+    )
+    assert audit.args[1] == (publication.id,)
+    update = next(call for call in calls if "UPDATE gateway_publication SET" in call.args[0])
+    assert update.args[1][0].obj == {
+        "named_values": [publication.desired_spec.bindings[-1].named_value_name]
+    }
+    assert "apim_revision = NULL" in update.args[0]
+    assert any("DELETE FROM gateway_publication_secret" in call.args[0] for call in calls)
+    assert not any("INSERT INTO gateway_publication (" in call.args[0] for call in calls)
+
 
 def test_external_tenant_foundry_key_can_rotate_through_a_candidate_release() -> None:
     repository = InMemoryRepository()

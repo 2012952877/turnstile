@@ -384,6 +384,8 @@ class InMemoryRepository(
                     for field in ("budget_admission", "model_admission")
                     if getattr(existing, field) is None and getattr(record, field) is not None
                 }
+                if record.runtime_authoritative:
+                    updates["runtime"] = record.runtime
                 if updates:
                     self.usage_records[index] = existing.model_copy(update=updates)
             return

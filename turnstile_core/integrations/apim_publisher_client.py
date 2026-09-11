@@ -13,6 +13,7 @@ from typing import Any, Literal, cast
 from urllib.parse import parse_qsl, quote, urlparse
 from urllib.parse import unquote as url_unquote
 from uuid import UUID
+from xml.etree import ElementTree
 
 import httpx
 
@@ -28,7 +29,6 @@ from ..domain.application_access import (
 from ..domain.control_plane import (
     ApiFormat,
     AuthStrategy,
-    GatewayBackendPoolConfig,
     GatewayPublication,
     GatewayReleaseDependencies,
     PublicationKind,
@@ -51,6 +51,7 @@ class AzureApimPublisherClient:
     _MANAGEMENT_ORIGIN = "https://management.azure.com"
     _MANAGEMENT_RESOURCE = f"{_MANAGEMENT_ORIGIN}/"
     _API_VERSION = "2024-05-01"
+    _AFFINITY_API_VERSION = "2025-09-01-preview"
     _MANAGEMENT_REQUEST_TIMEOUT_SECONDS = 30.0
     _CANDIDATE_PROBE_TIMEOUT_SECONDS = 120.0
 
@@ -93,6 +94,7 @@ class AzureApimPublisherClient:
         json_body: dict[str, Any] | None = None,
         extra_headers: dict[str, str] | None = None,
         allow_not_found: bool = False,
+        api_version: str | None = None,
     ) -> httpx.Response:
         headers = self._headers()
         headers.update(extra_headers or {})
@@ -102,7 +104,7 @@ class AzureApimPublisherClient:
             if separator
             else {}
         )
-        params["api-version"] = self._API_VERSION
+        params["api-version"] = api_version or self._API_VERSION
         response = self._client.request(
             method,
             f"{self._base}{resource_path}",
@@ -121,7 +123,12 @@ class AzureApimPublisherClient:
 
     def ensure_backend(self, backend: BackendResource) -> None:
         path = f"/backends/{quote(backend.id, safe='')}"
-        observed = self._request("GET", path, allow_not_found=True)
+        api_version = (
+            self._AFFINITY_API_VERSION
+            if isinstance(backend, BackendPoolResource) and backend.session_cookie_name
+            else None
+        )
+        observed = self._request("GET", path, allow_not_found=True, api_version=api_version)
         if observed.status_code != 404:
             observed_properties = observed.json().get("properties") or {}
             if not isinstance(observed_properties, Mapping) or not self._backend_identity_matches(
@@ -132,18 +139,31 @@ class AzureApimPublisherClient:
                 )
             return
         if isinstance(backend, BackendPoolResource):
+            pool_properties: dict[str, object] = {"services": self._pool_services(backend)}
+            if backend.session_cookie_name:
+                pool_properties["sessionAffinity"] = {
+                    "sessionId": {"source": "cookie", "name": backend.session_cookie_name}
+                }
             self._request(
                 "PUT",
                 path,
+                api_version=api_version,
                 json_body={
                     "properties": {
                         "title": backend.title,
                         "description": "Turnstile-managed immutable deployment pool.",
                         "type": "Pool",
-                        "pool": {"services": self._pool_services(backend)},
+                        "pool": pool_properties,
                     }
                 },
             )
+            if backend.session_cookie_name:
+                readback = self._request("GET", path, api_version=api_version)
+                readback_properties = readback.json().get("properties")
+                if not isinstance(readback_properties, Mapping) or not self._backend_identity_matches(
+                    backend, readback_properties
+                ):
+                    raise RetryablePublicationError("APIM Pool session affinity readback differs")
             return
         properties: dict[str, object] = {
             "title": backend.title,
@@ -199,9 +219,17 @@ class AzureApimPublisherClient:
                 )
                 for item in expected_services
             }
+            observed_affinity = (
+                observed_pool.get("sessionAffinity") if isinstance(observed_pool, Mapping) else None
+            )
+            expected_affinity = (
+                {"sessionId": {"source": "cookie", "name": backend.session_cookie_name}}
+                if backend.session_cookie_name else None
+            )
             return (
                 observed_properties.get("type") == "Pool"
                 and normalized_observed == normalized_expected
+                and (observed_affinity or None) == expected_affinity
             )
         tls = observed_properties.get("tls")
         observed_tls = tls if isinstance(tls, Mapping) else {}
@@ -463,6 +491,12 @@ class AzureApimPublisherClient:
             "x-hive-runtime": "gateway-publication-probe",
         }
         revision_path = f"{base};rev={quote(revision, safe='')}"
+        base_revision = publication.resource_manifest.get("base_apim_revision")
+        baseline_path = (
+            f"{base};rev={quote(str(base_revision), safe='')}"
+            if base_revision and str(base_revision) != revision
+            else None
+        )
         models = self._client.get(f"{revision_path}/v1/models", headers=headers)
         if self._is_transient_probe_status(models.status_code):
             raise RetryablePublicationError(
@@ -477,6 +511,12 @@ class AzureApimPublisherClient:
             )
         removed = publication.desired_spec.removed_models
         removed_aliases = {item.model_key for item in removed}
+        target_binding = (
+            publication.desired_spec.bindings[-1]
+            if publication.publication_kind
+            in {PublicationKind.MODEL_ADD, PublicationKind.CREDENTIAL_ROTATION}
+            else None
+        )
         if discovered & removed_aliases:
             raise RetryablePublicationError(
                 "Candidate revision still advertises the removed model"
@@ -511,6 +551,16 @@ class AzureApimPublisherClient:
                     headers,
                     regression.id,
                     api_format=regression.api_format,
+                    max_tokens_field=str(
+                        regression_binding.runtime_config.get(
+                            "max_tokens_field", "max_completion_tokens"
+                        ) if regression_binding is not None else "max_completion_tokens"
+                    ),
+                    baseline_base=(
+                        baseline_path
+                        if target_binding is None or regression_binding is not target_binding
+                        else None
+                    ),
                     authorization_required=(
                         regression_binding is not None
                         and regression_binding.auth_strategy
@@ -537,7 +587,11 @@ class AzureApimPublisherClient:
                     headers,
                     binding.model.model_key,
                     api_format=binding.api_format,
-                    retry_assignment_denial=True,
+                    max_tokens_field=str(
+                        binding.runtime_config.get("max_tokens_field", "max_completion_tokens")
+                    ),
+                    retry_assignment_denial=binding is target_binding,
+                    baseline_base=baseline_path if binding is not target_binding else None,
                     authorization_required=(
                         binding.auth_strategy is AuthStrategy.MANAGED_IDENTITY
                         and isinstance(
@@ -560,7 +614,10 @@ class AzureApimPublisherClient:
                     revision_path,
                     headers,
                     responses_binding.model.model_key,
-                    retry_assignment_denial=responses_binding is binding,
+                    retry_assignment_denial=responses_binding is target_binding,
+                    baseline_base=(
+                        baseline_path if responses_binding is not target_binding else None
+                    ),
                     authorization_required=(
                         responses_binding.auth_strategy is AuthStrategy.MANAGED_IDENTITY
                         and isinstance(
@@ -572,7 +629,10 @@ class AzureApimPublisherClient:
                     revision_path,
                     headers,
                     responses_binding.model.model_key,
-                    retry_assignment_denial=responses_binding is binding,
+                    retry_assignment_denial=responses_binding is target_binding,
+                    baseline_base=(
+                        baseline_path if responses_binding is not target_binding else None
+                    ),
                     authorization_required=(
                         responses_binding.auth_strategy
                         is AuthStrategy.MANAGED_IDENTITY
@@ -582,11 +642,24 @@ class AzureApimPublisherClient:
                         )
                     ),
                 )
+            pool_compiler = ApimPolicyCompiler(
+                self._settings.apim_probe_subscription_id,
+                self._settings.apim_usage_observer_url,
+                self._settings.apim_usage_observer_key_named_value,
+            )
+            baseline_pool_ids: dict[ApiFormat, set[str]] = {}
             for pooled_binding in publication.desired_spec.bindings:
-                raw_pool = pooled_binding.runtime_config.get("apim_backend_pool")
-                if raw_pool is None:
+                pool = pooled_binding.backend_pool
+                if pool is None:
                     continue
-                pool = GatewayBackendPoolConfig.model_validate(raw_pool)
+                if (
+                    baseline_path is not None
+                    and publication.base_release_id is not None
+                    and pooled_binding.api_format not in baseline_pool_ids
+                ):
+                    baseline_pool_ids[pooled_binding.api_format] = self._pool_baseline_backend_ids(
+                        str(base_revision), pooled_binding.api_format
+                    )
                 supports_responses = (
                     ApimPolicyCompiler._responses_backend_path(pooled_binding)
                     is not None
@@ -601,18 +674,53 @@ class AzureApimPublisherClient:
                     member_headers = {
                         **headers,
                         "x-turnstile-pool-member": (
-                            ApimPolicyCompiler._pool_member_backend_id(
+                            pool_compiler.pool_member_backend_id(
                                 publication,
                                 pooled_binding,
                                 member,
                             )
                         ),
                     }
+                    baseline_member_headers = None
+                    if baseline_path is not None and publication.base_release_id is not None:
+                        baseline_publication = publication.model_copy(
+                            update={"id": publication.base_release_id}
+                        )
+                        affinity_binding = pooled_binding.model_copy(update={"runtime_config": {
+                            **pooled_binding.runtime_config,
+                            "apim_backend_pool_session_affinity": True,
+                        }})
+                        baseline_member_id = next((
+                            candidate for candidate in (
+                                pool_compiler.pool_member_backend_id(
+                                    baseline_publication, affinity_binding, member
+                                ),
+                                ApimPolicyCompiler._pool_member_backend_id(
+                                    baseline_publication, pooled_binding, member
+                                ),
+                            )
+                            if candidate in baseline_pool_ids[pooled_binding.api_format]
+                        ), None)
+                        if baseline_member_id is not None:
+                            baseline_member_headers = {
+                                **headers, "x-turnstile-pool-member": baseline_member_id,
+                            }
+                    member_baseline = (
+                        baseline_path if baseline_member_headers is not None
+                        and pooled_binding is not target_binding else None
+                    )
                     self._probe_model(
                         revision_path,
                         member_headers,
                         pooled_binding.model.model_key,
                         api_format=pooled_binding.api_format,
+                        max_tokens_field=str(
+                            pooled_binding.runtime_config.get(
+                                "max_tokens_field", "max_completion_tokens"
+                            )
+                        ),
+                        baseline_base=member_baseline,
+                        baseline_headers=baseline_member_headers,
                         authorization_required=authorization_required,
                     )
                     if not supports_responses:
@@ -621,12 +729,16 @@ class AzureApimPublisherClient:
                         revision_path,
                         member_headers,
                         pooled_binding.model.model_key,
+                        baseline_base=member_baseline,
+                        baseline_headers=baseline_member_headers,
                         authorization_required=authorization_required,
                     )
                     self._probe_responses_compact_model(
                         revision_path,
                         member_headers,
                         pooled_binding.model.model_key,
+                        baseline_base=member_baseline,
+                        baseline_headers=baseline_member_headers,
                         authorization_required=authorization_required,
                     )
 
@@ -637,7 +749,10 @@ class AzureApimPublisherClient:
         model: str,
         *,
         api_format: ApiFormat = ApiFormat.ANTHROPIC_MESSAGES,
+        max_tokens_field: str = "max_completion_tokens",
         retry_assignment_denial: bool = False,
+        baseline_base: str | None = None,
+        baseline_headers: dict[str, str] | None = None,
         authorization_required: bool = False,
     ) -> None:
         path = "/v1/messages"
@@ -648,7 +763,9 @@ class AzureApimPublisherClient:
         }
         if api_format is ApiFormat.OPENAI_CHAT:
             path = "/chat/completions"
-            body["max_completion_tokens"] = 8
+            if max_tokens_field not in {"max_tokens", "max_completion_tokens"}:
+                raise RuntimeError("Candidate model probe uses an unsupported token field")
+            body[max_tokens_field] = 8
         else:
             body["max_tokens"] = 8
         response = self._client.post(
@@ -657,6 +774,15 @@ class AzureApimPublisherClient:
             json=body,
             timeout=self._CANDIDATE_PROBE_TIMEOUT_SECONDS,
         )
+        if self._matches_baseline_failure(
+            response,
+            baseline_url=f"{baseline_base}{path}" if baseline_base else None,
+            headers=baseline_headers or headers,
+            body=body,
+            label="model",
+            model=model,
+        ):
+            return
         if self._is_transient_probe_status(response.status_code):
             raise RetryablePublicationError(
                 f"Candidate model probe returned HTTP {response.status_code}: {model}"
@@ -686,20 +812,32 @@ class AzureApimPublisherClient:
         model: str,
         *,
         retry_assignment_denial: bool = False,
+        baseline_base: str | None = None,
+        baseline_headers: dict[str, str] | None = None,
         authorization_required: bool = False,
     ) -> None:
+        body = {
+            "model": model,
+            "input": "Reply only with OK.",
+            "max_output_tokens": 16,
+            "store": False,
+            "stream": False,
+        }
         response = self._client.post(
             f"{base}/responses",
             headers=headers,
-            json={
-                "model": model,
-                "input": "Reply only with OK.",
-                "max_output_tokens": 16,
-                "store": False,
-                "stream": False,
-            },
+            json=body,
             timeout=self._CANDIDATE_PROBE_TIMEOUT_SECONDS,
         )
+        if self._matches_baseline_failure(
+            response,
+            baseline_url=f"{baseline_base}/responses" if baseline_base else None,
+            headers=baseline_headers or headers,
+            body=body,
+            label="Responses",
+            model=model,
+        ):
+            return
         if self._is_transient_probe_status(response.status_code):
             raise RetryablePublicationError(
                 f"Candidate Responses probe returned HTTP {response.status_code}: {model}"
@@ -729,17 +867,26 @@ class AzureApimPublisherClient:
         model: str,
         *,
         retry_assignment_denial: bool = False,
+        baseline_base: str | None = None,
+        baseline_headers: dict[str, str] | None = None,
         authorization_required: bool = False,
     ) -> None:
+        body = {"model": model, "input": "Reply only with OK."}
         response = self._client.post(
             f"{base}/responses/compact",
             headers=headers,
-            json={
-                "model": model,
-                "input": "Reply only with OK.",
-            },
+            json=body,
             timeout=self._CANDIDATE_PROBE_TIMEOUT_SECONDS,
         )
+        if self._matches_baseline_failure(
+            response,
+            baseline_url=f"{baseline_base}/responses/compact" if baseline_base else None,
+            headers=baseline_headers or headers,
+            body=body,
+            label="Responses compact",
+            model=model,
+        ):
+            return
         if self._is_transient_probe_status(response.status_code):
             raise RetryablePublicationError(
                 f"Candidate Responses compact probe returned HTTP "
@@ -773,6 +920,44 @@ class AzureApimPublisherClient:
             raise RuntimeError(
                 f"Candidate Responses compact probe returned an invalid response: {model}"
             )
+
+    def _matches_baseline_failure(
+        self,
+        response: httpx.Response,
+        *,
+        baseline_url: str | None,
+        headers: dict[str, str],
+        body: dict[str, Any],
+        label: str,
+        model: str,
+    ) -> bool:
+        if (
+            baseline_url is None
+            or not 400 <= response.status_code < 500
+            or self._is_transient_probe_status(response.status_code)
+        ):
+            return False
+        baseline = self._client.post(
+            baseline_url,
+            headers=headers,
+            json=body,
+            timeout=self._CANDIDATE_PROBE_TIMEOUT_SECONDS,
+        )
+        if self._is_transient_probe_status(baseline.status_code):
+            raise RetryablePublicationError(
+                f"Current {label} baseline returned HTTP {baseline.status_code}: {model}"
+            )
+        if baseline.status_code == response.status_code:
+            return True
+        if baseline.status_code < 400:
+            raise RetryablePublicationError(
+                f"Candidate {label} regressed from HTTP {baseline.status_code} "
+                f"to {response.status_code}: {model}"
+            )
+        raise RetryablePublicationError(
+            f"Current and candidate {label} failures differ "
+            f"({baseline.status_code} vs {response.status_code}): {model}"
+        )
 
     def _probe_removed_model(
         self,
@@ -922,8 +1107,6 @@ class AzureApimPublisherClient:
             if isinstance(raw_named_values, list)
             else []
         )
-        pools = sorted(value for value in backend_ids if value.startswith("turnstile-pool-"))
-        backends = sorted(value for value in backend_ids if value not in pools)
         issues: list[str] = []
         compiled = ApimPolicyCompiler(
             self._settings.apim_probe_subscription_id,
@@ -935,6 +1118,8 @@ class AzureApimPublisherClient:
             for backend in compiled.backends
             if isinstance(backend, BackendPoolResource)
         }
+        pools = sorted(value for value in backend_ids if value in expected_pool_members)
+        backends = sorted(value for value in backend_ids if value not in pools)
         expected_backends = {backend.id: backend for backend in compiled.backends}
         expected_named_values = {value.id: value for value in compiled.named_values}
         revision = publication.apim_revision
@@ -988,16 +1173,22 @@ class AzureApimPublisherClient:
 
         observed_backend_types: dict[str, str] = {}
         for backend_id in backend_ids:
+            expected_backend = expected_backends.get(backend_id)
             response = self._request(
                 "GET",
                 f"/backends/{quote(backend_id, safe='')}",
                 allow_not_found=True,
+                api_version=(
+                    self._AFFINITY_API_VERSION
+                    if isinstance(expected_backend, BackendPoolResource)
+                    and expected_backend.session_cookie_name
+                    else None
+                ),
             )
             if response.status_code == 404:
                 issues.append(f"missing_backend:{backend_id}")
                 continue
             properties = response.json().get("properties") or {}
-            expected_backend = expected_backends.get(backend_id)
             if (
                 expected_backend is None
                 or not isinstance(properties, Mapping)
@@ -1469,15 +1660,31 @@ class AzureApimPublisherClient:
         primary_key: str,
         secondary_key: str,
     ) -> None:
+        staged = spec.provisioning_version == 2
+        if staged:
+            self._validate_application_admission_target(spec)
         product_path = f"/products/{quote(spec.scope_id, safe='')}"
-        if self._request("GET", product_path, allow_not_found=True).status_code == 404:
+        product = self._request("GET", product_path, allow_not_found=True)
+        if product.status_code == 404:
             raise PolicyCompilationError(
                 f"APIM Product {spec.scope_id} does not exist"
             )
+        if staged:
+            properties = product.json().get("properties") or {}
+            if properties.get("state") != "published" or properties.get("subscriptionRequired") is not True:
+                raise PolicyCompilationError("Application Product must be published and require subscriptions")
+            membership = self._request(
+                "HEAD", f"{product_path}/apis/{quote(self._settings.apim_api_id, safe='')}",
+                allow_not_found=True,
+            )
+            if membership.status_code == 404:
+                raise PolicyCompilationError("Application Product does not include the managed gateway API")
         subscription_path = (
             f"/subscriptions/{quote(spec.apim_subscription_id, safe='')}"
         )
         scope = f"{self._resource_id_base}/products/{spec.scope_id}"
+        expected_name = self._application_pending_name(primary_key, secondary_key) if staged else spec.display_name
+        expected_state = "suspended" if staged else "active"
         observed = self._request("GET", subscription_path, allow_not_found=True)
         if observed.status_code != 404:
             raw_properties = observed.json().get("properties")
@@ -1485,10 +1692,10 @@ class AzureApimPublisherClient:
                 raw_properties if isinstance(raw_properties, Mapping) else {}
             )
             if (
-                str(properties.get("displayName") or "") == spec.display_name
+                str(properties.get("displayName") or "") == expected_name
                 and str(properties.get("scope") or "").casefold()
                 == scope.casefold()
-                and str(properties.get("state") or "") == "active"
+                and str(properties.get("state") or "") == expected_state
             ):
                 return
             raise PolicyCompilationError(
@@ -1499,9 +1706,9 @@ class AzureApimPublisherClient:
             f"{subscription_path}?notify=false",
             json_body={
                 "properties": {
-                    "displayName": spec.display_name,
+                    "displayName": expected_name,
                     "scope": scope,
-                    "state": "active",
+                    "state": expected_state,
                     "allowTracing": False,
                     "primaryKey": primary_key,
                     "secondaryKey": secondary_key,
@@ -1511,13 +1718,85 @@ class AzureApimPublisherClient:
         raw_properties = created.json().get("properties")
         properties = raw_properties if isinstance(raw_properties, Mapping) else {}
         if (
-            str(properties.get("displayName") or "") != spec.display_name
+            str(properties.get("displayName") or "") != expected_name
             or str(properties.get("scope") or "").casefold() != scope.casefold()
-            or str(properties.get("state") or "") != "active"
+            or str(properties.get("state") or "") != expected_state
         ):
             raise RetryablePublicationError(
                 "APIM subscription readback did not match the requested Application"
             )
+
+    @staticmethod
+    def _application_pending_name(primary_key: str, secondary_key: str) -> str:
+        marker = hashlib.sha256(f"{primary_key}\n{secondary_key}".encode()).hexdigest()[:32]
+        return f"Turnstile pending {marker}"
+
+    def _validate_application_admission_target(
+        self, spec: GatewayApplicationSubscriptionProvisionSpec
+    ) -> None:
+        policy = self._policy_value(
+            f"/apis/{quote(self._settings.apim_api_id, safe='')}/policies/policy?format=rawxml"
+        )
+        if policy is None:
+            raise PolicyCompilationError("Managed gateway Application admission policy is unavailable")
+        try:
+            root = ElementTree.fromstring(policy)
+        except ElementTree.ParseError as error:
+            raise PolicyCompilationError("Managed gateway policy is not valid XML") from error
+        partitions = [node.get("value") for node in root.findall(
+            ".//set-variable[@name='applicationMapPartition']"
+        )]
+        identities = [node.get("value") for node in root.findall(
+            ".//set-variable[@name='telemetryGatewayProfileId']"
+        )]
+        if (
+            partitions != [f'@("app-map|{spec.gateway_profile_id}")']
+            or identities != [str(spec.gateway_profile_id)]
+        ):
+            raise PolicyCompilationError(
+                "The selected gateway is not served by this worker's Application admission policy"
+            )
+
+    def activate_application_subscription(
+        self,
+        spec: GatewayApplicationSubscriptionProvisionSpec,
+        primary_key: str,
+        secondary_key: str,
+    ) -> None:
+        self._validate_application_admission_target(spec)
+        path = f"/subscriptions/{quote(spec.apim_subscription_id, safe='')}"
+        scope = f"{self._resource_id_base}/products/{spec.scope_id}"
+        observed = self._request("GET", path)
+        properties = observed.json().get("properties") or {}
+        if str(properties.get("scope", "")).casefold() != scope.casefold():
+            raise PolicyCompilationError("Application subscription scope changed before activation")
+        if properties.get("displayName") == spec.display_name and properties.get("state") == "active":
+            return
+        if (
+            properties.get("displayName") != self._application_pending_name(primary_key, secondary_key)
+            or properties.get("state") != "suspended"
+        ):
+            raise PolicyCompilationError("Application subscription is not owned by this creation operation")
+        etag = observed.headers.get("ETag")
+        if not etag:
+            raise RetryablePublicationError("APIM subscription ETag is unavailable")
+        self._request(
+            "PUT", f"{path}?notify=false", extra_headers={"If-Match": etag},
+            json_body={"properties": {
+                "displayName": spec.display_name,
+                "scope": scope,
+                "state": "active",
+                "allowTracing": False,
+                "primaryKey": primary_key,
+                "secondaryKey": secondary_key,
+            }},
+        )
+        readback = self._request("GET", path).json().get("properties") or {}
+        if (
+            readback.get("displayName") != spec.display_name or readback.get("state") != "active"
+            or str(readback.get("scope", "")).casefold() != scope.casefold()
+        ):
+            raise RetryablePublicationError("APIM subscription activation is not yet visible")
 
     def _managed_operation_ids(self) -> tuple[str, ...]:
         return (
@@ -1539,6 +1818,27 @@ class AzureApimPublisherClient:
             f"{quote(revision, safe='')}"
         )
 
+    def _pool_baseline_backend_ids(self, revision: str, api_format: ApiFormat) -> set[str]:
+        revision_path = self._revision_path(revision)
+        route = "chat/completions" if api_format is ApiFormat.OPENAI_CHAT else "v1/messages"
+        operation = next((
+            item for item in self._list_all(f"{revision_path}/operations")
+            if item.get("properties", {}).get("method") == "POST"
+            and str(item.get("properties", {}).get("urlTemplate", "")).strip("/") == route
+        ), None)
+        if operation is None:
+            return set()
+        policy = self._policy_value(
+            f"{revision_path}/operations/{quote(str(operation['name']), safe='')}"
+            "/policies/policy?format=rawxml"
+        )
+        if policy is None:
+            return set()
+        return {
+            backend_id for node in ElementTree.fromstring(policy).iter("set-backend-service")
+            if (backend_id := node.get("backend-id")) is not None
+        }
+
     def _policy_value(self, path: str) -> str | None:
         response = self._request("GET", path, allow_not_found=True)
         if response.status_code == 404:
@@ -1546,6 +1846,8 @@ class AzureApimPublisherClient:
         content_type = response.headers.get("content-type", "").casefold()
         if "json" in content_type:
             value = (response.json().get("properties") or {}).get("value")
+        elif "format=rawxml" in path:
+            value = response.text
         else:
             value = unescape(response.text)
         if not isinstance(value, str) or not value:

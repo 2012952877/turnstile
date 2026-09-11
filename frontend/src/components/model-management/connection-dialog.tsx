@@ -7,6 +7,7 @@ import type {
   ModelConnectionUpdate,
   ModelRegistry,
   ModelRuntime,
+  ModelVendorKey,
 } from "../../data-sources/apim/types"
 import {
   GatewayBrandLogo,
@@ -36,12 +37,15 @@ import {
   type FoundryAuthMode,
 } from "./foundry-auth-mode-switch"
 import { FieldHelp } from "./field-help"
+import { ModelVendorSelect } from "./model-vendor-select"
+import { isOpenAICompatibleBaseUrl, modelVendorFromMetadata } from "./openai-compatible"
 
 type ConnectionProviderOption = {
   value: string
   name: string
   brandKey: BrandKey
   existingId?: string
+  openaiCompatible?: boolean
 }
 
 function providerOptionBrand(option: ConnectionProviderOption) {
@@ -119,7 +123,8 @@ export function ConnectionDialog({
     ? [runtimeProvider]
     : registry.providers.filter(
         (provider) => provider.enabled
-          && ["microsoft_foundry", "amazon_bedrock"].includes(provider.brand_key),
+          && (["microsoft_foundry", "amazon_bedrock"].includes(provider.brand_key)
+            || provider.provider_kind === "openai_compatible"),
       )
   const providerOptions: ConnectionProviderOption[] = [
     ...providers.map((provider) => ({
@@ -127,6 +132,7 @@ export function ConnectionDialog({
       name: provider.name,
       brandKey: provider.brand_key as ConnectionProviderOption["brandKey"],
       existingId: provider.id,
+      openaiCompatible: provider.provider_kind === "openai_compatible",
     })),
     ...(runtime ? [] : (["microsoft_foundry", "amazon_bedrock"] as const)
       .filter((brandKey) => !providers.some((provider) => provider.brand_key === brandKey))
@@ -135,6 +141,12 @@ export function ConnectionDialog({
         name: brandKey === "microsoft_foundry" ? "Microsoft Foundry" : "Amazon Bedrock",
         brandKey,
       }))),
+    ...(runtime ? [] : [{
+      value: "template:openai_compatible",
+      name: "OpenAI-compatible",
+      brandKey: "generic" as const,
+      openaiCompatible: true,
+    }]),
   ]
   const runtimeGateway = runtime
     ? registry.gateways.find((gateway) => gateway.id === runtime.gateway_profile_id)
@@ -174,6 +186,12 @@ export function ConnectionDialog({
   const [bedrockRuntimeUrl, setBedrockRuntimeUrl] = useState(
     typeof runtime?.config.backend_url === "string" ? runtime.config.backend_url : "",
   )
+  const [openaiBaseUrl, setOpenaiBaseUrl] = useState(
+    typeof runtime?.config.base_url === "string" ? runtime.config.base_url : "",
+  )
+  const [modelVendor, setModelVendor] = useState<ModelVendorKey>(() =>
+    modelVendorFromMetadata(runtime?.config ?? runtimeProvider?.config, runtime?.name ?? ""),
+  )
   const [connectionName, setConnectionName] = useState(runtime?.name ?? "")
   const [enabled, setEnabled] = useState(runtime?.enabled ?? true)
   const [isDefault, setIsDefault] = useState(runtime?.is_default ?? false)
@@ -181,10 +199,11 @@ export function ConnectionDialog({
 
   const provider = providerOptions.find((item) => item.value === providerValue)
   const gateway = gateways.find((item) => item.id === gatewayId)
+  const openaiCompatible = provider?.openaiCompatible === true
   const foundry = provider?.brandKey === "microsoft_foundry"
     || runtime?.runtime_kind === "foundry"
-  const bedrock = provider?.brandKey === "amazon_bedrock"
-    || runtime?.config.api_format === "anthropic_messages"
+  const bedrock = !openaiCompatible && (provider?.brandKey === "amazon_bedrock"
+    || runtime?.config.api_format === "anthropic_messages")
 
   const chooseFoundryAuthMode = (mode: FoundryAuthMode) => {
     setFoundryAuthMode(mode)
@@ -193,6 +212,7 @@ export function ConnectionDialog({
   }
 
   const submit = () => {
+    if (busy) return
     if (runtime) {
       if (!connectionName.trim()) return setFormError("请输入连接名称。")
       setFormError(null)
@@ -204,7 +224,7 @@ export function ConnectionDialog({
       return
     }
     if (!provider) return setFormError("请选择提供方。")
-    const templateBrand = provider.brandKey === "microsoft_foundry"
+    const templateBrand = openaiCompatible ? "openai_compatible" : provider.brandKey === "microsoft_foundry"
       || provider.brandKey === "amazon_bedrock"
       ? provider.brandKey
       : null
@@ -225,6 +245,9 @@ export function ConnectionDialog({
     if (bedrock && !isBedrockRuntimeUrl(bedrockRuntimeUrl)) {
       return setFormError("请输入有效的 Bedrock Runtime URL。")
     }
+    if (openaiCompatible && !isOpenAICompatibleBaseUrl(openaiBaseUrl)) {
+      return setFormError("请输入不含凭据、查询参数或片段的 HTTPS Base URL。")
+    }
     setFormError(null)
     onCreate({
       gateway_profile_id: gateway.id,
@@ -237,6 +260,8 @@ export function ConnectionDialog({
         ? inferenceEndpoint.trim()
         : undefined,
       bedrock_runtime_url: bedrock ? bedrockRuntimeUrl.trim() : undefined,
+      openai_base_url: openaiCompatible ? openaiBaseUrl.trim() : undefined,
+      model_vendor: openaiCompatible ? modelVendor : undefined,
     })
   }
 
@@ -252,7 +277,13 @@ export function ConnectionDialog({
           <div className="form-grid">
             <div className="registry-field">
               <span className="registry-field-label-row"><span className="registry-field-label">提供方</span>{editing && <FieldHelp>提供方、APIM 网关、Endpoint 和认证方式共同定义已发布路由。要更换连接身份，请添加新连接并迁移模型。</FieldHelp>}</span>
-              <Select value={providerValue} onValueChange={(value) => { if (value) { setProviderValue(value); setFormError(null) } }} disabled={busy || editing}>
+              <Select value={providerValue} onValueChange={(value) => {
+                if (!value) return
+                setProviderValue(value)
+                const selected = registry.providers.find((item) => item.id === value)
+                setModelVendor(modelVendorFromMetadata(selected?.config, selected?.name ?? ""))
+                setFormError(null)
+              }} disabled={busy || editing}>
                 <SelectTrigger className="registry-select-trigger" aria-label="提供方">
                   <SelectValue>{provider ? <span className="registry-option"><ProviderBrandLogo brand={providerOptionBrand(provider)} size={15} /><span>{provider.name}</span></span> : "选择提供方"}</SelectValue>
                 </SelectTrigger>
@@ -289,9 +320,22 @@ export function ConnectionDialog({
             <div className="registry-field"><span className="registry-field-label-row"><label className="registry-field-label" htmlFor="bedrock-runtime-url">Bedrock Runtime URL</label><FieldHelp>首次为此连接添加模型时，再提供一次性 API Key。</FieldHelp></span><Input id="bedrock-runtime-url" type="url" value={bedrockRuntimeUrl} onChange={(event) => setBedrockRuntimeUrl(event.target.value)} disabled={busy || editing} placeholder="https://bedrock-runtime.ap-southeast-2.amazonaws.com" /></div>
           </>}
 
+          {openaiCompatible && <>
+            <div className="registry-field"><span className="registry-field-label">API 服务商</span>
+              <ModelVendorSelect value={modelVendor} onChange={setModelVendor} disabled={busy || editing} />
+            </div>
+            <div className="registry-field"><span className="registry-field-label-row">
+              <label className="registry-field-label" htmlFor="openai-base-url">Base URL</label>
+              <FieldHelp>首次为此连接添加模型时，再提供一次性 API Key。</FieldHelp>
+            </span><Input id="openai-base-url" type="url" value={openaiBaseUrl}
+              onChange={(event) => setOpenaiBaseUrl(event.target.value)} disabled={busy || editing}
+              placeholder="https://api.example.com/v1" />
+            </div>
+          </>}
+
           {editing && <div className="form-switches"><div className="registry-checkbox-field"><Checkbox id="connection-enabled" checked={enabled} onCheckedChange={(checked) => { const next = checked === true; setEnabled(next); if (!next) setIsDefault(false) }} disabled={busy} /><label htmlFor="connection-enabled">启用</label></div><div className="registry-checkbox-field"><Checkbox id="connection-default" checked={isDefault} onCheckedChange={(checked) => { const next = checked === true; setIsDefault(next); if (next) setEnabled(true) }} disabled={busy} /><label htmlFor="connection-default">设为默认</label></div></div>}
 
-          {(formError || error) && <div className="registry-error">{formError ?? error}</div>}
+          {(formError || error) && <div className="registry-error" role="alert">{formError ?? error}</div>}
         </div>
 
         <DialogFooter className="registry-editor-footer">

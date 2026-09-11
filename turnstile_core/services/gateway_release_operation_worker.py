@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 from uuid import UUID
 
@@ -16,6 +16,7 @@ from ..domain.control_plane import (
 )
 from ..integrations.apim_control_plane import (
     ApimPublisherClient,
+    PolicyCompilationError,
     RetryablePublicationError,
 )
 from ..persistence.repository import QueryRepository
@@ -35,10 +36,12 @@ class GatewayReleaseOperationWorker:
         application_default_token_limit: int = 100_000,
         application_default_tokens_per_minute: int = 100_000,
         cipher: CredentialCipher | None = None,
+        application_projector: Callable[[UUID, UUID], None] | None = None,
     ) -> None:
         self._repository = repository
         self._client = client
         self._cipher = cipher
+        self._application_projector = application_projector
         self._service = GatewayControlPlaneService(
             repository,
             retention_policy=retention_policy,
@@ -155,10 +158,16 @@ class GatewayReleaseOperationWorker:
         spec = GatewayApplicationSubscriptionProvisionSpec.model_validate(
             row["semantic_preview"]
         )
+        if spec.provisioning_version == 2 and spec.gateway_profile_id != UUID(
+            str(row["gateway_profile_id"])
+        ):
+            raise ControlPlaneConflictError("Application creation references another gateway")
         if status == "queued":
             self._transition(row, "validating_dependencies", {}, worker_id)
             return
         if status == "validating_dependencies":
+            if spec.provisioning_version == 2 and self._application_projector is None:
+                raise RuntimeError("Application admission ledger projection is not configured")
             if self._cipher is None:
                 raise RuntimeError("Credential encryption is unavailable")
             ciphertext = self._repository.gateway_release_operation_secret(
@@ -188,6 +197,34 @@ class GatewayReleaseOperationWorker:
                 worker_id,
             )
             return
+        if status == "verifying_readback" and spec.provisioning_version == 2:
+            if self._application_projector is None:
+                raise RuntimeError("Application admission ledger projection is not configured")
+            try:
+                self._application_projector(
+                    UUID(str(row["gateway_profile_id"])), spec.application_id
+                )
+            except (ControlPlaneConflictError, PolicyCompilationError):
+                raise
+            except Exception as error:
+                raise RetryablePublicationError(
+                    "Application admission ledger is not yet ready"
+                ) from error
+            if self._cipher is None:
+                raise RuntimeError("Credential encryption is unavailable")
+            secret = self._cipher.decrypt(
+                self._repository.gateway_release_operation_secret(operation_id)
+            )
+            if secret is None:
+                raise RuntimeError("Application provisioning credential is missing")
+            keys = json.loads(secret)
+            self._client.activate_application_subscription(
+                spec, keys["primary_key"], keys["secondary_key"]
+            )
+            self._transition(row, "succeeded", {"checkpoint": self._checkpoint(
+                row, admission_ready=True, subscription_active=True, key_stored=False,
+            )}, worker_id)
+            return
         if status != "promoting":
             return
         try:
@@ -202,7 +239,15 @@ class GatewayReleaseOperationWorker:
             raise RetryablePublicationError(
                 "Application materialization is temporarily unavailable"
             ) from error
-        self._repository.delete_gateway_release_operation_secret(operation_id)
+        if spec.provisioning_version == 2:
+            self._transition(row, "verifying_readback", {"checkpoint": self._checkpoint(
+                row,
+                application_id=str(application["id"]),
+                apim_subscription_id=spec.apim_subscription_id,
+                product_id=spec.scope_id,
+                application_materialized=True,
+            )}, worker_id)
+            return
         self._transition(
             row,
             "succeeded",
@@ -384,9 +429,6 @@ class GatewayReleaseOperationWorker:
         status = str(row["status"])
         updates = self._error_updates(row, error)
         if row["operation_kind"] == GatewayReleaseOperationKind.APPLICATION_PROVISION:
-            self._repository.delete_gateway_release_operation_secret(
-                UUID(str(row["id"]))
-            )
             self._transition(row, "failed", updates, worker_id)
             return
         if status in {
@@ -408,9 +450,6 @@ class GatewayReleaseOperationWorker:
     ) -> None:
         status = str(row["status"])
         if row["operation_kind"] == GatewayReleaseOperationKind.APPLICATION_PROVISION:
-            self._repository.delete_gateway_release_operation_secret(
-                UUID(str(row["id"]))
-            )
             next_status = "failed"
         elif status in {
             "promoting",
@@ -438,6 +477,11 @@ class GatewayReleaseOperationWorker:
         updates: Mapping[str, Any],
         worker_id: str,
     ) -> None:
+        if (
+            row["operation_kind"] == GatewayReleaseOperationKind.APPLICATION_PROVISION
+            and status != str(row["status"])
+        ):
+            updates = {"error_code": None, "error_message": None, **updates}
         transitioned = self._repository.transition_gateway_release_operation(
             UUID(str(row["id"])),
             str(row["status"]),

@@ -225,6 +225,13 @@ class UsageProcessor:
             model=model_name,
             model_id=model_id,
             runtime=event.runtime or "unattributed",
+            runtime_authoritative=(
+                event.runtime_authoritative
+                and not estimated
+                and not is_copilot_usage
+                and event.ingest_source == "eventhub"
+                and event.runtime not in {"", "unattributed"}
+            ),
             request_source=event.request_source or "unattributed",
             usage_domain="github_copilot" if is_copilot_usage else "apim",
             input_tokens=input_tokens,

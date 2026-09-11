@@ -47,8 +47,10 @@
         var usage = body[&quot;usage&quot;] as JObject;
         var input = usage?[&quot;prompt_tokens&quot;] ?? usage?[&quot;input_tokens&quot;];
         var output = usage?[&quot;completion_tokens&quot;] ?? usage?[&quot;output_tokens&quot;];
-        var cached = usage?[&quot;prompt_tokens_details&quot;]?[&quot;cached_tokens&quot;]
-          ?? usage?[&quot;cache_read_input_tokens&quot;]
+        var cached = (long?)usage?[&quot;prompt_tokens_details&quot;]?[&quot;cached_tokens&quot;]
+          ?? (long?)usage?[&quot;input_tokens_details&quot;]?[&quot;cached_tokens&quot;]
+          ?? (long?)usage?[&quot;cache_read_input_tokens&quot;]
+          ?? (long?)usage?[&quot;cached_tokens&quot;]
           ?? 0;
         return new JObject(
           new JProperty(&quot;input_tokens&quot;, input),

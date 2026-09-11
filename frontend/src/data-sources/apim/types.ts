@@ -441,6 +441,7 @@ export type GatewayKind = "apim" | "litellm" | "direct"
 export type RuntimeKind = "foundry" | "openai_compatible"
 export type AuthType = "none" | "api_key" | "bearer" | "azure_ad"
 export type BrandKey = "generic" | "amazon_bedrock" | "anthropic" | "azure_databricks" | "microsoft" | "microsoft_foundry" | "openai"
+export type ModelVendorKey = "generic" | "kimi" | "deepseek" | "openai" | "anthropic"
 export type ModelFamilyKey = "generic" | "claude" | "openai"
 
 export type GatewayProfile = {
@@ -519,6 +520,7 @@ export type ManagedModel = {
 }
 
 export type ModelRegistry = {
+  backend_pool_session_affinity_supported?: boolean
   gateways: GatewayProfile[]
   providers: ModelProvider[]
   runtimes: ModelRuntime[]
@@ -529,12 +531,14 @@ export type ModelConnectionCreate = {
   gateway_profile_id: string
   provider: {
     existing_id?: string
-    template?: "amazon_bedrock" | "microsoft_foundry"
+    template?: "amazon_bedrock" | "microsoft_foundry" | "openai_compatible"
   }
   auth_mode?: "managed_identity" | "api_key"
   foundry_project_endpoint?: string
   foundry_inference_endpoint?: string
   bedrock_runtime_url?: string
+  openai_base_url?: string
+  model_vendor?: ModelVendorKey
 }
 
 export type ModelConnectionUpdate = {
@@ -549,13 +553,14 @@ export type GatewayPublicationCreate = {
   gateway_profile_id: string
   provider: {
     existing_id?: string
-    template?: "amazon_bedrock" | "microsoft_foundry"
+    template?: "amazon_bedrock" | "microsoft_foundry" | "openai_compatible"
   }
   runtime: {
     existing_id?: string
     bedrock_runtime_url?: string
     foundry_project_endpoint?: string
     foundry_inference_endpoint?: string
+    openai_base_url?: string
     api_key?: string
   }
   model: {
@@ -636,11 +641,13 @@ export type GatewayBackendPoolConfig = {
   schema_version: 1
   members: GatewayBackendPoolMember[]
   rate_limit: GatewayRateLimitResilience
+  session_affinity?: boolean
 }
 
 export type GatewayBackendPoolWrite = {
   members: Array<Pick<GatewayBackendPoolMember, "runtime_id" | "priority" | "weight">>
   rate_limit: GatewayRateLimitResilience
+  session_affinity?: boolean
 }
 
 export type GatewayPublicationList = {
@@ -986,6 +993,7 @@ export type GatewayApplicationList = {
   sync_unavailable_reason: string | null
   provisioning_available: boolean
   provisioning_unavailable_reason: string | null
+  provisioning_defaults?: { monthly_token_limit: number; tokens_per_minute: number } | null
   key_management_available: boolean
   key_management_unavailable_reason: string | null
 }

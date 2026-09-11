@@ -54,6 +54,9 @@ class GatewayControlPlaneService(BaseGatewayControlPlaneService):
         retention_policy: GatewayReleaseRetentionPolicy | None = None,
         release_worker_enabled: bool = True,
         application_provisioning_enabled: bool = True,
+        application_default_token_limit: int = 100_000,
+        application_default_tokens_per_minute: int = 100_000,
+        application_product_id: str = "finops-ai-consumers",
     ) -> None:
         super().__init__(
             repository,
@@ -62,6 +65,9 @@ class GatewayControlPlaneService(BaseGatewayControlPlaneService):
             retention_policy=retention_policy,
             release_worker_enabled=release_worker_enabled,
             application_provisioning_enabled=application_provisioning_enabled,
+            application_default_token_limit=application_default_token_limit,
+            application_default_tokens_per_minute=application_default_tokens_per_minute,
+            application_product_id=application_product_id,
         )
 
 class GatewayPublicationWorker(BaseGatewayPublicationWorker):
@@ -179,6 +185,15 @@ class FakeApimClient:
     ) -> None:
         del spec, primary_key, secondary_key
         raise AssertionError("unexpected Application subscription provisioning")
+
+    def activate_application_subscription(
+        self,
+        spec: GatewayApplicationSubscriptionProvisionSpec,
+        primary_key: str,
+        secondary_key: str,
+    ) -> None:
+        del spec, primary_key, secondary_key
+        raise AssertionError("unexpected Application subscription activation")
 
     def inspect_revision_dependencies(
         self, publication: GatewayPublication

@@ -108,6 +108,17 @@ def test_openapi_root_is_a_small_domain_index() -> None:
     }
 
 
+def test_application_provisioning_defaults_are_nullable_positive_limits() -> None:
+    schema = _documented_schemas()["GatewayApplicationList"]
+    properties = cast(dict[str, dict[str, object]], schema["properties"])
+    defaults = properties["provisioning_defaults"]
+    assert defaults["type"] == ["object", "null"]
+    assert defaults["additionalProperties"] is False
+    limits = cast(dict[str, dict[str, object]], defaults["properties"])
+    assert set(limits) == {"monthly_token_limit", "tokens_per_minute"}
+    assert all(value["minimum"] == 1 for value in limits.values())
+
+
 def test_application_ledger_fields_preserve_unknown_and_zero() -> None:
     schema = _documented_schemas()["GatewayApplicationBudget"]
     properties = cast(dict[str, dict[str, object]], schema["properties"])
@@ -182,6 +193,7 @@ def test_foundry_key_runtime_contract_is_distinct_from_managed_identity() -> Non
         {"bedrock_runtime_url", "api_key"},
         {"foundry_project_endpoint"},
         {"foundry_project_endpoint", "foundry_inference_endpoint", "api_key"},
+        {"openai_base_url", "api_key"},
     ]
     managed_identity_exclusions = cast(
         dict[str, list[dict[str, list[str]]]], alternatives[2]["not"]
@@ -190,6 +202,25 @@ def test_foundry_key_runtime_contract_is_distinct_from_managed_identity() -> Non
         frozenset(item["required"]) for item in managed_identity_exclusions
     }
     assert {"api_key"} in {frozenset(item["required"]) for item in managed_identity_exclusions}
+
+
+def test_openai_connection_contract_exposes_no_registration_secret() -> None:
+    schemas = _documented_schemas()
+    connection = cast(dict[str, dict[str, object]], schemas["ModelConnectionCreate"]["properties"])
+    provider = cast(dict[str, dict[str, object]], schemas["GatewayProviderTarget"]["properties"])
+    runtime = cast(dict[str, dict[str, object]], schemas["GatewayRuntimeTarget"]["properties"])
+
+    assert "api_key" not in connection
+    assert connection["openai_base_url"]["pattern"] == "^https://"
+    assert connection["model_vendor"]["enum"] == [
+        "generic", "kimi", "deepseek", "openai", "anthropic",
+    ]
+    assert "openai_compatible" in cast(list[str], provider["template"]["enum"])
+    assert runtime["api_key"]["writeOnly"] is True
+    alternatives = cast(list[dict[str, object]], schemas["GatewayRuntimeTarget"]["oneOf"])
+    for alternative in alternatives[:-1]:
+        exclusions = cast(dict[str, list[dict[str, list[str]]]], alternative["not"])["anyOf"]
+        assert {"openai_base_url"} in {frozenset(item["required"]) for item in exclusions}
 
 
 def test_gateway_release_reads_separate_recorded_and_live_integrity() -> None:
@@ -253,6 +284,16 @@ def test_native_apim_pool_contract_is_bounded_and_model_scoped() -> None:
 
     assert write["members"]["minItems"] == 2
     assert write["members"]["maxItems"] == 30
+    pool_config = cast(
+        dict[str, dict[str, object]], schemas["GatewayBackendPoolConfig"]["properties"]
+    )
+    registry = cast(dict[str, dict[str, object]], schemas["ModelRegistry"]["properties"])
+    for field in (
+        write["session_affinity"], pool_config["session_affinity"],
+        registry["backend_pool_session_affinity_supported"],
+    ):
+        assert field["type"] == "boolean"
+        assert field["default"] is False
     assert rate_limit["max_attempts_per_request"] == {
         "type": "integer",
         "const": 2,

@@ -521,6 +521,42 @@ resource storageTablePrivateDnsZoneGroup 'Microsoft.Network/privateEndpoints/pri
   }
 }
 
+resource ledgerTablePrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = {
+  name: 'pe-${ledgerStorageName}-table'
+  location: location
+  properties: {
+    subnet: {
+      id: privateEndpointSubnet.id
+    }
+    privateLinkServiceConnections: [
+      {
+        name: 'ledger-table'
+        properties: {
+          privateLinkServiceId: ledgerStorage.id
+          groupIds: [
+            'table'
+          ]
+        }
+      }
+    ]
+  }
+}
+
+resource ledgerTablePrivateDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = {
+  parent: ledgerTablePrivateEndpoint
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'table'
+        properties: {
+          privateDnsZoneId: tablePrivateDnsZone.id
+        }
+      }
+    ]
+  }
+}
+
 module keyVaultPrivateEndpoint 'key-vault-private-endpoint.bicep' = {
   name: 'finops-key-vault-private-endpoint'
   params: {

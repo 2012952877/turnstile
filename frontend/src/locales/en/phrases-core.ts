@@ -1,4 +1,7 @@
 export const ENGLISH_CORE_PHRASES: Record<string, string> = {
+  "输出单价": "Output rate",
+  "订阅 ID": "Subscription ID",
+  "重新检查": "Check again",
   "创建已排队": "Creation queued",
   "创建所需的 Worker、账本、加密或 APIM 配置尚未就绪。": "The required worker, ledger, encryption or APIM configuration is not ready.",
   "创建服务尚未部署或启用。": "The creation service is not deployed or enabled.",

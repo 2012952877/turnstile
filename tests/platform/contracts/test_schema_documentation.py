@@ -83,3 +83,15 @@ def test_documentation_contains_no_original_environment_identifiers() -> None:
         if token in path.read_text(encoding="utf-8")
     }
     assert not violations
+
+
+def test_image_upgrade_documents_independent_defaults_and_validation_limits() -> None:
+    configuration = (REPOSITORY_ROOT / "docs/configuration.md").read_text()
+    architecture = (REPOSITORY_ROOT / "docs/architecture.md").read_text()
+    testing = (REPOSITORY_ROOT / "docs/testing.md").read_text()
+    assert "`IMAGE_GENERATION_ENABLED` defaults to `false`" in configuration
+    assert "effective_at = NULL" in configuration
+    assert configuration.count("## Runtime attribution") == 1
+    assert architecture.count("## Ledger finalization") == 1
+    assert "SQL source checks cannot prove" in testing
+    assert "separately authorized real targets" in testing

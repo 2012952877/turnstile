@@ -93,8 +93,8 @@ def test_openapi_root_is_a_small_domain_index() -> None:
     schemas = cast(dict[str, dict[str, str]], components["schemas"])
 
     assert len(CONTRACT.read_text(encoding="utf-8").splitlines()) < 800
-    assert len(paths) == 76
-    assert len(schemas) == 161
+    assert len(paths) == 77
+    assert len(schemas) == 169
     assert all(set(value) == {"$ref"} for value in paths.values())
     assert all(set(value) == {"$ref"} for value in schemas.values())
     assert {path.name for path in (CONTRACT.parent / "openapi" / "paths").glob("*.yaml")} == {
@@ -117,6 +117,28 @@ def test_application_provisioning_defaults_are_nullable_positive_limits() -> Non
     limits = cast(dict[str, dict[str, object]], defaults["properties"])
     assert set(limits) == {"monthly_token_limit", "tokens_per_minute"}
     assert all(value["minimum"] == 1 for value in limits.values())
+
+
+def test_image_contract_is_single_nonstreaming_passthrough_and_session_protected() -> None:
+    schemas = _documented_schemas()
+    request_schema = schemas["ImageInvocationRequest"]
+    properties = cast(dict[str, dict[str, object]], request_schema["properties"])
+    assert request_schema["additionalProperties"] is True
+    assert properties["n"]["const"] == 1
+    assert properties["stream"]["const"] is False
+    for field in ("prompt", "size", "quality", "output_format"):
+        assert "enum" not in properties[field] and "maxLength" not in properties[field]
+    response = cast(dict[str, dict[str, object]], schemas["ImageInvocationResponse"]["properties"])
+    assert response["data"]["minItems"] == response["data"]["maxItems"] == 1
+    profile = cast(dict[str, dict[str, object]], schemas["ImageGenerationProfile"]["properties"])
+    assert profile["version"]["const"] == 4
+    operation = _documented_paths()["/api/v1/model-gateway/images/generations"]["post"]
+    assert cast(dict[str, object], operation)["security"] == [{"sessionCookie": []}]
+    assert ("/api/v1/model-gateway/images/generations", "post") in _operations(
+        app.openapi()["paths"]
+    )
+    retry = cast(dict[str, dict[str, object]], schemas["GatewayPublicationRetry"]["properties"])
+    assert retry["authorize_image_probes"]["default"] is False
 
 
 def test_application_ledger_fields_preserve_unknown_and_zero() -> None:

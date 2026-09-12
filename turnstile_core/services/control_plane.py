@@ -11,6 +11,8 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 from uuid import UUID, uuid4
 
+from pydantic import HttpUrl
+
 from ..domain.application_access import (
     GatewayApplicationSubscriptionCreate,
     GatewayApplicationSubscriptionProvisionSpec,
@@ -52,6 +54,7 @@ from ..domain.control_plane import (
     GatewayReleaseRollbackRequest,
     GatewayReleaseSpec,
     GatewayReleaseSummary,
+    ImageProbeAuthorization,
     ModelCreateTarget,
     ModelRemovalTarget,
     ModelTarget,
@@ -60,6 +63,11 @@ from ..domain.control_plane import (
     StreamingMode,
     publication_materialized_named_values,
     publication_retry_requires_credential,
+)
+from ..domain.image_profiles import (
+    ImageGenerationLimits,
+    create_image_profile,
+    validate_image_profile,
 )
 from ..domain.runtime_models import (
     FOUNDRY_INFERENCE_RESOURCE,
@@ -108,6 +116,8 @@ class GatewayControlPlaneService:
         application_default_token_limit: int = 100_000,
         application_default_tokens_per_minute: int = 100_000,
         application_product_id: str = _APPLICATION_PRODUCT_ID,
+        image_generation_enabled: bool = False,
+        image_generation_defaults: ImageGenerationLimits | None = None,
     ) -> None:
         self._repository = repository
         self._cipher = cipher
@@ -117,6 +127,8 @@ class GatewayControlPlaneService:
         self._application_default_token_limit = application_default_token_limit
         self._application_default_tokens_per_minute = application_default_tokens_per_minute
         self._application_product_id = application_product_id
+        self._image_generation_enabled = image_generation_enabled
+        self._image_generation_defaults = image_generation_defaults
         self._retention_policy = retention_policy or GatewayReleaseRetentionPolicy(
             retained_count=20,
             retained_days=180,
@@ -967,7 +979,10 @@ class GatewayControlPlaneService:
         return blockers
 
     def reconcile_gateway(
-        self, gateway_profile_id: UUID, created_by: str
+        self,
+        gateway_profile_id: UUID,
+        created_by: str,
+        image_configurations: Mapping[UUID, ImageGenerationLimits] | None = None,
     ) -> GatewayPublication:
         registry = self._repository.registry()
         gateway = self._find(registry["gateways"], gateway_profile_id)
@@ -977,7 +992,43 @@ class GatewayControlPlaneService:
         if effective_row is None:
             raise ControlPlaneConflictError("The gateway has no effective release to reconcile")
         effective = GatewayPublication.model_validate(effective_row)
-        reconciled = self._reconciled_release_spec(effective.desired_spec, registry)
+        profiles = {}
+        for model_id, configuration in (image_configurations or {}).items():
+            if not self._image_generation_enabled:
+                raise ControlPlaneUnavailableError("Image generation is not enabled")
+            model = self._find(registry["models"], model_id)
+            if model is None or model.get("capabilities") != ["image_generation"]:
+                raise ControlPlaneConflictError("An image profile requires an existing image model")
+            binding = next(
+                (
+                    item
+                    for item in effective.desired_spec.bindings
+                    if item.model.model_key == model["model_key"]
+                ),
+                None,
+            )
+            if binding is None:
+                raise ControlPlaneConflictError("The image model is not in this gateway release")
+            profiles[model["model_key"]] = create_image_profile(
+                configuration, binding.model.upstream_model_id
+            )
+        updated = effective.desired_spec.model_copy(
+            update={
+                "bindings": [
+                    binding.model_copy(
+                        update={
+                            "model": binding.model.model_copy(
+                                update={"image_profile": profiles[binding.model.model_key]}
+                            )
+                        }
+                    )
+                    if binding.model.model_key in profiles
+                    else binding
+                    for binding in effective.desired_spec.bindings
+                ]
+            }
+        )
+        reconciled = self._reconciled_release_spec(updated, registry)
         desired_spec, reconciled_sha256 = self._release_payload(reconciled)
         desired_hash = hashlib.sha256(
             f"route_reconcile:{effective.id}:{reconciled_sha256}".encode()
@@ -1005,6 +1056,8 @@ class GatewayControlPlaneService:
         model = self._find(registry["models"], model_id)
         if model is None or not model["enabled"]:
             raise ControlPlaneNotFoundError("Model not found")
+        if "image_generation" in (model.get("capabilities") or []):
+            raise ControlPlaneConflictError("Image generation pools are not supported")
         primary_runtime = self._find(registry["runtimes"], model["runtime_id"])
         if primary_runtime is None or primary_runtime.get("gateway_profile_id") is None:
             raise ControlPlaneConflictError(
@@ -1351,8 +1404,17 @@ class GatewayControlPlaneService:
                     for item in templates
                     if family is ModelFamilyKey.CLAUDE
                     or item.api_format is ApiFormat.OPENAI_CHAT
+                    or "image_generation" in (model.get("capabilities") or [])
                 ),
-                None,
+                next(
+                    (
+                        item
+                        for item in templates
+                        if item.provider_brand_key is BrandKey.MICROSOFT_FOUNDRY
+                        and item.api_format is ApiFormat.OPENAI_IMAGES
+                    ),
+                    None,
+                ),
             )
             if template is None:
                 continue
@@ -1369,6 +1431,7 @@ class GatewayControlPlaneService:
                 cache_write_cost_per_million=model.get("cache_write_cost_per_million"),
                 allowed_roles=list(model.get("allowed_roles") or ["owner", "admin", "member"]),
                 assignment_required=bool(model.get("assignment_required", False)),
+                image_profile=model.get("image_profile"),
             )
             runtime_config = dict(template.runtime_config)
             runtime_config.pop("apim_backend_pool", None)
@@ -1436,6 +1499,23 @@ class GatewayControlPlaneService:
             encrypted = None
         normalized_spec = self._normalize_release_spec(publication.desired_spec)
         desired_spec, desired_hash = self._release_payload(normalized_spec)
+        image_authorization = None
+        if write.authorize_image_probes:
+            if not any(
+                binding.api_format is ApiFormat.OPENAI_IMAGES
+                for binding in normalized_spec.bindings
+            ):
+                raise ControlPlaneConflictError("This publication has no image probes to authorize")
+            prior = ImageProbeAuthorization.model_validate(
+                publication.resource_manifest.get(
+                    "image_probe_authorization", {"id": str(publication.id)}
+                )
+            )
+            if prior.attempt_limit >= 32:
+                raise ControlPlaneConflictError("The image probe attempt limit has been reached")
+            image_authorization = ImageProbeAuthorization(
+                id=uuid4(), attempt_limit=prior.attempt_limit + 1
+            ).model_dump(mode="json")
         try:
             row = self._repository.requeue_gateway_publication(
                 publication_id,
@@ -1443,6 +1523,7 @@ class GatewayControlPlaneService:
                 encrypted,
                 desired_spec,
                 desired_hash,
+                image_probe_authorization=image_authorization,
             )
         except ValueError as error:
             raise ControlPlaneConflictError(str(error)) from error
@@ -1509,6 +1590,8 @@ class GatewayControlPlaneService:
     def publish(
         self, write: GatewayPublicationCreate, created_by: str
     ) -> GatewayPublication:
+        if write.model.operation == "image_generation" and not self._image_generation_enabled:
+            raise ControlPlaneUnavailableError("Image generation is not enabled")
         registry = self._repository.registry()
         gateway = self._find(registry["gateways"], write.gateway_profile_id)
         if gateway is None or not gateway["enabled"] or gateway["implementation"] != "apim":
@@ -1517,7 +1600,14 @@ class GatewayControlPlaneService:
         provider = self._resolve_provider(write, registry["providers"])
         runtime = self._resolve_runtime(write, provider, registry["runtimes"])
         self._validate_connection(provider, runtime)
-        model = self._release_model(write.model, provider, runtime)
+        model_input = write.model
+        if model_input.operation == "image_generation" and model_input.image_configuration is None:
+            if self._image_generation_defaults is None:
+                raise ControlPlaneUnavailableError("Image generation defaults are unavailable")
+            model_input = model_input.model_copy(
+                update={"image_configuration": self._image_generation_defaults}
+            )
+        model = self._release_model(model_input, provider, runtime)
         self._validate_model(model, registry["models"])
         binding_runtime = self._model_binding_runtime(provider, runtime, model)
 
@@ -1686,20 +1776,58 @@ class GatewayControlPlaneService:
             )
         if self._cipher is None:
             raise ControlPlaneConflictError("Credential encryption is unavailable")
+        registry = self._repository.registry()
+        connection = self._binding_connection(target, gateway_profile_id, registry)
         named_value_name = f"finops-credential-{uuid4().hex[:20]}"
-        def same_runtime(binding: GatewayModelBinding) -> bool:
-            return (
-                binding.runtime_name.casefold() == target.runtime_name.casefold()
-                and str(binding.backend_url).rstrip("/")
-                == str(target.backend_url).rstrip("/")
-            )
-
-        updated = [
-            binding.model_copy(update={"named_value_name": named_value_name})
-            if same_runtime(binding)
-            else binding
-            for binding in previous.desired_spec.bindings
-        ]
+        updated = []
+        for binding in previous.desired_spec.bindings:
+            if (
+                binding.routing_managed
+                and self._binding_connection(binding, gateway_profile_id, registry)["id"]
+                == connection["id"]
+            ):
+                if (
+                    binding.auth_strategy is not target.auth_strategy
+                    or binding.key_vault_secret_id is not None
+                ):
+                    raise ControlPlaneConflictError(
+                        "Connection bindings have incompatible credential ownership"
+                    )
+                binding = binding.model_copy(
+                    update={
+                        "runtime_id": connection["id"],
+                        "provider_id": connection["provider_id"],
+                        "named_value_name": named_value_name,
+                        "runtime_config": {
+                            **binding.runtime_config,
+                            "named_value_name": named_value_name,
+                        },
+                    }
+                )
+            pool = binding.backend_pool
+            if pool is not None and any(
+                member.runtime_id == connection["id"] for member in pool.members
+            ):
+                members = []
+                for member in pool.members:
+                    if member.runtime_id == connection["id"]:
+                        if member.auth_strategy is not target.auth_strategy:
+                            raise ControlPlaneConflictError(
+                                "Pool member has incompatible credential ownership"
+                            )
+                        member = member.model_copy(update={"named_value_name": named_value_name})
+                    members.append(member)
+                binding = binding.model_copy(
+                    update={
+                        "runtime_config": {
+                            **binding.runtime_config,
+                            "apim_backend_pool": pool.model_copy(
+                                update={"members": members}
+                            ).model_dump(mode="json", exclude={"session_affinity"}),
+                        }
+                    }
+                )
+            updated.append(binding)
         target_binding = next(
             binding
             for binding in updated
@@ -1707,7 +1835,6 @@ class GatewayControlPlaneService:
         )
         bindings = [binding for binding in updated if binding is not target_binding]
         bindings.append(target_binding)
-        registry = self._repository.registry()
         discovery = list(previous.desired_spec.discovery_models)
         discovery.extend(self._existing_discovery(gateway_profile_id, registry))
         unique_discovery = {item.id.casefold(): item for item in discovery}
@@ -1723,6 +1850,36 @@ class GatewayControlPlaneService:
             created_by,
             encrypted,
         )
+
+    @staticmethod
+    def _binding_connection(
+        binding: GatewayModelBinding,
+        gateway_profile_id: UUID,
+        registry: Mapping[str, Sequence[dict[str, Any]]],
+    ) -> dict[str, Any]:
+        runtime_id = binding.runtime_id
+        if runtime_id is None:
+            models = [
+                model
+                for model in registry["models"]
+                if str(model["model_key"]).casefold() == binding.model.model_key.casefold()
+            ]
+            if len(models) == 1:
+                runtime_id = models[0]["runtime_id"]
+        matches = [
+            runtime
+            for runtime in registry["runtimes"]
+            if runtime.get("gateway_profile_id") == gateway_profile_id
+            and (
+                runtime["id"] == runtime_id
+                if runtime_id is not None
+                else str(runtime["name"]).casefold() == binding.runtime_name.casefold()
+            )
+            and (binding.provider_id is None or runtime["provider_id"] == binding.provider_id)
+        ]
+        if len(matches) != 1 or not (matches[0].get("config") or {}).get("control_plane_managed"):
+            raise ControlPlaneConflictError("The release Connection identity cannot be resolved")
+        return matches[0]
 
     def _queue_release(
         self,
@@ -1757,7 +1914,26 @@ class GatewayControlPlaneService:
     def _normalize_release_spec(spec: GatewayReleaseSpec) -> GatewayReleaseSpec:
         bindings: list[GatewayModelBinding] = []
         for binding in spec.bindings:
-            if (
+            if "image_generation" in binding.model.capabilities:
+                try:
+                    profile = validate_image_profile(binding.model.image_profile)
+                except ValueError as error:
+                    raise ControlPlaneConflictError(str(error)) from error
+                if binding.provider_brand_key is not BrandKey.MICROSOFT_FOUNDRY:
+                    raise ControlPlaneConflictError("Image generation requires Foundry")
+                if binding.backend_pool is not None:
+                    raise ControlPlaneConflictError("Image generation pools are not supported")
+                binding = binding.model_copy(
+                    update={
+                        "api_format": ApiFormat.OPENAI_IMAGES,
+                        "backend_url": GatewayControlPlaneService._image_backend_url(
+                            {"backend_url": binding.backend_url, "config": binding.runtime_config}
+                        ),
+                        "backend_path": profile.backend_path,
+                        "streaming_mode": StreamingMode.BUFFERED,
+                    }
+                )
+            elif (
                 binding.provider_brand_key is BrandKey.MICROSOFT_FOUNDRY
                 and binding.model.family_key is ModelFamilyKey.CLAUDE
             ):
@@ -1781,6 +1957,16 @@ class GatewayControlPlaneService:
                             **config,
                             "anthropic_version": "2023-06-01",
                         },
+                    }
+                )
+            elif binding.api_format is ApiFormat.OPENAI_IMAGES:
+                binding = binding.model_copy(
+                    update={
+                        "api_format": ApiFormat.OPENAI_CHAT,
+                        "backend_url": binding.runtime_config.get("backend_url")
+                        or binding.backend_url,
+                        "backend_path": "/openai/v1/chat/completions",
+                        "streaming_mode": StreamingMode.NATIVE,
                     }
                 )
             bindings.append(binding)
@@ -2171,6 +2357,28 @@ class GatewayControlPlaneService:
         runtime: Mapping[str, Any],
     ) -> ModelTarget:
         brand = BrandKey(provider["brand_key"])
+        profile = None
+        if model.operation == "image_generation":
+            if brand is not BrandKey.MICROSOFT_FOUNDRY:
+                raise ControlPlaneConflictError(
+                    "Image generation requires a Microsoft Foundry connection"
+                )
+            if model.image_configuration is None:
+                raise ControlPlaneConflictError("Image generation requires explicit configuration")
+            if any(
+                rate is None
+                for rate in (
+                    model.input_cost_per_million,
+                    model.cached_cost_per_million,
+                    model.output_cost_per_million,
+                )
+            ):
+                raise ControlPlaneConflictError(
+                    "Image generation requires explicit text, cached-text and image-output prices"
+                )
+            profile = create_image_profile(
+                model.image_configuration, (model.deployment_name or "").strip()
+            )
         if brand is BrandKey.MICROSOFT_FOUNDRY:
             if model.deployment_name is None:
                 raise ControlPlaneConflictError(
@@ -2210,7 +2418,7 @@ class GatewayControlPlaneService:
                 display_name=f"{deployment} · Microsoft Foundry",
                 upstream_model_id=deployment,
                 family_key=family,
-                capabilities=derived_capabilities,
+                capabilities=["image_generation"] if profile is not None else derived_capabilities,
                 context_window=model.context_window,
                 input_cost_per_million=model.input_cost_per_million,
                 output_cost_per_million=model.output_cost_per_million,
@@ -2218,6 +2426,7 @@ class GatewayControlPlaneService:
                 cache_write_cost_per_million=model.cache_write_cost_per_million,
                 allowed_roles=["owner", "admin", "member"],
                 assignment_required=True,
+                image_profile=profile,
             )
         assert model.model_key is not None
         assert model.display_name is not None
@@ -2240,12 +2449,32 @@ class GatewayControlPlaneService:
             else ["chat", "streaming"]
         )
         return ModelTarget(
-            **model.model_dump(exclude={"deployment_name"}),
+            **model.model_dump(exclude={"deployment_name", "operation", "image_configuration"}),
             family_key=family,
             capabilities=capabilities,
             allowed_roles=["owner", "admin", "member"],
             assignment_required=True,
         )
+
+    @staticmethod
+    def _image_backend_url(runtime: Mapping[str, Any]) -> HttpUrl:
+        config = dict(runtime.get("config") or {})
+        endpoint = urlsplit(
+            str(
+                config.get("inference_endpoint")
+                or config.get("project_endpoint")
+                or runtime.get("backend_url")
+                or ""
+            )
+        )
+        host = (endpoint.hostname or "").casefold()
+        if endpoint.scheme != "https" or endpoint.username or endpoint.port:
+            raise ControlPlaneConflictError("Image generation requires a Foundry HTTPS endpoint")
+        if host.endswith(".services.ai.azure.com"):
+            host = host.removesuffix(".services.ai.azure.com") + ".openai.azure.com"
+        if not host.endswith(".openai.azure.com"):
+            raise ControlPlaneConflictError("Image generation requires an Azure OpenAI endpoint")
+        return HttpUrl("https://" + host)
 
     @staticmethod
     def _model_binding_runtime(
@@ -2254,6 +2483,15 @@ class GatewayControlPlaneService:
         model: ModelTarget,
     ) -> dict[str, Any]:
         result = dict(runtime)
+        if "image_generation" in model.capabilities:
+            profile = validate_image_profile(model.image_profile)
+            result.update(
+                api_format=ApiFormat.OPENAI_IMAGES,
+                backend_url=str(GatewayControlPlaneService._image_backend_url(runtime)).rstrip("/"),
+                backend_path=profile.backend_path,
+                streaming_mode=StreamingMode.BUFFERED,
+            )
+            return result
         if (
             BrandKey(provider["brand_key"]) is not BrandKey.MICROSOFT_FOUNDRY
             or model.family_key is not ModelFamilyKey.CLAUDE
@@ -2409,6 +2647,8 @@ class GatewayControlPlaneService:
     def _model_api_format(
         model: Mapping[str, Any], runtime: Mapping[str, Any]
     ) -> ApiFormat:
+        if "image_generation" in (model.get("capabilities") or []):
+            return ApiFormat.OPENAI_IMAGES
         if (
             runtime.get("brand_key") in {
                 BrandKey.MICROSOFT_FOUNDRY,

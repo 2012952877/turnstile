@@ -42,6 +42,16 @@ Connection registration does not accept an API key or publish a model. Add the f
 
 Compatible Chat Completions connections use `max_tokens`; Foundry keeps its configured `max_completion_tokens` behavior. Measured cache usage prefers `prompt_tokens_details.cached_tokens`, including explicit zero, and falls back to top-level `cached_tokens` only when the nested measurement is absent. Provider display metadata does not change routing, credentials, or pricing. Configure actual model rates explicitly.
 
+### Governed image generation
+
+`IMAGE_GENERATION_ENABLED` defaults to `false`. Enable it only after the API, Control-plane package, required migrations and image-ready APIM parent policy have been deployed and verified together. The Registry advertises `image_generation_supported` and `image_configuration_schema_version: 4`; an older backend must not be treated as image-capable.
+
+`IMAGE_GENERATION_DEFAULTS` is a JSON object containing `max_request_bytes` (24576), `max_response_bytes` (16777216), `output_reservation_tokens` (8192), and `timeout_seconds` (180). Request/response limits cannot exceed 16 MiB, timeout cannot exceed 240 seconds, and request bytes plus output reservation must fit a signed 32-bit counter. The parent policy burst cap must cover that sum. These are transport and accounting limits, not provider size, quality or format defaults.
+
+Publish a model on an existing Foundry Connection with `model.operation: image_generation`, an existing deployment name, and explicit nonnegative text-input, cached-text and image-output prices. Zero is an explicit free rate; an absent rate is not zero. Image models cannot be chat defaults or backend Pool members. Parameter names and values are provider-owned JSON; only one image and non-streaming responses are supported. Registry metadata edits cannot change the immutable profile. New limits use the normal route-reconciliation publication with an `image_configurations` model-key map.
+
+Image previews accept validated PNG, JPEG and WebP only. The backend does not store prompts or image bytes. Unknown post-dispatch usage remains reserved, and the caller and publication worker do not automatically repeat a paid image request. An Owner may explicitly authorize a bounded replacement publication probe with `authorize_image_probes: true`; inspect the previous billable attempt first.
+
 ### Pool conversation affinity
 
 Session affinity is opt-in and off by default. The Registry API advertises `backend_pool_session_affinity_supported`; older backends receive no affinity field. When enabled, APIM uses a model-scoped session cookie to prefer the same eligible Pool member. Clients must retain cookies separately per conversation. This is not physical-region pinning and does not change weights, priorities, circuit breakers or failover.
@@ -71,6 +81,12 @@ The existing Telemetry timer uses managed identity and the configured `LOG_ANALY
 | `LEDGER_RESERVATION_FINALIZATION_LAG_HOURS` | Grace before conservative upper-bound finalization; default 24, range 1-168, and must exceed the recovery lag. |
 
 When reconciliation is disabled or the workspace is absent, unknown reservations stay pending and charged. Failed, partial or malformed log queries cannot authorize finalization. A successful complete query with no conclusive evidence after the grace period ends Pending status but retains the original reserved amount. Exact evidence can later replace that amount. Neither a timeout nor HTTP query failure releases budget.
+
+## Versioned budget evidence
+
+Migration `006_versioned_budget_evidence` creates the version-2 policy with `effective_at = NULL`. Its only supported change is one separately authorized future UTC cutoff. It cannot be scheduled retroactively, cleared or moved. This setting is independent of image generation. Requests admitted before the cutoff retain the prior rules without historical reassessment.
+
+For new requests, complete formal usage outranks a complete application acknowledgement, which outranks complete diagnostic recovery. Equal-rank evidence retains first receipt; conflicts remain visible in `budget_evidence_conflicts` and formal discrepancies in `apim_usage_discrepancy`. Error status alone does not measure zero. Admission fixes the UTC month and does not rewrite the original request timestamp, price or cache data. The existing single Application ledger snapshot remains atomic; raw activity queries do not synthesize calls from recovery or acknowledgement records.
 
 ## Runtime attribution
 

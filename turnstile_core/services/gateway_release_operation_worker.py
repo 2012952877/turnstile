@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 
@@ -19,10 +19,13 @@ from ..integrations.apim_control_plane import (
     PolicyCompilationError,
     RetryablePublicationError,
 )
+from ..integrations.apim_policy_components import validate_parent_readback
 from ..persistence.repository import QueryRepository
 from ..security import CredentialCipher
 from .application_access import ApplicationAccessService
 from .control_plane import ControlPlaneConflictError, GatewayControlPlaneService
+from .probe_journal import PersistentProbeJournal
+from .worker_lease import WorkerLease
 
 
 class GatewayReleaseOperationWorker:
@@ -37,11 +40,13 @@ class GatewayReleaseOperationWorker:
         application_default_tokens_per_minute: int = 100_000,
         cipher: CredentialCipher | None = None,
         application_projector: Callable[[UUID, UUID], None] | None = None,
+        parent_policy: str | None = None,
     ) -> None:
         self._repository = repository
         self._client = client
         self._cipher = cipher
         self._application_projector = application_projector
+        self._parent_policy = parent_policy
         self._service = GatewayControlPlaneService(
             repository,
             retention_policy=retention_policy,
@@ -56,6 +61,7 @@ class GatewayReleaseOperationWorker:
     def run_once(
         self, worker_id: str, lease_seconds: int = 180, max_attempts: int = 30
     ) -> GatewayReleaseOperation | None:
+        worker_id = f"{worker_id}:{uuid4().hex}"
         row = self._repository.claim_gateway_release_operation(
             worker_id, lease_seconds
         )
@@ -69,7 +75,13 @@ class GatewayReleaseOperationWorker:
             self._handle_attempt_exhaustion(row, worker_id)
             return self._service.release_operation(operation_id)
         try:
-            self._advance(row, worker_id)
+            with WorkerLease(
+                lambda: self._repository.renew_gateway_release_operation_lease(
+                    operation_id, worker_id, lease_seconds
+                ),
+                lease_seconds,
+            ):
+                self._advance(row, worker_id)
         except (RetryablePublicationError, httpx.TransportError) as error:
             self._retry(row, error, worker_id)
         except Exception as error:
@@ -310,7 +322,7 @@ class GatewayReleaseOperationWorker:
             return
         if status == "preflight_probing":
             target_revision = self._revision(target)
-            self._client.probe_revision(target_revision, target)
+            self._probe_release(row, target, worker_id)
             self._transition(
                 row,
                 "promoting",
@@ -320,6 +332,7 @@ class GatewayReleaseOperationWorker:
             return
         if status == "promoting":
             target_revision = self._revision(target)
+            self._validate_rollback_parent(target)
             prior_revision = self._revision(prior)
             observed = self._client.current_revision()
             if observed != prior_revision:
@@ -351,13 +364,59 @@ class GatewayReleaseOperationWorker:
             return
         if status == "post_promotion_probing":
             target_revision = self._revision(target)
-            self._client.probe_revision(target_revision, target)
+            self._probe_release(row, target, worker_id)
             self._repository.complete_gateway_release_rollback(
                 UUID(str(row["id"])), target.id, prior.id, worker_id
             )
             return
         if status == "restoring":
             self._restore(row, prior, worker_id)
+
+    def _validate_rollback_parent(self, publication: GatewayPublication) -> None:
+        profiles = [
+            binding.model.image_profile
+            for binding in publication.desired_spec.bindings
+            if binding.model.image_profile is not None
+        ]
+        if not profiles and not publication.resource_manifest.get("images_generations_operation"):
+            return
+        if self._parent_policy is None:
+            raise PolicyCompilationError(
+                "Image rollback requires the canonical parent policy contract"
+            )
+        validate_parent_readback(
+            self._client.revision_api_policy(self._revision(publication)),
+            self._parent_policy,
+            profiles,
+            expected_contract=publication.resource_manifest.get("parent_policy_contract_sha256"),
+            expected_raw=publication.resource_manifest.get("parent_policy_sha256"),
+        )
+
+    def _probe_release(
+        self,
+        row: Mapping[str, Any],
+        publication: GatewayPublication,
+        worker_id: str,
+    ) -> None:
+        self._validate_rollback_parent(publication)
+        if not any(binding.model.image_profile for binding in publication.desired_spec.bindings):
+            self._client.probe_revision(self._revision(publication), publication)
+            return
+        operation_id = UUID(str(row["id"]))
+
+        def heartbeat() -> None:
+            if not self._repository.renew_gateway_release_operation_lease(
+                operation_id, worker_id, 180
+            ):
+                raise RetryablePublicationError("Worker lease is no longer owned")
+
+        journal = PersistentProbeJournal(
+            self._repository,
+            f"release-operation:{operation_id}:{row['status']}",
+            operation_id,
+            heartbeat=heartbeat,
+        )
+        self._client.probe_revision(self._revision(publication), publication, journal=journal)
 
     def _advance_gc_plan(
         self, row: Mapping[str, Any], worker_id: str
@@ -403,6 +462,7 @@ class GatewayReleaseOperationWorker:
         worker_id: str,
     ) -> None:
         prior_revision = self._revision(prior)
+        self._validate_rollback_parent(prior)
         if self._client.current_revision() != prior_revision:
             self._client.promote_revision(
                 prior_revision, f"restore-{row['id']}"
@@ -411,7 +471,7 @@ class GatewayReleaseOperationWorker:
             raise RetryablePublicationError(
                 "APIM did not report the restored revision as current"
             )
-        self._client.probe_revision(prior_revision, prior)
+        self._probe_release(row, prior, worker_id)
         self._transition(
             row,
             "restored",

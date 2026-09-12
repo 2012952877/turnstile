@@ -7,7 +7,12 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from ..domain.application_access import GatewayApplicationLedgerState, UsageApplicationAttribution
-from ..domain.ledger import BudgetReservationFinalization, LedgerScopeType
+from ..domain.billable_requests import BillableRequestAttempt, BillableRequestPlan
+from ..domain.ledger import (
+    BudgetReservationAdmission,
+    BudgetReservationFinalization,
+    LedgerScopeType,
+)
 from ..domain.models import (
     ApimCacheReadBucket,
     AuditFindingUpdate,
@@ -37,6 +42,60 @@ class OpsDbProxy(Protocol):
 
 
 class QueryRepository(ABC):
+    @abstractmethod
+    def renew_gateway_publication_lease(
+        self,
+        publication_id: UUID,
+        worker_id: str,
+        lease_seconds: int,
+    ) -> bool: ...
+
+    @abstractmethod
+    def renew_gateway_release_operation_lease(
+        self,
+        operation_id: UUID,
+        worker_id: str,
+        lease_seconds: int,
+    ) -> bool: ...
+
+    @abstractmethod
+    def begin_billable_request(self, plan: BillableRequestPlan) -> BillableRequestAttempt: ...
+
+    @abstractmethod
+    def finish_billable_request(
+        self,
+        request_id: UUID,
+        *,
+        actual_tokens: int | None,
+        correlation_id: str | None,
+        evidence: dict[str, Any],
+    ) -> None: ...
+
+    @abstractmethod
+    def pending_billable_requests(self) -> list[dict[str, Any]]: ...
+
+    @abstractmethod
+    def settled_billable_requests(
+        self,
+        request_ids: list[str],
+        scope_type: str,
+        scope_id: str | None,
+    ) -> set[str]: ...
+
+    @abstractmethod
+    def budget_evidence_effective_at(self) -> datetime | None: ...
+
+    @abstractmethod
+    def register_budget_reservations(self, items: Sequence[BudgetReservationAdmission]) -> None: ...
+
+    @abstractmethod
+    def reservation_evidence_correlations(
+        self,
+        scope_type: str,
+        scope_id: str,
+        request_ids: Sequence[str],
+    ) -> Mapping[str, str]: ...
+
     @abstractmethod
     def write_token_usage(
         self,
@@ -456,6 +515,8 @@ class QueryRepository(ABC):
         credential_ciphertext: bytes | None,
         desired_spec: Mapping[str, Any] | None = None,
         desired_spec_sha256: str | None = None,
+        *,
+        image_probe_authorization: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]: ...
 
     @abstractmethod

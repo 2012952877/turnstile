@@ -8,10 +8,11 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import httpx
 
+from ..domain.images import ImageInvocationRequest
 from ..domain.runtime_models import (
     GatewayKind,
     HealthStatus,
@@ -22,6 +23,9 @@ from ..domain.runtime_models import (
     ToolCall,
 )
 
+if TYPE_CHECKING:
+    from .image_generation import ImageGatewayResult
+
 
 class GatewayInvocationError(RuntimeError):
     def __init__(
@@ -30,10 +34,12 @@ class GatewayInvocationError(RuntimeError):
         *,
         status_code: int = 502,
         headers: dict[str, str] | None = None,
+        usage: InvocationUsage | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.headers = headers or {}
+        self.usage = usage
 
 
 def _http_error_detail(response: httpx.Response) -> str:
@@ -89,10 +95,11 @@ def _openai_usage(raw_usage: Mapping[str, Any]) -> InvocationUsage:
     details = raw_usage.get("prompt_tokens_details")
     prompt_details = details if isinstance(details, Mapping) else {}
     nested_cache_read = prompt_details.get("cached_tokens")
-    cache_read = int(
-        (raw_usage.get("cached_tokens", 0) if nested_cache_read is None else nested_cache_read)
-        or 0
-    )
+    cache_read = raw_usage.get("cached_tokens") if nested_cache_read is None else nested_cache_read
+    if cache_read is None:
+        cache_read = 0
+    if type(cache_read) is not int or cache_read < 0:
+        raise ValueError("Cached token usage must be a nonnegative integer or null")
     cache_write = int(prompt_details.get("cache_write_tokens", 0) or 0)
     cached = cache_read + cache_write
     prompt = int(raw_usage.get("prompt_tokens", 0) or 0)
@@ -223,7 +230,9 @@ class OpenAICompatibleGatewayAdapter:
             headers[str(config.get("header_name", "api-key"))] = str(credential)
         return headers
 
-    def _headers(self, request: ModelInvocationRequest, route: dict[str, Any]) -> dict[str, str]:
+    def _headers(
+        self, request: ModelInvocationRequest | ImageInvocationRequest, route: dict[str, Any]
+    ) -> dict[str, str]:
         metadata = request.metadata
         return {
             **self._auth_headers(route),
@@ -567,6 +576,13 @@ class DirectGatewayAdapter(OpenAICompatibleGatewayAdapter):
 class GatewayRouter:
     def __init__(self, http_client: httpx.Client | None = None) -> None:
         self._http_client = http_client
+
+    def generate_image(
+        self, request: ImageInvocationRequest, route: dict[str, Any]
+    ) -> ImageGatewayResult:
+        from .image_generation import OpenAIImageGatewayAdapter
+
+        return OpenAIImageGatewayAdapter(self._http_client).generate(request, route)
 
     def adapter(self, route: dict[str, Any]) -> GatewayAdapter:
         runtime_kind = RuntimeKind(route["runtime_kind"])

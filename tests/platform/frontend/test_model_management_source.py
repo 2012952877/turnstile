@@ -58,7 +58,7 @@ def test_model_editing_uses_the_dedicated_dialog_without_generic_identity_inputs
     assert "modelEditPayload(model, draft)" in dialog
     assert "if (busy || !dirty || validation) return" in dialog
     assert "if (!busy) onClose()" in dialog
-    assert "disabled={busy || !dirty || Boolean(validation)}" in dialog
+    assert "disabled={busy || !dirty || Boolean(validation) || imagePriceMissing}" in dialog
     assert 'role="alert">{message}' in dialog
 
 

@@ -9,9 +9,12 @@ from uuid import UUID
 
 from pydantic import Field, HttpUrl, SecretStr, model_validator
 
+from .image_profiles import ImageGenerationLimits, ImageGenerationProfile
 from .models import StrictModel
 
-ModelCapability = Literal["chat", "tools", "vision", "reasoning", "streaming", "embeddings"]
+ModelCapability = Literal[
+    "chat", "tools", "vision", "reasoning", "streaming", "embeddings", "image_generation"
+]
 FOUNDRY_INFERENCE_RESOURCE = "https://ai.azure.com"
 FOUNDRY_INFERENCE_ROLE_ID = "a97b65f3-24c7-4388-baec-2e87135dc908"
 
@@ -292,12 +295,22 @@ class ManagedModelWrite(StrictModel):
     cache_write_cost_per_million: float | None = Field(default=None, ge=0)
     allowed_roles: list[str] = Field(default_factory=lambda: ["owner", "admin", "member"])
 
+    @model_validator(mode="after")
+    def validate_image_model(self) -> ManagedModelWrite:
+        if "image_generation" in self.capabilities:
+            if set(self.capabilities) != {"image_generation"}:
+                raise ValueError("Image generation cannot declare text or streaming capabilities")
+            if self.is_default:
+                raise ValueError("An image model cannot be the default chat model")
+        return self
+
 
 class ManagedModel(ManagedModelWrite):
     id: UUID
     provider_name: str
     runtime_name: str
     publication_id: UUID | None = None
+    image_profile: ImageGenerationProfile | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -308,6 +321,9 @@ class RegistryResponse(StrictModel):
     runtimes: list[Runtime]
     models: list[ManagedModel]
     backend_pool_session_affinity_supported: bool = False
+    image_generation_supported: bool = False
+    image_configuration_defaults: ImageGenerationLimits | None = None
+    image_configuration_schema_version: Literal[4] = 4
 
 
 class RuntimeHealth(StrictModel):

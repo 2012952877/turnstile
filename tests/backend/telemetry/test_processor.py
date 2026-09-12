@@ -86,6 +86,24 @@ def test_calculate_et() -> None:
     assert calculate_et(1000, 200, 100, 0.5) == 710
 
 
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"input_tokens": True},
+        {"input_tokens": "1000"},
+        {"input_tokens": 1000.0},
+        {"cache_write_tokens": 201},
+        {"tokens_consumed": 9},
+    ],
+)
+def test_invalid_usage_cannot_claim_exact_evidence(fields: dict[str, object]) -> None:
+    processor = UsageProcessor(RecordingRepository(), CoefficientResolver({"default": 1.0}))
+    record = processor.normalize(event(**fields))
+    assert record is not None
+    assert record.estimated
+    assert record.ingest_error == "usage_validation_failed"
+
+
 def test_coefficient_snapshot_is_written() -> None:
     repository = RecordingRepository()
     processor = UsageProcessor(repository, CoefficientResolver({"aoai/gpt-4.1-mini": 0.35}))
@@ -280,8 +298,17 @@ def test_postgres_reuses_attempt_identity_for_usage_and_attribution(
     assert record is not None
     repository = object.__new__(PostgreSqlOpsDbProxy)
     connection = MagicMock()
-    connection.execute.return_value.fetchone.return_value = (
-        {"id": existing_id} if existing_id is not None else None
+    connection.execute.return_value.fetchall.return_value = (
+        [
+            {
+                "id": existing_id,
+                "correlation_id": record.correlation_id,
+                "usage_domain": "apim",
+                "user_id": record.user_id,
+            }
+        ]
+        if existing_id is not None
+        else []
     )
     application = cast(UsageApplicationAttribution, sentinel.application)
     expected_id = existing_id or record.id
@@ -293,10 +320,11 @@ def test_postgres_reuses_attempt_identity_for_usage_and_attribution(
         repository.write_token_usage(record, application)
         attribute.assert_called_once_with(connection, expected_id, application)
 
-    assert connection.execute.call_count == 2
-    lookup, write = connection.execute.call_args_list
-    assert "WHERE correlation_id = %s AND usage_domain = 'apim'" in lookup.args[0]
-    assert lookup.args[1] == (record.correlation_id,)
+    assert connection.execute.call_count == 3
+    lock, lookup, write = connection.execute.call_args_list
+    assert lock.args[1] == (f"apim-attempt:{record.correlation_id}",)
+    assert "LIMIT 2 FOR UPDATE" in lookup.args[0]
+    assert lookup.args[1] == (record.correlation_id, record.id)
     assert write.args[1]["id"] == expected_id
     assert write.args[1]["request_id"] == record.request_id
     assert write.args[1]["correlation_id"] == record.correlation_id
@@ -371,7 +399,14 @@ def test_postgres_runtime_authority_is_a_transient_bound_parameter(authoritative
     repository = object.__new__(PostgreSqlOpsDbProxy)
     with patch.object(repository, "_connection") as connect:
         connection = connect.return_value.__enter__.return_value
-        connection.execute.return_value.fetchone.return_value = {"id": "legacy-row"}
+        connection.execute.return_value.fetchall.return_value = [
+            {
+                "id": "legacy-row",
+                "correlation_id": record.correlation_id,
+                "usage_domain": "apim",
+                "user_id": record.user_id,
+            }
+        ]
         repository.write_token_usage(record)
     statement, values = connection.execute.call_args.args
     assert values["id"] == "legacy-row"
@@ -381,7 +416,55 @@ def test_postgres_runtime_authority_is_a_transient_bound_parameter(authoritative
     assert "runtime_authoritative" not in statement.split(") VALUES", 1)[0]
     assert "existing.runtime IS DISTINCT FROM EXCLUDED.runtime" in statement
     assert "input_tokens = CASE WHEN existing.estimated" in statement
-    assert connection.execute.call_count == 2
+    assert connection.execute.call_count == 3
+
+
+@pytest.mark.parametrize("failure", ["ambiguous", "identity", "attribution"])
+def test_identity_failure_preserves_usage_attribution_and_receipt(failure: str) -> None:
+    repository = InMemoryRepository()
+    processor = UsageProcessor(repository, CoefficientResolver({"default": 1.0}))
+    record = processor.normalize(event(correlation_id="conflict", estimated=True))
+    assert record is not None
+    attribution = UsageApplicationAttribution(
+        application_id=GATEWAY_ID,
+        application_subscription_id=GATEWAY_ID,
+        application_name_snapshot="Unit",
+        apim_subscription_id="unit",
+        actor_type="service",
+        actor_id="service:unit",
+    )
+    repository.usage_records.append(record)
+    repository.usage_application_attributions[record.id] = attribution
+    incoming = record.model_copy(update={"estimated": False, "input_tokens": 90})
+    if failure == "ambiguous":
+        repository.usage_records.append(record.model_copy(update={"id": "duplicate"}))
+    elif failure == "identity":
+        incoming = incoming.model_copy(update={"user_id": "other-person"})
+    else:
+        attribution = attribution.model_copy(update={"application_id": UUID(int=2)})
+    before = (list(repository.usage_records), dict(repository.usage_application_attributions))
+    with pytest.raises(ValueError):
+        repository.write_token_usage(incoming, attribution)
+    assert (repository.usage_records, repository.usage_application_attributions) == before
+    assert repository.budget_evidence_received_at == {}
+    assert repository.budget_evidence_conflicts == set()
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_receipt_time_is_registered_once_after_identity_validation(legacy: bool) -> None:
+    repository = InMemoryRepository()
+    processor = UsageProcessor(repository, CoefficientResolver({"default": 1.0}))
+    record = processor.normalize(event(correlation_id="receipt"))
+    assert record is not None
+    initial = record.model_copy(update={"id": "legacy"}) if legacy else record
+    received = datetime(2026, 9, 12, 12, tzinfo=UTC)
+    with patch("turnstile_core.persistence.in_memory.datetime", wraps=datetime) as clock:
+        clock.now.return_value = received
+        repository.write_token_usage(initial)
+        clock.now.return_value = datetime(2026, 9, 12, 13, tzinfo=UTC)
+        repository.write_token_usage(record)
+    assert repository.budget_evidence_received_at == {"usage:" + initial.id: received}
+    assert repository.usage_records == [initial]
 
 
 def test_copilot_identity_and_missing_correlation_fallbacks_are_preserved() -> None:

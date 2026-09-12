@@ -5,7 +5,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
-from ..domain.control_plane import GatewayPublication, publication_materialized_named_values
+from ..domain.control_plane import (
+    GatewayPublication,
+    publication_materialized_named_values,
+    publication_model_id,
+)
 from .repository_support import _activation_runtime_config
 
 
@@ -182,6 +186,8 @@ class InMemoryPublicationRepositoryMixin:
         credential_ciphertext: bytes | None,
         desired_spec: Mapping[str, Any] | None = None,
         desired_spec_sha256: str | None = None,
+        *,
+        image_probe_authorization: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         publication = self._require(
             self.gateway_publications, publication_id, "publication"
@@ -215,11 +221,19 @@ class InMemoryPublicationRepositoryMixin:
                 for item in self.gateway_publication_audit
             ),
         )
-        preserved_manifest = (
-            {"named_values": materialized}
-            if credential_ciphertext is None and materialized
-            else {}
+        preserved_manifest: dict[str, Any] = (
+            {"named_values": materialized} if credential_ciphertext is None and materialized else {}
         )
+        authorization = image_probe_authorization or publication["resource_manifest"].get(
+            "image_probe_authorization"
+        )
+        if authorization is not None:
+            preserved_manifest["image_probe_authorization"] = dict(authorization)
+        generation = publication["resource_manifest"].get("credential_generation")
+        if credential_ciphertext is not None:
+            preserved_manifest["credential_generation"] = str(uuid4())
+        elif generation is not None:
+            preserved_manifest["credential_generation"] = generation
         publication.update(
             status="queued",
             apim_revision=None,
@@ -544,6 +558,8 @@ class InMemoryPublicationRepositoryMixin:
             row is None
             or row["status"] != expected_status
             or row["lease_owner"] != actor
+            or row["lease_expires_at"] is None
+            or row["lease_expires_at"] <= datetime.now(UTC)
         ):
             return None
         now = datetime.now(UTC)
@@ -598,6 +614,8 @@ class InMemoryPublicationRepositoryMixin:
         if (
             operation["status"] != "post_promotion_probing"
             or operation["lease_owner"] != actor
+            or operation["lease_expires_at"] is None
+            or operation["lease_expires_at"] <= datetime.now(UTC)
         ):
             raise ValueError("Rollback operation is not ready to complete")
         target = self._require(
@@ -839,6 +857,22 @@ class InMemoryPublicationRepositoryMixin:
         publication = self._find(self.gateway_publications, publication_id)
         if publication is None or publication["status"] != expected_status:
             return None
+        outbox = next(
+            (
+                item
+                for item in self.gateway_publication_outbox
+                if item["publication_id"] == publication_id
+            ),
+            None,
+        )
+        if expected_status not in {"failed", "awaiting_authorization"} and (
+            outbox is None
+            or outbox["status"] != "leased"
+            or outbox["lease_owner"] != actor
+            or outbox["lease_expires_at"] is None
+            or outbox["lease_expires_at"] <= datetime.now(UTC)
+        ):
+            return None
         publication.update(updates)
         publication["status"] = status
         publication["updated_at"] = datetime.now(UTC)
@@ -872,6 +906,52 @@ class InMemoryPublicationRepositoryMixin:
         )
         return publication
 
+    def renew_gateway_publication_lease(
+        self,
+        publication_id: UUID,
+        worker_id: str,
+        lease_seconds: int,
+    ) -> bool:
+        now = datetime.now(UTC)
+        row = next(
+            (
+                item
+                for item in self.gateway_publication_outbox
+                if item["publication_id"] == publication_id
+                and item["status"] == "leased"
+                and item["lease_owner"] == worker_id
+                and item["lease_expires_at"] > now
+            ),
+            None,
+        )
+        if row is None:
+            return False
+        row.update(lease_expires_at=now + timedelta(seconds=lease_seconds), updated_at=now)
+        return True
+
+    def renew_gateway_release_operation_lease(
+        self,
+        operation_id: UUID,
+        worker_id: str,
+        lease_seconds: int,
+    ) -> bool:
+        now = datetime.now(UTC)
+        row = next(
+            (
+                item
+                for item in self.gateway_release_operations
+                if item["id"] == operation_id
+                and item.get("lease_owner") == worker_id
+                and item.get("lease_expires_at") is not None
+                and item["lease_expires_at"] > now
+            ),
+            None,
+        )
+        if row is None:
+            return False
+        row.update(lease_expires_at=now + timedelta(seconds=lease_seconds), updated_at=now)
+        return True
+
     def activate_gateway_publication(
         self, publication_id: UUID, actor: str
     ) -> dict[str, Any]:
@@ -880,6 +960,24 @@ class InMemoryPublicationRepositoryMixin:
         )
         if publication["status"] == "active":
             return publication
+        outbox = next(
+            (
+                item
+                for item in self.gateway_publication_outbox
+                if item["publication_id"] == publication_id
+            ),
+            None,
+        )
+        if (
+            outbox is None
+            or outbox["status"] != "leased"
+            or outbox["lease_owner"] != actor
+            or (
+                outbox["lease_expires_at"] is None
+                or outbox["lease_expires_at"] <= datetime.now(UTC)
+            )
+        ):
+            raise ValueError("Publication activation requires the current worker lease")
         if publication["status"] != "promoting":
             raise ValueError("Only a promoted gateway publication can be activated")
         if publication["publication_kind"] == "model_remove":
@@ -1001,8 +1099,11 @@ class InMemoryPublicationRepositoryMixin:
                     item
                     for item in self.runtimes
                     if item.get("gateway_profile_id") == publication["gateway_profile_id"]
-                    and str(item["name"]).casefold()
-                    == str(binding["runtime_name"]).casefold()
+                    and (
+                        str(item["id"]) == str(binding["runtime_id"])
+                        if binding.get("runtime_id") is not None
+                        else str(item["name"]).casefold() == str(binding["runtime_name"]).casefold()
+                    )
                 ),
                 None,
             )
@@ -1091,6 +1192,7 @@ class InMemoryPublicationRepositoryMixin:
         model = self.create_registry_item(
             "model",
             {
+                "id": publication_model_id(publication_id, model_spec["model_key"]),
                 "provider_id": provider["id"],
                 "runtime_id": runtime["id"],
                 "model_key": model_spec["model_key"],
@@ -1165,6 +1267,8 @@ class InMemoryPublicationRepositoryMixin:
         return {
             "model_id": model["id"],
             "model_key": model["model_key"],
+            "model_capabilities": list(model.get("capabilities") or []),
+            "image_profile": self._published_image_profile(model),
             "model_family_key": model.get("family_key", "generic"),
             "upstream_model_id": model.get("upstream_model_id") or model["model_key"],
             "display_name": model["display_name"],
@@ -1193,6 +1297,9 @@ class InMemoryPublicationRepositoryMixin:
             "gateway_credential_ciphertext": gateway["credential_ciphertext"] if gateway else None,
             "gateway_config": gateway["config"] if gateway else {},
         }
+
+    def _published_image_profile(self, model: Mapping[str, Any]) -> object:
+        raise NotImplementedError
 
     def update_runtime_health(
         self, runtime_id: UUID, status: str, message: str, checked_at: datetime

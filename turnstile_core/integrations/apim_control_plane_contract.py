@@ -1,19 +1,26 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 from uuid import UUID
 
 from ..domain.application_access import (
     GatewayApplicationDiscovery,
     GatewayApplicationSubscriptionProvisionSpec,
 )
-from ..domain.control_plane import GatewayPublication, GatewayReleaseDependencies
+from ..domain.billable_requests import BillableRequestOutcome
+from ..domain.control_plane import (
+    GatewayModelBinding,
+    GatewayPublication,
+    GatewayReleaseDependencies,
+)
 
 
 class PolicyCompilationError(ValueError):
-    pass
+    def __init__(self, message: str, *, billable_outcome: BillableRequestOutcome | None = None):
+        super().__init__(message)
+        self.billable_outcome = billable_outcome
 
 
 class RetryablePublicationError(RuntimeError):
@@ -21,7 +28,21 @@ class RetryablePublicationError(RuntimeError):
 
 
 class AuthorizationRequiredError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, billable_outcome: BillableRequestOutcome | None = None):
+        super().__init__(message)
+        self.billable_outcome = billable_outcome
+
+
+class ImageProbeJournal(Protocol):
+    def heartbeat(self) -> None: ...
+
+    def run(
+        self,
+        binding: GatewayModelBinding,
+        revision: str,
+        body: Mapping[str, Any],
+        send: Callable[[str, str], dict[str, Any]],
+    ) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -69,6 +90,14 @@ class NamedValueResource:
 
 
 @dataclass(frozen=True)
+class OperationResource:
+    id: str
+    display_name: str
+    method: Literal["GET", "POST"]
+    path: str
+
+
+@dataclass(frozen=True)
 class CompiledGatewayRelease:
     chat_completions_policy: str
     responses_policy: str
@@ -79,6 +108,8 @@ class CompiledGatewayRelease:
     policy_sha256: str
     backends: tuple[BackendResource, ...]
     named_values: tuple[NamedValueResource, ...]
+    images_generations_policy: str | None = None
+    operations: tuple[OperationResource, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -109,15 +140,25 @@ class ApimPublisherClient(Protocol):
 
     def put_api_policy(self, revision: str, policy: str) -> None: ...
 
+    def ensure_operation(self, revision: str, operation: OperationResource) -> None: ...
+
     def put_operation_policy(self, revision: str, operation: str, policy: str) -> None: ...
 
-    def probe_revision(self, revision: str, publication: GatewayPublication) -> None: ...
+    def probe_revision(
+        self,
+        revision: str,
+        publication: GatewayPublication,
+        *,
+        journal: ImageProbeJournal | None = None,
+    ) -> None: ...
 
     def promote_revision(self, revision: str, release_name: str) -> None: ...
 
     def current_revision(self) -> str | None: ...
 
     def current_api_policy(self) -> tuple[str, str]: ...
+
+    def revision_api_policy(self, revision: str) -> str: ...
 
     def inspect_revision_dependencies(
         self, publication: GatewayPublication

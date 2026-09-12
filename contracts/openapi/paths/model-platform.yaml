@@ -1,4 +1,50 @@
 paths:
+  /api/v1/model-gateway/images/generations:
+    post:
+      tags: [Model Gateway]
+      operationId: generateImage
+      summary: Generate one image through an assigned APIM model
+      description: >-
+        Requires an authenticated session and the shared write-origin check. The backend
+        binds the caller or an authorized test identity, checks assignment and quota,
+        records a billable attempt before dispatch, and performs no automatic paid retry.
+        Prompt, optional provider JSON fields and image bytes are not persisted.
+      security:
+      - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/ImageInvocationRequest
+      responses:
+        '200':
+          description: One validated image and nullable measured usage
+          headers:
+            Cache-Control:
+              schema: {type: string, const: no-store}
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/ImageInvocationResponse
+        '401':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '422':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '429':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '502':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '503':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '504':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
   /api/v1/model-management/connections:
     post:
       tags:
@@ -858,6 +904,12 @@ paths:
         schema:
           type: string
           format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/GatewayReconcileRequest
       responses:
         '202':
           description: Route reconciliation publication queued

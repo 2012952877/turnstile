@@ -1,4 +1,134 @@
 schemas:
+  ImageGenerationLimits:
+    type: object
+    additionalProperties: false
+    required: [max_request_bytes, max_response_bytes, output_reservation_tokens, timeout_seconds]
+    description: Immutable published transport and reservation limits, not provider parameter defaults.
+    properties:
+      max_request_bytes: {type: integer, minimum: 1, maximum: 16777216}
+      max_response_bytes: {type: integer, minimum: 1, maximum: 16777216}
+      output_reservation_tokens: {type: integer, minimum: 1, maximum: 2147483647}
+      timeout_seconds: {type: integer, minimum: 1, maximum: 240}
+  ImageGenerationProfile:
+    type: object
+    additionalProperties: false
+    required: [id, version, display_name, provider_kind, provider_model, protocol, api_version,
+      backend_path, public_path, usage_format, max_request_bytes, max_response_bytes,
+      output_reservation_tokens, timeout_seconds]
+    description: Content-addressed v4 snapshot attached to an effective publication, not mutable registry metadata.
+    properties:
+      id: {type: string, pattern: '^sha256:[a-f0-9]{64}$'}
+      version: {type: integer, const: 4}
+      display_name: {type: string, minLength: 1}
+      provider_kind: {type: string, const: microsoft_foundry}
+      provider_model: {type: string, minLength: 1}
+      protocol: {type: string, const: openai_images}
+      api_version: {type: string, const: preview}
+      backend_path: {type: string, const: /openai/v1/images/generations}
+      public_path: {type: string, const: /images/generations}
+      usage_format: {type: string, const: text-input-image-output-v1}
+      max_request_bytes: {type: integer, minimum: 1, maximum: 16777216}
+      max_response_bytes: {type: integer, minimum: 1, maximum: 16777216}
+      output_reservation_tokens: {type: integer, minimum: 1, maximum: 2147483647}
+      timeout_seconds: {type: integer, minimum: 1, maximum: 240}
+  ImageInvocationMetadata:
+    type: object
+    additionalProperties: false
+    required: [organization_id, organization, department_id, department, project_id, project,
+      agent_id, agent, user_id, user, workflow, model_id, model, runtime, request_source, run_id]
+    properties:
+      organization_id: {type: string, minLength: 1, maxLength: 255}
+      organization: {type: string, minLength: 1, maxLength: 255}
+      department_id: {type: string, minLength: 1, maxLength: 255}
+      department: {type: string, minLength: 1, maxLength: 255}
+      project_id: {type: string, minLength: 1, maxLength: 255}
+      project: {type: string, minLength: 1, maxLength: 255}
+      agent_id: {type: string, minLength: 1, maxLength: 255}
+      agent: {type: string, minLength: 1, maxLength: 255}
+      user_id: {type: string, minLength: 1, maxLength: 255}
+      user: {type: string, minLength: 1, maxLength: 255}
+      workflow: {type: string, minLength: 1, maxLength: 255}
+      model_id: {type: string, minLength: 1, maxLength: 255}
+      model: {type: string, minLength: 1, maxLength: 255}
+      runtime: {type: string, minLength: 1, maxLength: 255}
+      request_source: {type: string, minLength: 1, maxLength: 255}
+      usage_domain: {type: string, const: apim, default: apim}
+      run_id: {type: string, minLength: 1, maxLength: 255}
+      turn_index: {type: integer, minimum: 1, default: 1}
+  ImageInvocationRequest:
+    type: object
+    additionalProperties: true
+    required: [metadata, model_id, prompt]
+    description: >-
+      Provider JSON passthrough except for model routing and platform metadata. The selected
+      model overrides any caller-supplied provider model field. No size, quality or format
+      defaults are inserted. Serialized UTF-8 request bytes plus the output reservation
+      are reserved before dispatch, bounded by the published v4 profile.
+    properties:
+      metadata:
+        $ref: ../../openapi.yaml#/components/schemas/ImageInvocationMetadata
+      model_id: {type: string, format: uuid}
+      runtime_id: {type: [string, 'null'], format: uuid, default: null}
+      prompt: {writeOnly: true, description: Provider-owned JSON prompt value.}
+      size: {description: Optional provider-owned JSON value.}
+      quality: {description: Optional provider-owned JSON value.}
+      output_format: {description: Optional provider-owned JSON value.}
+      n: {type: integer, const: 1, default: 1}
+      stream: {type: boolean, const: false, default: false}
+  GeneratedImage:
+    type: object
+    additionalProperties: false
+    required: [b64_json, media_type]
+    properties:
+      b64_json: {type: string, contentEncoding: base64, minLength: 1, maxLength: 16777216}
+      media_type: {type: string, enum: [image/png, image/jpeg, image/webp]}
+  ImageInvocationUsage:
+    type: object
+    additionalProperties: false
+    required: [input_tokens, cached_tokens, output_tokens, estimated]
+    properties:
+      input_tokens: {type: integer, minimum: 0}
+      cached_tokens: {type: integer, minimum: 0}
+      cache_write_tokens: {type: integer, minimum: 0, const: 0, default: 0}
+      output_tokens: {type: integer, minimum: 0}
+      estimated: {type: boolean, const: false}
+  ImageInvocationResponse:
+    type: object
+    additionalProperties: false
+    required: [request_id, correlation_id, provider, runtime, model, gateway, latency_ms,
+      data, size, quality, output_format, usage]
+    properties:
+      request_id: {type: string}
+      correlation_id: {type: string}
+      provider: {type: string}
+      runtime: {type: string}
+      model: {type: string}
+      gateway: {type: string, const: apim}
+      latency_ms: {type: integer, minimum: 0}
+      data:
+        type: array
+        minItems: 1
+        maxItems: 1
+        items:
+          $ref: ../../openapi.yaml#/components/schemas/GeneratedImage
+      size: {type: string, description: Decoded pixel dimensions.}
+      quality: {type: [string, 'null']}
+      output_format: {type: string, enum: [png, jpeg, webp]}
+      usage:
+        oneOf:
+        - $ref: ../../openapi.yaml#/components/schemas/ImageInvocationUsage
+        - type: 'null'
+      estimated_cost: {type: [number, 'null'], minimum: 0, default: null}
+  GatewayReconcileRequest:
+    type: object
+    additionalProperties: false
+    properties:
+      image_configurations:
+        type: object
+        default: {}
+        description: Existing image model keys mapped to new limits; changes require a new publication.
+        additionalProperties:
+          $ref: ../../openapi.yaml#/components/schemas/ImageGenerationLimits
   ModelConnectionCreate:
     type: object
     additionalProperties: false
@@ -85,6 +215,16 @@ schemas:
         type: boolean
         default: false
         description: Explicit opt-in support for native APIM Pool cookie affinity.
+      image_generation_supported:
+        type: boolean
+        default: false
+      image_configuration_schema_version:
+        type: integer
+        const: 4
+      image_configuration_defaults:
+        oneOf:
+        - $ref: ../../openapi.yaml#/components/schemas/ImageGenerationLimits
+        - type: 'null'
       providers:
         type: array
         items:
@@ -101,6 +241,16 @@ schemas:
         type: array
         items:
           type: object
+          properties:
+            capabilities:
+              type: array
+              items:
+                type: string
+                enum: [chat, tools, vision, reasoning, streaming, embeddings, image_generation]
+            image_profile:
+              oneOf:
+              - $ref: ../../openapi.yaml#/components/schemas/ImageGenerationProfile
+              - type: 'null'
   GatewayPublicationCreate:
     type: object
     additionalProperties: false
@@ -123,6 +273,10 @@ schemas:
     type: object
     additionalProperties: false
     properties:
+      authorize_image_probes:
+        type: boolean
+        default: false
+        description: Explicitly authorize a fresh bounded paid image probe attempt after a failed publication.
       api_key:
         type:
         - string
@@ -447,6 +601,15 @@ schemas:
     type: object
     additionalProperties: false
     properties:
+      operation:
+        type: string
+        enum: [chat, image_generation]
+        default: chat
+        description: Image generation requires an existing Foundry deployment and three explicit prices.
+      image_configuration:
+        oneOf:
+        - $ref: ../../openapi.yaml#/components/schemas/ImageGenerationLimits
+        - type: 'null'
       deployment_name:
         type: string
         minLength: 1
@@ -490,6 +653,20 @@ schemas:
         - number
         - 'null'
         minimum: 0
+    allOf:
+    - if:
+        required: [operation]
+        properties:
+          operation: {const: image_generation}
+      then:
+        required: [deployment_name, input_cost_per_million, cached_cost_per_million, output_cost_per_million]
+        properties:
+          deployment_name: {type: string, minLength: 1, maxLength: 500}
+          input_cost_per_million: {type: number, minimum: 0}
+          cached_cost_per_million: {type: number, minimum: 0}
+          output_cost_per_million: {type: number, minimum: 0}
+          context_window: {type: 'null'}
+          cache_write_cost_per_million: {type: 'null'}
   GatewayPublication:
     type: object
     additionalProperties: false

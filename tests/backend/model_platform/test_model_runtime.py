@@ -210,6 +210,16 @@ def test_credential_cipher_round_trip() -> None:
     assert cipher.decrypt(encrypted) == "secret-value"
 
 
+@pytest.mark.parametrize("value", [[], {}, "", "1", True, 1.0, -1])
+@pytest.mark.parametrize("nested", [False, True])
+def test_openai_cached_tokens_rejects_illegal_values(value: object, nested: bool) -> None:
+    payload = {"prompt_tokens": 20, "completion_tokens": 3, "cached_tokens": value}
+    if nested:
+        payload["prompt_tokens_details"] = {"cached_tokens": value}
+    with pytest.raises(ValueError, match="nonnegative integer"):
+        _openai_usage(payload)
+
+
 def _assert_storable(record: TokenUsageRecord) -> None:
     """Check the row against the CHECK constraints PostgreSQL actually enforces.
 

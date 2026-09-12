@@ -14,12 +14,29 @@ class InMemoryRegistryRepositoryMixin:
     gateway_publications: list[dict[str, Any]]
     effective_gateway_releases: dict[UUID, UUID]
 
+    def _published_image_profile(self, model: Mapping[str, Any]) -> object:
+        runtime = next((row for row in self.runtimes if row["id"] == model["runtime_id"]), None)
+        gateway_id = runtime.get("gateway_profile_id") if runtime else None
+        if gateway_id is None:
+            return None
+        publication_id = self.effective_gateway_releases.get(gateway_id)
+        publication = next(
+            (row for row in self.gateway_publications if row["id"] == publication_id), None
+        )
+        for binding in publication["desired_spec"]["bindings"] if publication else []:
+            if binding["model"]["model_key"].casefold() == model["model_key"].casefold():
+                return binding["model"].get("image_profile")
+        return None
+
     def registry(self) -> dict[str, Sequence[dict[str, Any]]]:
         return {
             "gateways": self.gateways,
             "providers": self.providers,
             "runtimes": self.runtimes,
-            "models": self.models,
+            "models": [
+                {**model, "image_profile": self._published_image_profile(model)}
+                for model in self.models
+            ],
         }
 
     def create_registry_item(self, kind: str, values: Mapping[str, Any]) -> dict[str, Any]:
@@ -32,7 +49,8 @@ class InMemoryRegistryRepositoryMixin:
             row.setdefault("upstream_model_id", row.get("model_key"))
             row.setdefault("assignment_required", False)
             row.setdefault("publication_id", None)
-        row.update(id=uuid4(), created_at=now, updated_at=now)
+        row.setdefault("id", uuid4())
+        row.update(created_at=now, updated_at=now)
         target = self._registry_target(kind)
         if row.get("is_default"):
             for item in target:

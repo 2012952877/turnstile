@@ -28,6 +28,9 @@ def test_migration_chain_preserves_clean_install_and_adds_attempt_identity() -> 
         "001_initial_schema.up.sql",
         "002_apim_request_attempt_identity.up.sql",
         "003_budget_reservation_finalization.up.sql",
+        "004_apim_usage_identity_guard.up.sql",
+        "005_billable_request_lifecycle.up.sql",
+        "006_versioned_budget_evidence.up.sql",
     ]
     assert not list(MIGRATIONS.glob("*.down.sql"))
 
@@ -87,6 +90,46 @@ def test_initial_schema_contains_no_customer_or_model_seed_data() -> None:
     ):
         assert f"INSERT INTO public.{table}" not in sql
         assert f"INSERT INTO {table}" not in sql
+
+
+def test_identity_upgrade_is_guarded_without_historical_seeding() -> None:
+    sql = (MIGRATIONS / "004_apim_usage_identity_guard.up.sql").read_text()
+    assert table_names(sql) == {"apim_usage_identity", "apim_usage_discrepancy"}
+    assert "pg_advisory_xact_lock" in sql and "ORDER BY id LIMIT 2" in sql
+    assert "APIM attempt identity is immutable" in sql
+    assert "APIM correlation identity is ambiguous" in sql
+    assert "BEFORE INSERT OR UPDATE ON token_usage" in sql
+    assert "BEFORE UPDATE OR DELETE ON apim_usage_discrepancy" in sql
+    assert "INSERT INTO token_usage" not in sql
+    assert "UPDATE token_usage" not in sql
+
+
+def test_billable_schema_preserves_request_intent_and_exact_acknowledgement() -> None:
+    sql = (MIGRATIONS / "005_billable_request_lifecycle.up.sql").read_text()
+    assert table_names(sql) == {"billable_request_attempt"}
+    assert "UNIQUE NULLS NOT DISTINCT (operation_key, authorization_id)" in sql
+    assert "CHECK ((state = 'exact') = (actual_tokens IS NOT NULL))" in sql
+    assert "usage.request_id = attempt.id::text" in sql
+    assert "usage.model_id = attempt.model_id" in sql
+    assert "usage.correlation_id = attempt.correlation_id" in sql
+    assert "OR OLD.state = 'exact'" in sql
+    assert "budget_ordinary_usage_v1" in sql
+
+
+def test_evidence_schema_is_future_only_and_keeps_public_legacy_branch() -> None:
+    sql = (MIGRATIONS / "006_versioned_budget_evidence.up.sql").read_text()
+    assert "VALUES (2, NULL)" in sql
+    assert "OLD.effective_at IS NOT NULL" in sql
+    assert "NEW.effective_at < clock_timestamp()" in sql
+    assert "BEFORE UPDATE OR DELETE ON budget_reservation_admission" in sql
+    assert "FROM budget_ordinary_usage_v1 usage" in sql
+    assert "evidence_rank DESC, received_at, evidence_order, evidence_key" in sql
+    assert "CREATE VIEW budget_evidence_conflicts" in sql
+    assert "usage.ingest_error IS NULL THEN 3" in sql
+    assert "2, updated_at" in sql
+    assert "usage.ts, usage.organization_id, usage.department_id" in sql
+    assert "AT TIME ZONE 'UTC'" in sql
+    assert "UPDATE token_usage" not in sql
 
 
 def test_initial_schema_seeds_only_the_platform_apim_gateway() -> None:

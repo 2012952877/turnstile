@@ -11,6 +11,8 @@ servers:
 security:
   - bearerAuth: []
 paths:
+  /api/v1/model-gateway/images/generations:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-gateway~1images~1generations
   /api/v1/model-gateway/invoke:
     post:
       operationId: invokeModel
@@ -52,6 +54,8 @@ paths:
           description: Redacted model registry; credential plaintext is never returned
 components:
   securitySchemes:
+    sessionCookie:
+      $ref: ./openapi.yaml#/components/securitySchemes/sessionCookie
     bearerAuth:
       type: http
       scheme: bearer

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import logging
 import re
 import time
@@ -13,6 +14,8 @@ from uuid import UUID, uuid4
 from fastapi import HTTPException
 
 from turnstile_core.config import Settings
+from turnstile_core.domain.billable_requests import BillableBudgetExceeded, BillableRequestPlan
+from turnstile_core.domain.images import ImageInvocationRequest, ImageInvocationResponse
 from turnstile_core.domain.models import ModelPrice, TokenUsageRecord
 from turnstile_core.domain.runtime_models import (
     FOUNDRY_INFERENCE_RESOURCE,
@@ -117,19 +120,18 @@ class ModelRuntimeService:
         runtime_ids = {row["id"] for row in runtimes}
         return RegistryResponse(
             backend_pool_session_affinity_supported=True,
+            image_generation_supported=self._settings.image_generation_enabled,
+            image_configuration_defaults=self._settings.image_generation_defaults,
             gateways=[
-                GatewayProfile.model_validate(self._public_secret(row))
-                for row in rows["gateways"]
+                GatewayProfile.model_validate(self._public_secret(row)) for row in rows["gateways"]
             ],
-            providers=[
-                Provider.model_validate(self._public_secret(row))
-                for row in providers
-            ],
+            providers=[Provider.model_validate(self._public_secret(row)) for row in providers],
             runtimes=[Runtime.model_validate(row) for row in runtimes],
             models=[
                 ManagedModel.model_validate(row)
                 for row in rows["models"]
-                if row["runtime_id"] in runtime_ids and row["provider_id"] in provider_ids
+                if row["runtime_id"] in runtime_ids
+                and row["provider_id"] in provider_ids
                 and row.get("family_key") != ModelFamilyKey.COPILOT
             ],
         )
@@ -631,6 +633,20 @@ class ModelRuntimeService:
     def save_model(
         self, write: ManagedModelWrite, item_id: UUID | None = None
     ) -> RegistryResponse:
+        if "image_generation" in write.capabilities:
+            if item_id is None:
+                raise HTTPException(
+                    status_code=409, detail="Publish image models through the control plane"
+                )
+            if any(
+                rate is None
+                for rate in (
+                    write.input_cost_per_million,
+                    write.cached_cost_per_million,
+                    write.output_cost_per_million,
+                )
+            ):
+                raise HTTPException(status_code=422, detail="Image prices cannot be omitted")
         registry = self._repository.registry()
         github_provider_ids, copilot_runtime_ids = self._copilot_registry_ids(registry)
         current = next(
@@ -652,6 +668,13 @@ class ModelRuntimeService:
                 status_code=409,
                 detail="GitHub Copilot is managed through its separate data source",
             )
+        if current is not None and (
+            ("image_generation" in write.capabilities)
+            != ("image_generation" in (current.get("capabilities") or []))
+        ):
+            raise HTTPException(
+                status_code=409, detail="Changing model operation requires a publication"
+            )
         self._save("model", write.model_dump(mode="python"), item_id)
         return self.registry()
 
@@ -670,7 +693,7 @@ class ModelRuntimeService:
 
     def _assert_model_allowed(
         self,
-        request: ModelInvocationRequest,
+        request: ModelInvocationRequest | ImageInvocationRequest,
         route: dict[str, Any],
         request_id: str,
     ) -> None:
@@ -716,7 +739,7 @@ class ModelRuntimeService:
 
     def _assert_budget_available(
         self,
-        request: ModelInvocationRequest,
+        request: ModelInvocationRequest | ImageInvocationRequest,
         route: dict[str, Any],
         request_id: str,
     ) -> None:
@@ -757,7 +780,7 @@ class ModelRuntimeService:
 
     def _deny(
         self,
-        request: ModelInvocationRequest,
+        request: ModelInvocationRequest | ImageInvocationRequest,
         route: dict[str, Any],
         reason: str,
         request_id: str,
@@ -857,6 +880,10 @@ class ModelRuntimeService:
             raise HTTPException(
                 status_code=404, detail="No enabled model route matches the request"
             )
+        if "image_generation" in (route.get("model_capabilities") or []):
+            raise HTTPException(
+                status_code=409, detail="Image models require the image generation endpoint"
+            )
         if (
             route.get("gateway_implementation") == GatewayKind.APIM
             and not route.get("gateway_base_url")
@@ -918,6 +945,125 @@ class ModelRuntimeService:
             latency_ms=latency_ms,
             usage=result.usage,
             estimated_cost=estimated_cost,
+        )
+
+    def generate_image(
+        self, request: ImageInvocationRequest, *, role: str
+    ) -> ImageInvocationResponse:
+        if not self._settings.image_generation_enabled:
+            raise HTTPException(status_code=503, detail="Image generation is not enabled")
+        request_id = str(uuid4())
+        route = self._repository.invocation_route(request.runtime_id, request.model_id)
+        if route is None:
+            raise HTTPException(status_code=404, detail="No enabled image model route matches")
+        if role not in (route.get("model_allowed_roles") or []) or role not in (
+            route.get("runtime_allowed_roles") or []
+        ):
+            raise HTTPException(status_code=403, detail="Role cannot use this image model")
+        if "image_generation" not in (route.get("model_capabilities") or []):
+            raise HTTPException(status_code=409, detail="This model does not generate images")
+        if route.get("provider_kind") != ProviderKind.MICROSOFT_FOUNDRY:
+            raise HTTPException(status_code=409, detail="Image generation requires Foundry")
+        if route.get("gateway_implementation") != GatewayKind.APIM:
+            raise HTTPException(status_code=409, detail="Image generation requires APIM")
+        try:
+            profile = request.validate_profile(route.get("image_profile"))
+            reserved = request.reservation_tokens(str(route["model_key"]), profile)
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        self._assert_model_allowed(request, route, request_id)
+        self._assert_budget_available(request, route, request_id)
+        route = self._decrypt_route(route)
+        if not route.get("gateway_base_url") and self._settings.apim_gateway_url:
+            route["gateway_base_url"] = self._settings.apim_gateway_url
+        if not route.get("gateway_credential") and self._settings.apim_dashboard_subscription_key:
+            route["gateway_credential"] = (
+                self._settings.apim_dashboard_subscription_key.get_secret_value()
+            )
+            route["gateway_auth_type"] = "api_key"
+        now = datetime.now(UTC)
+        try:
+            attempt = self._repository.begin_billable_request(
+                BillableRequestPlan(
+                    operation_key="invocation:" + request_id,
+                    plan_sha256=hashlib.sha256(
+                        json.dumps(
+                            {
+                                "request": request.model_dump(mode="json"),
+                                "profile": profile.model_dump(mode="json"),
+                            },
+                            sort_keys=True,
+                        ).encode()
+                    ).hexdigest(),
+                    scope_type="person",
+                    scope_id=request.metadata.user_id,
+                    period_start=date(now.year, now.month, 1),
+                    model_id=str(route["model_id"]),
+                    model_key=str(route["model_key"]),
+                    reserved_tokens=reserved,
+                )
+            )
+        except BillableBudgetExceeded:
+            self._deny(
+                request, route, "image_budget_insufficient", request_id, budget_admission="denied"
+            )
+        request_id = str(attempt.id)
+        route["request_id"] = request_id
+        started = time.monotonic()
+        try:
+            result = self._router.generate_image(request, route)
+        except GatewayInvocationError as error:
+            usage = error.usage
+            actual = (
+                usage.input_tokens + usage.cached_tokens + usage.output_tokens
+                if usage is not None and not usage.estimated
+                else None
+            )
+            self._repository.finish_billable_request(
+                attempt.id,
+                actual_tokens=actual,
+                correlation_id=error.headers.get("x-correlation-id"),
+                evidence={
+                    "status_code": error.status_code,
+                    "outcome": "response_invalid" if actual is not None else "uncertain",
+                    "usage": usage.model_dump(mode="json")
+                    if actual is not None and usage
+                    else None,
+                },
+            )
+            raise HTTPException(
+                status_code=error.status_code,
+                detail=str(error),
+                headers={**error.headers, "x-request-id": request_id},
+            ) from error
+        actual = (
+            result.usage.input_tokens + result.usage.cached_tokens + result.usage.output_tokens
+            if result.usage is not None
+            else None
+        )
+        self._repository.finish_billable_request(
+            attempt.id,
+            actual_tokens=actual,
+            correlation_id=result.correlation_id,
+            evidence={
+                "status_code": 200,
+                "usage": result.usage.model_dump(mode="json") if result.usage else None,
+            },
+        )
+        return ImageInvocationResponse(
+            request_id=request_id,
+            correlation_id=result.correlation_id or request_id,
+            provider=str(route["provider_name"]),
+            runtime=str(route["runtime_name"]),
+            model=str(route["model_key"]),
+            gateway=result.gateway,
+            latency_ms=elapsed_ms(started),
+            data=[result.image],
+            size=result.size,
+            quality=result.quality,
+            output_format=result.output_format,
+            usage=result.usage,
+            estimated_cost=self._estimated_cost(route, result.usage),
         )
 
     @staticmethod

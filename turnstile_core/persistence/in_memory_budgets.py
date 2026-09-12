@@ -1,17 +1,25 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
 from ..domain.application_access import UsageApplicationAttribution
-from ..domain.ledger import BudgetReservationFinalization, LedgerScopeType
+from ..domain.billable_requests import BillableRequestAttempt
+from ..domain.ledger import (
+    BudgetReservationFinalization,
+    LedgerScopeType,
+    canonical_budget_tokens,
+    strict_budget_evidence,
+)
 from ..domain.models import TokenUsageRecord
+from .in_memory_budget_evidence import InMemoryBudgetEvidenceRepositoryMixin
 from .repository_support import BudgetConstraintViolation
 
 
-class InMemoryBudgetRepositoryMixin:
+class InMemoryBudgetRepositoryMixin(InMemoryBudgetEvidenceRepositoryMixin):
+    _billable_effective_tokens: Callable[[BillableRequestAttempt], int | None]
     budget_reservation_finalizations: list[BudgetReservationFinalization]
     usage_application_attributions: dict[str, UsageApplicationAttribution]
     budget_roll_forward: dict[date, dict[str, Any]]
@@ -39,8 +47,11 @@ class InMemoryBudgetRepositoryMixin:
             for item in self.budget_reservation_finalizations
             if item.scope_type == "person"
         )
+        users.update(
+            item.scope_id for item in self.billable_requests.values() if item.scope_type == "person"
+        )
         for user_id in users:
-            for row in self._budget_scope_usage("person", user_id):
+            for row in self._confirmed_budget_usage("person", user_id):
                 if not from_ <= row["ts"] < to:
                     continue
                 period = row["ts"].astimezone(UTC).date().replace(day=1)
@@ -54,7 +65,7 @@ class InMemoryBudgetRepositoryMixin:
                     or department.get("parent_scope_id")
                     or "unattributed"
                 )
-                tokens = row["input_tokens"] + row["cached_tokens"] + row["output_tokens"]
+                tokens = row["total_tokens"]
                 for scope_type, scope_id in (
                     ("organization", organization_id),
                     ("department", department_id),
@@ -320,7 +331,14 @@ class InMemoryBudgetRepositoryMixin:
             for record in self.usage_records
             if record.correlation_id in wanted
             and self._ledger_scope_matches(record, scope_type, scope_id)
-            and self._ledger_usage_final(record)
+            and (
+                canonical_budget_tokens(record, reconciled=record.id in self.reconciled_usage_ids)
+                is not None
+                if scope_type is not None
+                and scope_id is not None
+                and self._strict_budget_record(record, scope_type, scope_id)
+                else self._ledger_usage_final(record)
+            )
         }
         if scope_type is not None and scope_id is not None:
             settled.update(
@@ -329,6 +347,15 @@ class InMemoryBudgetRepositoryMixin:
                     scope_type, scope_id, correlation_ids
                 ).items()
                 if kind != "unverified_upper_bound"
+            )
+            settled.update(wanted.intersection(self._strict_budget_choices(scope_type, scope_id)))
+            settled.update(
+                str(attempt.id)
+                for attempt in self.billable_requests.values()
+                if str(attempt.id) in wanted
+                and attempt.scope_type == scope_type
+                and attempt.scope_id == scope_id
+                and self._billable_effective_tokens(attempt) is not None
             )
         return settled
 
@@ -397,6 +424,7 @@ class InMemoryBudgetRepositoryMixin:
             ):
                 continue
             self.budget_reservation_finalizations.append(item.model_copy(deep=True))
+            self._finalization_evidence_key(item)
             written += 1
         return written
 
@@ -474,10 +502,83 @@ class InMemoryBudgetRepositoryMixin:
         period_end: date,
     ) -> int:
         return sum(
-            row["input_tokens"] + row["cached_tokens"] + row["output_tokens"]
-            for row in self._budget_scope_usage(scope_type, scope_id)
+            row["total_tokens"]
+            for row in self._confirmed_budget_usage(scope_type, scope_id)
             if period_start <= row["ts"].astimezone(UTC).date() < period_end
         )
+
+    def _confirmed_budget_usage(
+        self,
+        scope_type: LedgerScopeType,
+        scope_id: str,
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        records = {
+            record.correlation_id: record
+            for record in self.usage_records
+            if self._ledger_scope_matches(record, scope_type, scope_id)
+        }
+        for row in self._budget_scope_usage(scope_type, scope_id):
+            record = records.get(row["correlation_id"])
+            admitted = self._budget_admitted_at(
+                scope_type, scope_id, row["correlation_id"], row["ts"]
+            )
+            if strict_budget_evidence(admitted, self.evidence_policy_effective_at):
+                continue
+            if (
+                record is not None
+                and self._record_billable_attempt(record, scope_type, scope_id) is not None
+            ):
+                continue
+            if self._budget_bound_attempt(scope_type, scope_id, row["correlation_id"]) is not None:
+                continue
+            rows.append(
+                {
+                    **row,
+                    "total_tokens": (
+                        row["input_tokens"] + row["cached_tokens"] + row["output_tokens"]
+                    ),
+                }
+            )
+        for attempt in self.billable_requests.values():
+            if (
+                attempt.scope_type == scope_type
+                and attempt.scope_id == scope_id
+                and not strict_budget_evidence(
+                    attempt.created_at, self.evidence_policy_effective_at
+                )
+            ):
+                tokens = self._billable_effective_tokens(attempt)
+                if tokens is not None:
+                    rows.append(
+                        {
+                            "ts": datetime.combine(attempt.period_start, datetime.min.time(), UTC),
+                            "total_tokens": tokens,
+                            "organization_id": "unattributed",
+                            "department_id": "unattributed",
+                        }
+                    )
+        for identity, (admitted, tokens, rank) in self._strict_budget_choices(
+            scope_type, scope_id
+        ).items():
+            canonical = next(
+                (
+                    record
+                    for record in records.values()
+                    if rank == 3
+                    and self._budget_record_identity(record, scope_type, scope_id)[0] == identity
+                ),
+                None,
+            )
+            rows.append(
+                {
+                    "ts": admitted,
+                    "total_tokens": tokens,
+                    "organization_id": canonical.organization_id if canonical else "unattributed",
+                    "department_id": canonical.department_id if canonical else "unattributed",
+                }
+            )
+        return rows
 
     def model_access_ledger_snapshot(
         self, user_ids: Sequence[str] | None = None

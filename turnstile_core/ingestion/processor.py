@@ -156,6 +156,31 @@ class UsageProcessor:
 
         ingest_error = event.ingest_error
         estimated = event.estimated
+        token_fields = (
+            "input_tokens",
+            "cached_tokens",
+            "cache_write_tokens",
+            "output_tokens",
+            "tokens_consumed",
+        )
+        invalid_usage = any(
+            raw_event.get(field) is not None and type(raw_event[field]) is not int
+            for field in token_fields
+        )
+        if event.cached_tokens is not None and event.cache_write_tokens is not None:
+            invalid_usage = invalid_usage or event.cache_write_tokens > event.cached_tokens
+        if (
+            event.tokens_consumed is not None
+            and event.input_tokens is not None
+            and event.cached_tokens is not None
+            and event.output_tokens is not None
+        ):
+            invalid_usage = invalid_usage or event.tokens_consumed != (
+                event.input_tokens + event.cached_tokens + event.output_tokens
+            )
+        if invalid_usage:
+            estimated = True
+            ingest_error = "usage_validation_failed"
         if event.input_tokens is None or event.cached_tokens is None or event.output_tokens is None:
             # The provider breakdown is unavailable. Persist the request with zeroed counts
             # and an explicit ingest_error instead of inventing a split or dropping the event;

@@ -7,7 +7,9 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
+from contextvars import ContextVar
 from datetime import UTC, datetime
+from functools import partial
 from html import unescape
 from typing import Any, Literal, cast
 from urllib.parse import parse_qsl, quote, urlparse
@@ -26,25 +28,31 @@ from ..domain.application_access import (
     GatewayApplicationDiscoveryItem,
     GatewayApplicationSubscriptionProvisionSpec,
 )
+from ..domain.billable_requests import BillableRequestOutcome
 from ..domain.control_plane import (
     ApiFormat,
     AuthStrategy,
+    GatewayModelBinding,
     GatewayPublication,
     GatewayReleaseDependencies,
     PublicationKind,
 )
+from ..domain.image_profiles import ImageGenerationProfile, validate_image_profile
 from ..integrations.reconciliation import ManagedIdentityTokenProvider
 from .apim_control_plane_contract import (
     AuthorizationRequiredError,
     BackendCircuitBreakerResource,
     BackendPoolResource,
     BackendResource,
+    ImageProbeJournal,
     NamedValueResource,
+    OperationResource,
     PolicyCompilationError,
     ReleaseGcPlanEvidence,
     RetryablePublicationError,
 )
 from .apim_policy_compiler import ApimPolicyCompiler
+from .apim_policy_components import parent_readback_matches
 
 
 class AzureApimPublisherClient:
@@ -71,6 +79,10 @@ class AzureApimPublisherClient:
         if missing:
             raise RuntimeError(f"Control-plane settings are missing: {', '.join(missing)}")
         self._settings = settings
+        self._probe_journal: ContextVar[ImageProbeJournal | None] = ContextVar(
+            "apim-probe-journal",
+            default=None,
+        )
         self._token_provider = token_provider or ManagedIdentityTokenProvider()
         self._client = client or httpx.Client(
             timeout=self._MANAGEMENT_REQUEST_TIMEOUT_SECONDS
@@ -118,7 +130,29 @@ class AzureApimPublisherClient:
             raise RetryablePublicationError(
                 f"APIM management request returned HTTP {response.status_code}"
             )
-        response.raise_for_status()
+        if response.is_error:
+            diagnostic: dict[str, Any] = {
+                "method": method,
+                "path": resource_path,
+                "status": response.status_code,
+            }
+            try:
+                payload = response.json()
+                error = payload.get("error", {}) if isinstance(payload, dict) else {}
+                if isinstance(error, dict):
+                    code = error.get("code")
+                    if isinstance(code, str) and re.fullmatch(
+                        r"[A-Za-z][A-Za-z0-9_.]{0,127}", code
+                    ):
+                        diagnostic["code"] = code
+            except ValueError:
+                pass
+            request_id = response.headers.get("x-ms-request-id", "")
+            if re.fullmatch(r"[a-fA-F0-9-]{1,128}", request_id):
+                diagnostic["request_id"] = request_id
+            raise PolicyCompilationError(
+                "APIM management failed: " + json.dumps(diagnostic, sort_keys=True)
+            )
         return response
 
     def ensure_backend(self, backend: BackendResource) -> None:
@@ -441,6 +475,31 @@ class AzureApimPublisherClient:
             policy,
         )
 
+    def ensure_operation(self, revision: str, operation: OperationResource) -> None:
+        path = self._revision_path(revision) + "/operations/" + quote(operation.id, safe="")
+        observed = self._request("GET", path, allow_not_found=True)
+        if observed.status_code == 404:
+            self._request(
+                "PUT",
+                path,
+                json_body={
+                    "properties": {
+                        "displayName": operation.display_name,
+                        "method": operation.method,
+                        "urlTemplate": operation.path,
+                        "templateParameters": [],
+                    }
+                },
+            )
+            observed = self._request("GET", path)
+        properties = observed.json().get("properties") or {}
+        if (
+            properties.get("method") != operation.method
+            or properties.get("urlTemplate") != operation.path
+            or properties.get("templateParameters", [])
+        ):
+            raise PolicyCompilationError("Operation route does not match its compiled contract")
+
     def put_operation_policy(self, revision: str, operation: str, policy: str) -> None:
         self._put_policy(
             f"/apis/{quote(self._settings.apim_api_id, safe='')};rev={quote(revision, safe='')}"
@@ -456,7 +515,25 @@ class AzureApimPublisherClient:
             extra_headers={"If-Match": "*"},
         )
 
-    def probe_revision(self, revision: str, publication: GatewayPublication) -> None:
+    def probe_revision(
+        self,
+        revision: str,
+        publication: GatewayPublication,
+        *,
+        journal: ImageProbeJournal | None = None,
+    ) -> None:
+        token = self._probe_journal.set(journal)
+        try:
+            self._probe_revision(revision, publication)
+        finally:
+            self._probe_journal.reset(token)
+
+    def _probe_heartbeat(self) -> None:
+        journal = self._probe_journal.get()
+        if journal is not None:
+            journal.heartbeat()
+
+    def _probe_revision(self, revision: str, publication: GatewayPublication) -> None:
         if not self._settings.apim_probe_subscription_key:
             raise RuntimeError("APIM_PROBE_SUBSCRIPTION_KEY is required for verification")
         base = str(self._settings.apim_gateway_url).rstrip("/")
@@ -497,6 +574,7 @@ class AzureApimPublisherClient:
             if base_revision and str(base_revision) != revision
             else None
         )
+        self._probe_heartbeat()
         models = self._client.get(f"{revision_path}/v1/models", headers=headers)
         if self._is_transient_probe_status(models.status_code):
             raise RetryablePublicationError(
@@ -526,12 +604,17 @@ class AzureApimPublisherClient:
             (
                 item
                 for item in publication.desired_spec.discovery_models
-                if item.id.casefold()
-                == self._settings.apim_regression_model_key.casefold()
+                if item.api_format is not ApiFormat.OPENAI_IMAGES
+                if item.id.casefold() == self._settings.apim_regression_model_key.casefold()
             ),
-            publication.desired_spec.discovery_models[0]
-            if publication.desired_spec.discovery_models
-            else None,
+            next(
+                (
+                    item
+                    for item in publication.desired_spec.discovery_models
+                    if item.api_format is not ApiFormat.OPENAI_IMAGES
+                ),
+                None,
+            ),
         )
         if regression is not None:
             regression_binding = next(
@@ -581,7 +664,10 @@ class AzureApimPublisherClient:
             )
         else:
             binding = publication.desired_spec.bindings[-1]
-            if binding.runtime_config.get("apim_backend_pool") is None:
+            if (
+                binding.runtime_config.get("apim_backend_pool") is None
+                and binding.api_format is not ApiFormat.OPENAI_IMAGES
+            ):
                 self._probe_model(
                     revision_path,
                     headers,
@@ -742,6 +828,51 @@ class AzureApimPublisherClient:
                         authorization_required=authorization_required,
                     )
 
+        for image_binding in publication.desired_spec.bindings:
+            if image_binding.api_format is not ApiFormat.OPENAI_IMAGES:
+                continue
+            profile = validate_image_profile(image_binding.model.image_profile)
+            journal = self._probe_journal.get()
+            if journal is None:
+                raise PolicyCompilationError(
+                    "Image verification requires a persistent probe journal"
+                )
+            body = self._image_probe_body(image_binding.model.model_key, profile)
+            journal.run(
+                image_binding,
+                revision,
+                body,
+                partial(
+                    self._send_bound_image_probe,
+                    revision_path,
+                    headers,
+                    image_binding,
+                    profile,
+                ),
+            )
+
+    def _send_bound_image_probe(
+        self,
+        base: str,
+        headers: dict[str, str],
+        binding: GatewayModelBinding,
+        profile: ImageGenerationProfile,
+        request_id: str,
+        model_id: str,
+    ) -> dict[str, Any]:
+        return self._probe_image_model(
+            base,
+            {
+                **headers,
+                "x-request-id": request_id,
+                "x-model-id": model_id,
+                "x-hive-model": model_id,
+            },
+            binding.model.model_key,
+            profile=profile,
+            authorization_required=binding.auth_strategy is AuthStrategy.MANAGED_IDENTITY,
+        )
+
     def _probe_model(
         self,
         base: str,
@@ -755,6 +886,10 @@ class AzureApimPublisherClient:
         baseline_headers: dict[str, str] | None = None,
         authorization_required: bool = False,
     ) -> None:
+        if api_format is ApiFormat.OPENAI_IMAGES:
+            raise PolicyCompilationError(
+                "Image probes require an explicit profile and persistent journal"
+            )
         path = "/v1/messages"
         body: dict[str, Any] = {
             "model": model,
@@ -768,6 +903,7 @@ class AzureApimPublisherClient:
             body[max_tokens_field] = 8
         else:
             body["max_tokens"] = 8
+        self._probe_heartbeat()
         response = self._client.post(
             f"{base}{path}",
             headers=headers,
@@ -805,6 +941,81 @@ class AzureApimPublisherClient:
         if not isinstance(payload.get(response_field), list):
             raise RuntimeError(f"Candidate model probe returned an invalid response: {model}")
 
+    def _probe_image_model(
+        self,
+        base: str,
+        headers: dict[str, str],
+        model: str,
+        *,
+        profile: ImageGenerationProfile,
+        authorization_required: bool = False,
+    ) -> dict[str, Any]:
+        from .image_generation import generated_image, image_usage
+
+        profile = validate_image_profile(profile)
+        body = self._image_probe_body(model, profile)
+        evidence: dict[str, Any] = {"image_validated": False}
+        try:
+            with self._client.stream(
+                "POST",
+                base + profile.public_path,
+                headers=headers,
+                json=body,
+                timeout=profile.timeout_seconds,
+            ) as response:
+                evidence.update(
+                    status_code=response.status_code,
+                    correlation_id=response.headers.get("x-correlation-id"),
+                )
+                if authorization_required and response.status_code in {401, 403}:
+                    raise AuthorizationRequiredError("The image provider has not authorized APIM")
+                if response.status_code != 200:
+                    raise PolicyCompilationError(
+                        f"Image probe failed with HTTP {response.status_code}; it was not retried"
+                    )
+                content = bytearray()
+                for chunk in response.iter_bytes():
+                    if len(content) + len(chunk) > profile.max_response_bytes:
+                        raise ValueError("Image probe exceeded its response limit")
+                    content.extend(chunk)
+            payload = json.loads(content)
+            if not isinstance(payload, dict):
+                raise ValueError("Image probe response must be an object")
+            usage = image_usage(payload)
+            if usage is None:
+                raise ValueError("Image probe did not return exact modality usage")
+            evidence.update(
+                total_tokens=usage.input_tokens + usage.cached_tokens + usage.output_tokens,
+                usage=usage.model_dump(mode="json"),
+            )
+            generated_image(payload)
+            evidence["image_validated"] = True
+        except (AuthorizationRequiredError, httpx.HTTPError, ValueError, TypeError) as error:
+            outcome = BillableRequestOutcome(
+                actual_tokens=evidence.get("total_tokens"),
+                correlation_id=evidence.get("correlation_id"),
+                evidence=evidence,
+            )
+            if isinstance(error, AuthorizationRequiredError):
+                raise AuthorizationRequiredError(
+                    "The image provider has not authorized APIM", billable_outcome=outcome
+                ) from error
+            raise PolicyCompilationError(
+                "Image probe did not return a complete measured image; no automatic retry",
+                billable_outcome=outcome,
+            ) from error
+        return evidence
+
+    @staticmethod
+    def _image_probe_body(model: str, profile: ImageGenerationProfile) -> dict[str, Any]:
+        validate_image_profile(profile)
+        return {
+            "model": model,
+            "prompt": "A blue ceramic cup on a white table.",
+            "n": 1,
+            "stream": False,
+        }
+
     def _probe_responses_model(
         self,
         base: str,
@@ -823,6 +1034,7 @@ class AzureApimPublisherClient:
             "store": False,
             "stream": False,
         }
+        self._probe_heartbeat()
         response = self._client.post(
             f"{base}/responses",
             headers=headers,
@@ -872,6 +1084,7 @@ class AzureApimPublisherClient:
         authorization_required: bool = False,
     ) -> None:
         body = {"model": model, "input": "Reply only with OK."}
+        self._probe_heartbeat()
         response = self._client.post(
             f"{base}/responses/compact",
             headers=headers,
@@ -969,6 +1182,8 @@ class AzureApimPublisherClient:
         path = (
             "/chat/completions"
             if api_format is ApiFormat.OPENAI_CHAT
+            else "/images/generations"
+            if api_format is ApiFormat.OPENAI_IMAGES
             else "/v1/messages"
         )
         body: dict[str, Any] = {
@@ -976,7 +1191,17 @@ class AzureApimPublisherClient:
             "stream": False,
             "messages": [{"role": "user", "content": "Reply only with OK."}],
         }
-        if api_format is ApiFormat.OPENAI_CHAT:
+        if api_format is ApiFormat.OPENAI_IMAGES:
+            body = {
+                "model": model,
+                "prompt": "A blue cup.",
+                "size": "1024x1024",
+                "quality": "low",
+                "n": 1,
+                "output_format": "png",
+                "stream": False,
+            }
+        elif api_format is ApiFormat.OPENAI_CHAT:
             body["max_completion_tokens"] = 8
         else:
             body["max_tokens"] = 8
@@ -1076,20 +1301,13 @@ class AzureApimPublisherClient:
         revision = self.current_revision()
         if not revision:
             raise RuntimeError("APIM did not report a current revision")
-        response = self._request(
-            "GET",
-            f"/apis/{quote(self._settings.apim_api_id, safe='')};rev="
-            f"{quote(revision, safe='')}/policies/policy",
-        )
-        content_type = response.headers.get("content-type", "").casefold()
-        if "json" in content_type:
-            payload = response.json()
-            value = (payload.get("properties") or {}).get("value")
-        else:
-            value = unescape(response.text)
-        if not isinstance(value, str) or not value:
-            raise RuntimeError("Current APIM revision did not return an API policy")
-        return revision, value
+        return revision, self.revision_api_policy(revision)
+
+    def revision_api_policy(self, revision: str) -> str:
+        value = self._policy_value(self._revision_path(revision) + "/policies/policy?format=rawxml")
+        if value is None:
+            raise PolicyCompilationError("The APIM revision parent policy is missing")
+        return value
 
     def inspect_revision_dependencies(
         self, publication: GatewayPublication
@@ -1131,7 +1349,11 @@ class AzureApimPublisherClient:
             if observed.status_code == 404:
                 issues.append("missing_apim_revision")
             else:
-                parent = self._policy_value(f"{revision_path}/policies/policy")
+                expected_contract = manifest.get("parent_policy_contract_sha256")
+                parent = self._policy_value(
+                    f"{revision_path}/policies/policy"
+                    + ("?format=rawxml" if expected_contract else "")
+                )
                 if parent is None:
                     issues.append("missing_parent_policy")
                 else:
@@ -1139,14 +1361,19 @@ class AzureApimPublisherClient:
                         manifest.get("parent_policy_sha256")
                         or manifest.get("base_policy_sha256")
                     )
-                    observed_parent_hash = hashlib.sha256(parent.encode("utf-8")).hexdigest()
                     if (
-                        expected_parent_hash is not None
-                        and observed_parent_hash != expected_parent_hash
+                        expected_parent_hash is not None or expected_contract is not None
+                    ) and not parent_readback_matches(
+                        parent,
+                        expected_contract=expected_contract,
+                        expected_raw=expected_parent_hash,
                     ):
                         issues.append("mismatched_parent_policy_sha256")
                 operation_policies: list[str] = []
-                for operation_id in self._managed_operation_ids():
+                managed_operations = self._managed_operation_ids(
+                    include_images=bool(manifest.get("images_generations_operation"))
+                )
+                for operation_id in managed_operations:
                     operation_path = (
                         f"{revision_path}/operations/{quote(operation_id, safe='')}"
                     )
@@ -1161,7 +1388,7 @@ class AzureApimPublisherClient:
                         issues.append(f"missing_operation_policy:{operation_id}")
                     else:
                         operation_policies.append(policy)
-                if len(operation_policies) == len(self._managed_operation_ids()):
+                if len(operation_policies) == len(managed_operations):
                     observed_policy_hash = hashlib.sha256(
                         "\n".join(operation_policies).encode("utf-8")
                     ).hexdigest()
@@ -1798,7 +2025,7 @@ class AzureApimPublisherClient:
         ):
             raise RetryablePublicationError("APIM subscription activation is not yet visible")
 
-    def _managed_operation_ids(self) -> tuple[str, ...]:
+    def _managed_operation_ids(self, *, include_images: bool = False) -> tuple[str, ...]:
         return (
             self._settings.apim_chat_completions_operation_id,
             self._settings.apim_responses_operation_id,
@@ -1806,6 +2033,7 @@ class AzureApimPublisherClient:
             self._settings.apim_messages_operation_id,
             self._settings.apim_count_tokens_operation_id,
             self._settings.apim_models_operation_id,
+            *(("images-generations",) if include_images else ()),
         )
 
     @staticmethod

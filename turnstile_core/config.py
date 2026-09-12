@@ -8,6 +8,8 @@ from typing import Literal
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .domain.image_profiles import ImageGenerationLimits
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -35,6 +37,15 @@ class Settings(BaseSettings):
     ledger_reservation_finalization_lag_hours: int = Field(default=24, ge=1, le=168)
     management_api_key: SecretStr | None = None
     production: bool = False
+    image_generation_enabled: bool = False
+    image_generation_defaults: ImageGenerationLimits = Field(
+        default_factory=lambda: ImageGenerationLimits(
+            max_request_bytes=24576,
+            max_response_bytes=16777216,
+            output_reservation_tokens=8192,
+            timeout_seconds=180,
+        )
+    )
     bootstrap_owner_email: str = ""
     bootstrap_owner_password_hash: SecretStr | None = None
 

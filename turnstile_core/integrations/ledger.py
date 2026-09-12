@@ -42,7 +42,12 @@ from uuid import UUID, uuid4
 import httpx
 
 from ..domain.application_access import GatewayApplicationLedgerState
-from ..domain.ledger import BudgetReservationFinalization, LedgerScopeType
+from ..domain.ledger import (
+    BudgetReservationAdmission,
+    BudgetReservationFinalization,
+    LedgerScopeType,
+    strict_budget_evidence,
+)
 from ..domain.models import ReconciledUsage, ReservationTerminalEvidence
 from ..persistence.repository import QueryRepository
 from .reconciliation import ManagedIdentityTokenProvider, ReservationTerminalLog
@@ -430,6 +435,7 @@ class LedgerSyncService:
         self._terminal_log = terminal_log
         self._recovery_lag = recovery_lag
         self._finalization_lag = finalization_lag
+        self._evidence_effective_at: datetime | None = None
 
     @staticmethod
     def _finalization_from_evidence(
@@ -438,8 +444,11 @@ class LedgerSyncService:
         period_start: date,
         reservation: LedgerReservation,
         evidence: ReservationTerminalEvidence,
+        *,
+        strict: bool = False,
+        evidence_correlation_id: str | None = None,
     ) -> BudgetReservationFinalization | None:
-        if evidence.correlation_id != reservation.correlation_id:
+        if evidence.correlation_id != (evidence_correlation_id or reservation.correlation_id):
             return None
         common = {
             "scope_type": scope_type,
@@ -462,7 +471,7 @@ class LedgerSyncService:
                     "source": "apim_gateway_llm_log",
                 }
             )
-        if evidence.is_terminal_zero:
+        if not strict and evidence.is_terminal_zero:
             return BudgetReservationFinalization.model_validate(
                 {
                     **common,
@@ -492,11 +501,18 @@ class LedgerSyncService:
         unresolved = [row for row in stale if row.correlation_id not in settled]
         if not unresolved:
             return 0
+        correlations = self._repository.reservation_evidence_correlations(
+            scope_type, scope_id, [row.correlation_id for row in unresolved]
+        )
+
+        def gateway_correlation(row: LedgerReservation) -> str:
+            return correlations.get(row.correlation_id, row.correlation_id)
+
         due = [row for row in unresolved if row.created_at <= moment - self._finalization_lag]
         try:
             evidence = list(
                 self._terminal_log.fetch_correlations(
-                    [row.correlation_id for row in unresolved],
+                    [gateway_correlation(row) for row in unresolved],
                     min(row.created_at for row in unresolved) - self._recovery_lag,
                     moment - self._recovery_lag,
                 )
@@ -504,7 +520,7 @@ class LedgerSyncService:
             if due:
                 evidence.extend(
                     self._terminal_log.fetch_correlations(
-                        [row.correlation_id for row in due],
+                        [gateway_correlation(row) for row in due],
                         min(row.created_at for row in due) - self._recovery_lag,
                         moment,
                     )
@@ -515,9 +531,23 @@ class LedgerSyncService:
             )
             return 0
         by_correlation: dict[str, ReservationTerminalEvidence] = {}
+        strict_correlations = {
+            gateway_correlation(row)
+            for row in unresolved
+            if strict_budget_evidence(row.created_at, self._evidence_effective_at)
+        }
         for item in evidence:
             previous = by_correlation.get(item.correlation_id)
-            if previous is None or (item.has_exact_usage, item.observed_at) > (
+            if item.correlation_id in strict_correlations:
+                if previous is None or (item.has_exact_usage and not previous.has_exact_usage):
+                    by_correlation[item.correlation_id] = item
+                elif (
+                    previous.has_exact_usage
+                    and item.has_exact_usage
+                    and (previous.total_tokens != item.total_tokens)
+                ):
+                    logger.warning("Conflicting terminal totals; retaining first complete evidence")
+            elif previous is None or (item.has_exact_usage, item.observed_at) > (
                 previous.has_exact_usage,
                 previous.observed_at,
             ):
@@ -544,10 +574,16 @@ class LedgerSyncService:
         for row in unresolved:
             if row.correlation_id in settled:
                 continue
-            row_evidence = by_correlation.get(row.correlation_id)
+            row_evidence = by_correlation.get(gateway_correlation(row))
             finalization = (
                 self._finalization_from_evidence(
-                    scope_type, scope_id, period_start, row, row_evidence
+                    scope_type,
+                    scope_id,
+                    period_start,
+                    row,
+                    row_evidence,
+                    strict=strict_budget_evidence(row.created_at, self._evidence_effective_at),
+                    evidence_correlation_id=gateway_correlation(row),
                 )
                 if row_evidence is not None
                 else None
@@ -708,6 +744,7 @@ class LedgerSyncService:
 
     def run(self, now: datetime | None = None) -> LedgerSyncOutcome:
         moment = now or datetime.now(UTC)
+        self._evidence_effective_at = self._repository.budget_evidence_effective_at()
         current_start = period_start_for(moment)
         previous_moment = datetime.combine(current_start, time.min, tzinfo=UTC) - timedelta(
             microseconds=1
@@ -715,6 +752,19 @@ class LedgerSyncService:
 
         partitions: dict[str, tuple[LedgerScopeType, str, date, list[LedgerReservation]]] = {}
         written = {"person": 0, "application": 0}
+        for request in self._repository.pending_billable_requests():
+            period = request["period_start"].strftime("%Y-%m")
+            partition = (
+                partition_key(request["scope_id"], period)
+                if request["scope_type"] == "person"
+                else application_partition_key(request["scope_id"], period)
+            )
+            entity: dict[str, Any] = {"Reserved": request["reserved_tokens"]}
+            if request.get("finalization_kind") == "unverified_upper_bound":
+                entity["FinalizationKind"] = "unverified_upper_bound"
+            self._store.upsert(
+                partition, reservation_row_key(request["created_at"], str(request["id"])), entity
+            )
         for partition in self._store.list_pending_partitions():
             parsed = parse_budget_partition(partition)
             if parsed is None:
@@ -723,6 +773,20 @@ class LedgerSyncService:
             scope_type, scope_id, start = parsed
             rows = list(self._store.list_reservations(partition))
             partitions[partition] = (scope_type, scope_id, start, rows)
+        self._repository.register_budget_reservations(
+            [
+                BudgetReservationAdmission(
+                    scope_type=scope_type,
+                    scope_id=scope_id,
+                    correlation_id=row.correlation_id,
+                    created_at=row.created_at,
+                    reserved_tokens=row.reserved_tokens,
+                )
+                for scope_type, scope_id, _start, rows in partitions.values()
+                for row in rows
+            ]
+        )
+        for scope_type, scope_id, start, rows in partitions.values():
             written[scope_type] += self._recover_reservations(
                 scope_type, scope_id, start, rows, moment
             )

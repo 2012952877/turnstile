@@ -78,9 +78,12 @@ export function ModelEditDialog({ registry, model, busy, error, onClose, onSave 
   const upstreamLabel = runtime?.brand_key === "microsoft_foundry" ? "Deployment Name"
     : runtime?.brand_key === "amazon_bedrock" ? "Model / Inference Profile ID" : "上游模型 ID"
   const roleOptions = modelEditRoleOptions(model)
+  const imageGeneration = model.capabilities.includes("image_generation")
   const dirty = modelEditHasChanges(initial, draft)
   const validation = validateModelEdit(draft)
-  const message = validation && (dirty || submitted) ? VALIDATION_MESSAGES[validation] : error
+  const imagePriceMissing = imageGeneration && [draft.inputPrice, draft.cacheReadPrice, draft.outputPrice].some(value => !value.trim())
+  const message = (dirty || submitted) && imagePriceMissing ? "请填写文字输入、缓存文字和图像输出单价。"
+    : validation && (dirty || submitted) ? VALIDATION_MESSAGES[validation] : error
   const update = <Key extends keyof ModelEditDraft>(key: Key, value: ModelEditDraft[Key]) => {
     setDraft((current) => ({ ...current, [key]: value }))
   }
@@ -89,6 +92,7 @@ export function ModelEditDialog({ registry, model, busy, error, onClose, onSave 
     event.preventDefault()
     setSubmitted(true)
     if (busy || !dirty || validation) return
+    if (imagePriceMissing) return
     onSave(modelEditPayload(model, draft))
   }
 
@@ -131,16 +135,16 @@ export function ModelEditDialog({ registry, model, busy, error, onClose, onSave 
             <div className="publication-section-heading">
               <span className="simple-section-title"><b id={`${id}-pricing`}>价格与限制</b></span>
               <span className="model-editor-unit" data-no-localize>USD / 1M Tokens</span>
-              <FieldHelp>留空表示未配置，不等于 0。</FieldHelp>
+              {!imageGeneration && <FieldHelp>留空表示未配置，不等于 0。</FieldHelp>}
             </div>
-            <div className="form-grid three">
-              <ModelEditNumberField id={`${id}-context`} label="上下文窗口" integer value={draft.contextWindow} onChange={(value) => update("contextWindow", value)} busy={busy} />
-              <ModelEditNumberField id={`${id}-input`} label="输入单价" value={draft.inputPrice} onChange={(value) => update("inputPrice", value)} busy={busy} />
-              <ModelEditNumberField id={`${id}-output`} label="输出单价" value={draft.outputPrice} onChange={(value) => update("outputPrice", value)} busy={busy} />
+            <div className={imageGeneration ? "form-grid" : "form-grid three"}>
+              {!imageGeneration && <ModelEditNumberField id={`${id}-context`} label="上下文窗口" integer value={draft.contextWindow} onChange={(value) => update("contextWindow", value)} busy={busy} />}
+              <ModelEditNumberField id={`${id}-input`} label={imageGeneration ? "文字输入单价" : "输入单价"} value={draft.inputPrice} onChange={(value) => update("inputPrice", value)} busy={busy} />
+              <ModelEditNumberField id={`${id}-output`} label={imageGeneration ? "图像输出单价" : "输出单价"} value={draft.outputPrice} onChange={(value) => update("outputPrice", value)} busy={busy} />
             </div>
             <div className="form-grid">
-              <ModelEditNumberField id={`${id}-cache-read`} label="缓存读取单价" value={draft.cacheReadPrice} onChange={(value) => update("cacheReadPrice", value)} busy={busy} help="留空按输入单价计费；填写 0 表示免费。" />
-              <ModelEditNumberField id={`${id}-cache-write`} label="缓存写入单价" value={draft.cacheWritePrice} onChange={(value) => update("cacheWritePrice", value)} busy={busy} help="留空按缓存读取单价计费；读取单价也未填写时按输入单价。填写 0 表示免费。" />
+              <ModelEditNumberField id={`${id}-cache-read`} label={imageGeneration ? "缓存文字单价" : "缓存读取单价"} value={draft.cacheReadPrice} onChange={(value) => update("cacheReadPrice", value)} busy={busy} help={imageGeneration ? undefined : "留空按输入单价计费；填写 0 表示免费。"} />
+              {!imageGeneration && <ModelEditNumberField id={`${id}-cache-write`} label="缓存写入单价" value={draft.cacheWritePrice} onChange={(value) => update("cacheWritePrice", value)} busy={busy} help="留空按缓存读取单价计费；读取单价也未填写时按输入单价。填写 0 表示免费。" />}
             </div>
           </section>
           <section className="simple-model-section model-editor-section" aria-labelledby={`${id}-access`}>
@@ -148,7 +152,7 @@ export function ModelEditDialog({ registry, model, busy, error, onClose, onSave 
             <div className="model-editor-state">
               <label className="model-editor-checkbox"><Checkbox checked={draft.enabled} disabled={busy}
                 onCheckedChange={(checked) => setDraft((current) => setModelEditEnabled(current, checked))} /><span>启用</span></label>
-              <label className="model-editor-checkbox"><Checkbox checked={draft.isDefault} disabled={busy}
+              <label className="model-editor-checkbox"><Checkbox checked={draft.isDefault} disabled={busy || imageGeneration}
                 onCheckedChange={(checked) => setDraft((current) => setModelEditDefault(current, checked))} /><span>设为默认</span></label>
             </div>
             <details className="model-editor-advanced">
@@ -171,7 +175,7 @@ export function ModelEditDialog({ registry, model, busy, error, onClose, onSave 
         </div>
         <DialogFooter className="registry-editor-footer">
           <Button type="button" variant="outline" className="publication-dismiss" onClick={close} disabled={busy}>取消</Button>
-          <Button type="submit" disabled={busy || !dirty || Boolean(validation)}>
+          <Button type="submit" disabled={busy || !dirty || Boolean(validation) || imagePriceMissing}>
             {busy ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />}{busy ? "正在保存" : "保存更改"}
           </Button>
         </DialogFooter>

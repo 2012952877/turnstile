@@ -720,7 +720,7 @@ class PostgreSqlApplicationRepositoryMixin:
             return []
         with self._connection() as connection:
             rows = connection.execute(
-                """SELECT usage.scope_id::UUID AS application_id,
+                """SELECT attribution.application_id,
                           COUNT(*)::BIGINT AS request_count,
                           COUNT(*) FILTER (WHERE usage.status_code >= 400)::BIGINT
                             AS denied_request_count,
@@ -734,15 +734,17 @@ class PostgreSqlApplicationRepositoryMixin:
                           ), 0)::BIGINT AS total_tokens,
                           COALESCE(SUM(usage.estimated_cost), 0)::DOUBLE PRECISION
                             AS estimated_cost,
-                                                    MAX(usage.occurred_at) AS last_request_at
-                                     FROM budget_scope_usage usage
-                                     WHERE usage.scope_type = 'application'
-                                         AND usage.scope_id = ANY(%s)
-                                         AND usage.occurred_at >= %s::TIMESTAMP AT TIME ZONE 'UTC'
-                                         AND usage.occurred_at < %s::TIMESTAMP AT TIME ZONE 'UTC'
-                                     GROUP BY usage.scope_id ORDER BY usage.scope_id""",
+                       MAX(usage.ts) AS last_request_at
+                       FROM token_usage usage
+                       JOIN token_usage_application_attribution attribution
+                       ON attribution.usage_id = usage.id
+                       WHERE usage.usage_domain = 'apim'
+                       AND attribution.application_id = ANY(%s)
+                       AND usage.ts >= %s::TIMESTAMP AT TIME ZONE 'UTC'
+                       AND usage.ts < %s::TIMESTAMP AT TIME ZONE 'UTC'
+                       GROUP BY attribution.application_id ORDER BY attribution.application_id""",
                 (
-                    [str(value) for value in application_ids],
+                    list(application_ids),
                     period_start,
                     period_end,
                 ),

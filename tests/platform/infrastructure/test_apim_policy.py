@@ -2,12 +2,49 @@ from datetime import UTC, datetime
 from xml.etree import ElementTree
 
 from tests.support.paths import REPOSITORY_ROOT
+from turnstile_core.config import Settings
+from turnstile_core.domain.image_profiles import create_image_profile
+from turnstile_core.integrations.apim_policy_components import (
+    IMAGE_CONDITION,
+    TEXT_CONDITION,
+    parse_policy,
+    validate_parent_policy,
+)
 from turnstile_core.integrations.ledger import ledger_stamp
 
 ROOT = REPOSITORY_ROOT
 POLICY_PATH = ROOT / "infra" / "policies" / "foundry-finops-policy.xml"
 APIM_MODULE_PATH = ROOT / "infra" / "modules" / "apim-integration.bicep"
 MAIN_TEMPLATE_PATH = ROOT / "infra" / "main.bicep"
+
+
+def test_public_parent_supports_images_without_using_text_token_policies() -> None:
+    policy = POLICY_PATH.read_text()
+    root = parse_policy(policy)
+    profile = create_image_profile(
+        Settings.model_construct().image_generation_defaults, "unit-image"
+    )
+    validate_parent_policy(policy, policy, [profile])
+    parents = {child: parent for parent in root.iter() for child in parent}
+    for tag in ("llm-token-limit", "llm-emit-token-metric"):
+        for node in root.iter(tag):
+            assert parents[node].get("condition") == TEXT_CONDITION
+    limits = list(root.iter("rate-limit-by-key"))
+    assert len(limits) == 2
+    assert all(
+        int(node.get("increment-count", "0")) >= profile.burst_reservation_tokens for node in limits
+    )
+    for name in ("maxOutputBound", "applicationMaxOutputBound"):
+        values = root.findall(f".//set-variable[@name='{name}']")
+        image = next(node for node in values if parents[node].get("condition") == IMAGE_CONDITION)
+        assert image.get("value") == '@((long)context.Variables["imageOutputBound"])'
+    image_usage = next(
+        node
+        for node in root.findall(".//set-variable[@name='usagePayload']")
+        if parents[node].get("condition") == IMAGE_CONDITION
+    )
+    assert "JTokenType.Integer" in image_usage.get("value", "")
+    assert "input - cached" in image_usage.get("value", "")
 
 
 def test_apim_model_path_never_calls_back_into_this_application() -> None:

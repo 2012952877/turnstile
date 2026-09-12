@@ -36,7 +36,9 @@ class TrafficGenerator:
         selected = [
             model
             for model in registry.models
-            if model.enabled and (not request.model_ids or model.id in request.model_ids)
+            if model.enabled
+            and (not request.model_ids or model.id in request.model_ids)
+            and "image_generation" not in model.capabilities
         ]
         if not selected:
             raise HTTPException(status_code=409, detail="No enabled models match the request")

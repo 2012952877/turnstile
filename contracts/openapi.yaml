@@ -6,7 +6,8 @@ info:
 
     processor. Query responses contain token counts and metadata only. Prompt
 
-    and completion content are intentionally absent from every schema.
+    and completion content are absent from usage queries. Authenticated image invocation
+    accepts a transient provider payload and returns an image without storing its content.
 
     '
 servers:
@@ -42,9 +43,13 @@ tags:
     '
 - name: Model Control Plane
   description: Owner-only desired-state publication to isolated APIM revisions.
+- name: Model Gateway
+  description: Authenticated, assigned and budget-governed internal model invocation.
 - name: Model Router
   description: User-scoped model routing drafts, validation, version publication, and lifecycle.
 paths:
+  /api/v1/model-gateway/images/generations:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-gateway~1images~1generations
   /api/v1/application-access/applications:
     $ref: ./openapi/paths/application-access.yaml#/paths/~1api~1v1~1application-access~1applications
   /api/v1/application-access/applications/{application_id}:
@@ -354,6 +359,22 @@ components:
       $ref: ./openapi/schemas/model-platform.yaml#/schemas/ModelConnectionUpdate
     ModelRegistry:
       $ref: ./openapi/schemas/model-platform.yaml#/schemas/ModelRegistry
+    ImageGenerationLimits:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/ImageGenerationLimits
+    ImageGenerationProfile:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/ImageGenerationProfile
+    ImageInvocationMetadata:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/ImageInvocationMetadata
+    ImageInvocationRequest:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/ImageInvocationRequest
+    ImageInvocationResponse:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/ImageInvocationResponse
+    ImageInvocationUsage:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/ImageInvocationUsage
+    GeneratedImage:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GeneratedImage
+    GatewayReconcileRequest:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayReconcileRequest
     GatewayPublicationCreate:
       $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayPublicationCreate
     GatewayPublicationRetry:

@@ -40,11 +40,21 @@ tests enforce these dependency and packaging boundaries.
 
 Connection and model changes are stored as immutable publication intent. The control-plane Function creates a candidate APIM revision, validates it, and promotes it only after probes pass. Gateway releases preserve integrity data and rollback metadata.
 
+## Governed image requests
+
+Image generation uses an explicitly published v4 profile on an existing Foundry Connection. The profile is content-addressed and release-owned. Text and image models can share the Connection credential while keeping distinct APIM operations and backend routes; image responses bypass the text usage observer. Connection credential rotation updates every owned binding and nested Pool reference in the candidate release before activation.
+
+The internal image API uses the same authenticated identity, model assignment and budget checks as text invocation. Before dispatch it records an immutable billable intent, request identity, model identity, admission month and reservation. A valid measured result creates an exact acknowledgement; uncertain results remain reserved. Publication probes use the same durable journal with explicit authorization and bounded attempts, including independent rollback phases. Worker leases are renewed during long probes and checked again when committing state or activation.
+
+The response carries one validated PNG, JPEG or WebP image. Preview URLs exist only in browser memory and are revoked on replacement or exit. Prompts and image bytes do not become usage records, logs or query-cache entries.
+
 ## Ledger finalization
 
 The Telemetry timer keeps reservation accounting outside the inference path. PostgreSQL stores append-only recovery evidence keyed by scope and APIM correlation. Exact usage takes precedence over terminal-zero evidence and conservative timeout bounds; an unmeasured late event cannot erase recovered exact usage. Read-only views apply this ordering to both Person and Application budget totals without fabricating request traces or model prices.
 
 The timer discovers reservations across older partitions, determines settlement before reading confirmed totals, projects `C`, then marks or deletes `R`. A timeout ends Pending status but retains the full reserved charge in the original Table row. Unknown or incomplete log results do not authorize finalization. Application snapshots record confirmed usage, pending reservations, finalized bounds and available Tokens together, rejecting older snapshots. Their timestamps describe observed ledger state, not a real-time balance guarantee.
+
+The independently gated v2 policy selects complete formal evidence, application acknowledgement and complete diagnostic recovery in that order. Equal-rank conflicts preserve first received evidence; an estimated or status-only error cannot displace a measured result. Immutable admission fixes the UTC budget month. Pre-cutover requests keep their legacy rules, with no backfill or historical reclassification. Person and Application budgets use the selected evidence, while raw activity retains only actual measured events and their original timestamps and pricing.
 
 ## Scope boundary
 

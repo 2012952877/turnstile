@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { AlertTriangle, RefreshCw, Send } from "lucide-react"
+import { AlertTriangle, Image as ImageIcon, MessageSquare, RefreshCw, Send } from "lucide-react"
 
 import {
   Select,
@@ -10,9 +10,11 @@ import {
   SelectValue,
 } from "../../../components/ui/select"
 import { useAuth } from "../../../providers/auth-provider"
+import { ButtonGroup } from "../../../components/ui/button-group"
 import { dataSource } from "../api"
 import { finopsQueries, invalidateFinOps } from "../queries"
-import type { EnterpriseEntityCatalog, ModelInvocationResponse } from "../types"
+import type { EnterpriseEntityCatalog, ImageGenerationOptions, ImageInvocationResponse, ModelInvocationResponse } from "../types"
+import { ImageGenerationResult, ImageOptions } from "./image-generation-result"
 import {
   compact,
   currency,
@@ -66,6 +68,12 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
     setUserId(sessionUser?.email ?? users[0]?.id ?? "");
   }, [sessionUser?.email, userId, users]);
   const [invocationTarget, setInvocationTarget] = useState(DEFAULT_MODEL_OPTION);
+  const [imageMode, setImageMode] = useState(false);
+  const [imageOptions, setImageOptions] = useState<ImageGenerationOptions>({});
+  const [imageResult, setImageResult] = useState<ImageInvocationResponse | null>(null);
+  const imageProfile = imageMode && invocationTarget.startsWith(MODEL_TARGET_PREFIX)
+    ? registry.data?.models.find(model => model.id === invocationTarget.slice(MODEL_TARGET_PREFIX.length))?.image_profile
+    : null;
   const [prompt, setPrompt] = useState(
     "Return one short recommendation for reducing model cost.",
   );
@@ -101,10 +109,12 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
     const selectedModelId = invocationTarget.startsWith(MODEL_TARGET_PREFIX)
       ? invocationTarget.slice(MODEL_TARGET_PREFIX.length)
       : "";
-    const model =
-      registry.data.models.find((item) => item.id === selectedModelId) ??
-      registry.data.models.find((item) => item.enabled);
+    const candidates = registry.data.models.filter(item => item.enabled && item.capabilities.includes("image_generation") === imageMode);
+    const model = candidates.find(item => item.id === selectedModelId)
+      ?? (imageMode ? undefined : candidates.find(item => item.is_default) ?? candidates[0]);
     if (!model) return;
+    if (imageMode && (registry.data.image_generation_supported !== true
+      || registry.data.image_configuration_schema_version !== 4 || !imageProfile)) return;
     const runtime = registry.data.runtimes.find(
       (item) => item.id === model?.runtime_id,
     );
@@ -117,8 +127,9 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
     setIsInvoking(true);
     setInvokeError(null);
     setResult(null);
+    setImageResult(null);
     try {
-      const response = await dataSource.invokeModel({
+      const invocation = {
         runtime_id: model.runtime_id,
         model_id: model.id,
         metadata: {
@@ -132,7 +143,7 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
           agent: agent.name,
           user_id: invocationUser.id,
           user: invocationUser.name,
-          workflow: `${project.id}-interactive`,
+          workflow: imageMode ? "image-generation" : `${project.id}-interactive`,
           model_id: model.id,
           // These two are display values, so they must carry names. Sending the registry
           // UUID here put a bare UUID in the model column of every denial trace; the
@@ -142,7 +153,7 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
           // missing registry entry now degrades to unattributed rather than to a UUID.
           model: model.model_key,
           runtime: runtime?.name ?? "unattributed",
-          request_source: "agent-invocation-module",
+          request_source: imageMode ? "image-invocation-module" : "agent-invocation-module",
           run_id: crypto.randomUUID(),
           turn_index: 1,
         },
@@ -152,8 +163,17 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
           ? { temperature: 0 }
           : {}),
         stream: true,
-      });
-      setResult({ ...response, requested_max_output_tokens: INVOCATION_MAX_OUTPUT_TOKENS });
+      };
+      if (imageMode) {
+        const response = await dataSource.generateImage({
+          ...imageOptions, model_id: model.id, runtime_id: model.runtime_id,
+          metadata: invocation.metadata, prompt, n: 1, stream: false,
+        });
+        setImageResult(response);
+      } else {
+        const response = await dataSource.invokeModel(invocation);
+        setResult({ ...response, requested_max_output_tokens: INVOCATION_MAX_OUTPUT_TOKENS });
+      }
       void invalidateFinOps(queryClient);
     } catch (error) {
       setInvokeError(queryError(error));
@@ -163,7 +183,7 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
   };
   if (registry.isLoading) return <LoadingState label="正在加载调用配置" />;
   if (registry.error) return <ErrorState error={registry.error} />;
-  const models = registry.data?.models.filter((item) => item.enabled) ?? [];
+  const models = registry.data?.models.filter(item => item.enabled && item.capabilities.includes("image_generation") === imageMode) ?? [];
   const selectedModel = invocationTarget.startsWith(MODEL_TARGET_PREFIX)
     ? models.find((model) => model.id === invocationTarget.slice(MODEL_TARGET_PREFIX.length))
     : null;
@@ -177,10 +197,30 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
     ? Math.max(result.usage.cached_tokens - cacheWriteTokens, 0)
     : null;
   const exhaustedOutputBudget = !!result?.usage && result.usage.output_tokens >= (result.requested_max_output_tokens ?? 64);
+  const imageAvailable = registry.data?.image_generation_supported === true
+    && registry.data.image_configuration_schema_version === 4;
+  const canInvoke = !isInvoking && Boolean(prompt.trim() && userId && projectId && agentId)
+    && (!imageMode || (imageAvailable && Boolean(selectedModel && imageProfile)));
+  const selectMode = (images: boolean) => {
+    if (isInvoking || imageMode === images) return;
+    setImageMode(images);
+    setImageOptions({});
+    setInvocationTarget(DEFAULT_MODEL_OPTION);
+    setResult(null);
+    setImageResult(null);
+    setInvokeError(null);
+    setPrompt("");
+  };
   return (
     <div className="invoke-layout">
       <section className="finops-panel">
         <PanelTitle title="调用参数" meta="在线模型" />
+        <div className="invoke-modebar"><ButtonGroup className="usage-metric-segment" aria-label="调用模式">
+          <button type="button" aria-pressed={!imageMode} className={!imageMode ? "active" : ""}
+            disabled={isInvoking} onClick={() => selectMode(false)}><MessageSquare size={14} />文本</button>
+          <button type="button" aria-pressed={imageMode} className={imageMode ? "active" : ""}
+            disabled={isInvoking} onClick={() => selectMode(true)}><ImageIcon size={14} />图像</button>
+        </ButtonGroup></div>
         <div className="invoke-form">
           <FilterSelect
             label="部门"
@@ -211,17 +251,24 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
             <span>调用目标</span>
             <Select
               value={invocationTarget}
-              onValueChange={(next) => setInvocationTarget(next ?? DEFAULT_MODEL_OPTION)}
+              disabled={isInvoking}
+              onValueChange={(next) => {
+                setInvocationTarget(next ?? DEFAULT_MODEL_OPTION);
+                setImageOptions({});
+                setImageResult(null);
+                setResult(null);
+                setInvokeError(null);
+              }}
             >
-              <SelectTrigger aria-label="调用目标" title={selectedModel?.display_name ?? "默认可用模型"}>
+              <SelectTrigger aria-label="调用目标" title={selectedModel?.display_name ?? (imageMode ? "选择图像模型" : "默认可用模型")}>
                 <SelectValue>
-                  {selectedModel?.display_name ?? "默认可用模型"}
+                  {selectedModel?.display_name ?? (imageMode ? "选择图像模型" : "默认可用模型")}
                 </SelectValue>
               </SelectTrigger>
               <SelectContent align="start" alignItemWithTrigger={false}>
-                <SelectItem value={DEFAULT_MODEL_OPTION}>
+                {!imageMode && <SelectItem value={DEFAULT_MODEL_OPTION}>
                   默认可用模型
-                </SelectItem>
+                </SelectItem>}
                 {models.map((model) => (
                   <SelectItem key={model.id} value={`${MODEL_TARGET_PREFIX}${model.id}`}>
                     {model.display_name}
@@ -230,6 +277,7 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
               </SelectContent>
             </Select>
           </div>
+          {imageMode && imageProfile && <ImageOptions value={imageOptions} onChange={setImageOptions} disabled={isInvoking} />}
           <div className="invoke-prompt">
             <span>Prompt</span>
             <div className="invoke-composer">
@@ -240,7 +288,7 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
                 onKeyDown={(event) => {
                   if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey) || event.nativeEvent.isComposing) return
                   event.preventDefault()
-                  if (!isInvoking && prompt.trim()) void invoke()
+                  if (canInvoke) void invoke()
                 }}
                 rows={7}
               />
@@ -255,7 +303,7 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
             type="button"
             className="primary-button"
             title={isInvoking ? "调用中..." : "发起调用 · ⌘↵"}
-            disabled={isInvoking || !prompt.trim()}
+            disabled={!canInvoke}
             onClick={() => void invoke()}
           >
             {isInvoking ? <RefreshCw className="spin" size={15} /> : <Send size={15} />}
@@ -264,6 +312,7 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
         </div>
       </section>
       <section className="finops-panel invoke-result">
+        {imageMode ? <ImageGenerationResult result={imageResult} pending={isInvoking} available={imageAvailable} /> : <>
         <PanelTitle title="调用结果" />
         {result ? (
           <div className="invoke-response">
@@ -330,6 +379,7 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
             detail="选择业务元数据和模型后发起请求。"
           />
         )}
+        </>}
       </section>
     </div>
   );

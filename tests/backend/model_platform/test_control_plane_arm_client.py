@@ -809,7 +809,7 @@ def test_arm_client_clones_revision_from_current_api() -> None:
         (
             "application/vnd.ms-azure-apim.policy+xml",
             '<policies value="&amp;quot;model&amp;quot;" />',
-            '<policies value="&quot;model&quot;" />',
+            '<policies value="&amp;quot;model&amp;quot;" />',
         ),
         (
             "application/json",
@@ -827,6 +827,7 @@ def test_arm_client_reads_current_policy_wire_formats(
         assert request.url.path.endswith(
             "/apis/turnstile-llm;rev=1/policies/policy"
         )
+        assert request.url.params["format"] == "rawxml"
         return httpx.Response(
             200,
             text=body,

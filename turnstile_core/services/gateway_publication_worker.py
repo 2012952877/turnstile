@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
+from uuid import uuid4
 
 import httpx
 
-from ..domain.control_plane import GatewayPublication, PublicationKind
+from ..domain.control_plane import (
+    ApiFormat,
+    GatewayPublication,
+    ImageProbeAuthorization,
+    PublicationKind,
+    publication_model_id,
+)
+from ..domain.image_profiles import validate_image_profile
 from ..integrations.apim_control_plane import (
     ApimPolicyCompiler,
     ApimPublisherClient,
@@ -14,9 +23,17 @@ from ..integrations.apim_control_plane import (
     PolicyCompilationError,
     RetryablePublicationError,
 )
+from ..integrations.apim_policy_components import (
+    component_digest,
+    parse_policy,
+    validate_parent_policy,
+    validate_parent_readback,
+)
 from ..persistence.repository import QueryRepository
 from ..security import CredentialCipher
 from .control_plane import GatewayControlPlaneService
+from .probe_journal import PersistentProbeJournal
+from .worker_lease import WorkerLease
 
 
 class GatewayPublicationWorker:
@@ -57,6 +74,7 @@ class GatewayPublicationWorker:
     def run_once(
         self, worker_id: str, lease_seconds: int = 180, max_attempts: int = 30
     ) -> GatewayPublication | None:
+        worker_id = f"{worker_id}:{uuid4().hex}"
         claimed = self._repository.claim_gateway_publication(worker_id, lease_seconds)
         if claimed is None:
             return None
@@ -68,7 +86,13 @@ class GatewayPublicationWorker:
                 and self._client.current_revision() == publication.apim_revision
             )
             if promoted_but_not_recorded:
-                return self._advance(publication, worker_id)
+                with WorkerLease(
+                    lambda: self._repository.renew_gateway_publication_lease(
+                        publication.id, worker_id, lease_seconds
+                    ),
+                    lease_seconds,
+                ) as lease:
+                    return self._advance(publication, worker_id, lease.heartbeat)
             failed = self._repository.transition_gateway_publication(
                 publication.id,
                 publication.status.value,
@@ -81,7 +105,13 @@ class GatewayPublicationWorker:
             )
             return GatewayPublication.model_validate(failed) if failed else publication
         try:
-            return self._advance(publication, worker_id)
+            with WorkerLease(
+                lambda: self._repository.renew_gateway_publication_lease(
+                    publication.id, worker_id, lease_seconds
+                ),
+                lease_seconds,
+            ) as lease:
+                return self._advance(publication, worker_id, lease.heartbeat)
         except AuthorizationRequiredError:
             waiting = self._repository.transition_gateway_publication(
                 publication.id,
@@ -130,7 +160,12 @@ class GatewayPublicationWorker:
             )
             return GatewayPublication.model_validate(failed) if failed else publication
 
-    def _advance(self, publication: GatewayPublication, worker_id: str) -> GatewayPublication:
+    def _advance(
+        self,
+        publication: GatewayPublication,
+        worker_id: str,
+        heartbeat: Callable[[], None] | None = None,
+    ) -> GatewayPublication:
         routed_publication = publication.model_copy(
             update={
                 "desired_spec": GatewayControlPlaneService._reconciled_release_spec(
@@ -140,12 +175,21 @@ class GatewayPublicationWorker:
             }
         )
         compiled = self._compiler.compile(routed_publication)
+        profiles = [
+            validate_image_profile(binding.model.image_profile)
+            for binding in routed_publication.desired_spec.bindings
+            if binding.api_format is ApiFormat.OPENAI_IMAGES
+        ]
+        image_release = compiled.images_generations_policy is not None
         status = publication.status.value
         updates: dict[str, Any] = {}
         if status == "queued":
-            self._compiler.patch_parent_policy(self._parent_policy)
             base_revision, live_policy = self._client.current_api_policy()
-            self._compiler.patch_parent_policy(live_policy)
+            if image_release or "imageGenerationPolicyVersion" in live_policy:
+                validate_parent_policy(live_policy, self._parent_policy, profiles)
+            else:
+                self._compiler.patch_parent_policy(self._parent_policy)
+                self._compiler.patch_parent_policy(live_policy)
             updates["resource_manifest"] = {
                 **publication.resource_manifest,
                 "base_apim_revision": base_revision,
@@ -199,8 +243,14 @@ class GatewayPublicationWorker:
                 raise PolicyCompilationError(
                     "The current APIM policy changed after publication was queued"
                 )
-            parent = self._compiler.patch_parent_policy(live_policy)
+            parent = (
+                validate_parent_policy(live_policy, self._parent_policy, profiles)
+                if image_release or "imageGenerationPolicyVersion" in live_policy
+                else self._compiler.patch_parent_policy(live_policy)
+            )
             self._client.put_api_policy(publication.apim_revision, parent)
+            for operation in compiled.operations:
+                self._client.ensure_operation(publication.apim_revision, operation)
             self._client.put_operation_policy(
                 publication.apim_revision,
                 self._chat_completions_operation_id,
@@ -231,20 +281,84 @@ class GatewayPublicationWorker:
                 self._models_operation_id,
                 compiled.models_policy,
             )
+            if compiled.images_generations_policy is not None:
+                self._client.put_operation_policy(
+                    publication.apim_revision,
+                    "images-generations",
+                    compiled.images_generations_policy,
+                )
             updates["policy_sha256"] = compiled.policy_sha256
             updates["resource_manifest"] = {
                 **publication.resource_manifest,
-                "parent_policy_sha256": hashlib.sha256(
-                    parent.encode("utf-8")
-                ).hexdigest(),
+                "parent_policy_sha256": hashlib.sha256(parent.encode("utf-8")).hexdigest(),
+                **(
+                    {
+                        "parent_policy_contract_sha256": component_digest(
+                            parse_policy(parent), normalize_text_defaults=False
+                        ),
+                        "images_generations_operation": True,
+                    }
+                    if image_release
+                    else {}
+                ),
             }
         elif status == "verifying":
             if not publication.apim_revision:
                 raise RuntimeError("Publication is missing its APIM revision")
-            self._client.probe_revision(publication.apim_revision, routed_publication)
+            if image_release:
+                validate_parent_readback(
+                    self._client.revision_api_policy(publication.apim_revision),
+                    self._parent_policy,
+                    profiles,
+                    expected_contract=publication.resource_manifest.get(
+                        "parent_policy_contract_sha256"
+                    ),
+                    expected_raw=publication.resource_manifest.get("parent_policy_sha256"),
+                )
+                authorization = ImageProbeAuthorization.model_validate(
+                    publication.resource_manifest.get(
+                        "image_probe_authorization", {"id": str(publication.id)}
+                    )
+                )
+                planned = {}
+                if publication.publication_kind is PublicationKind.MODEL_ADD:
+                    model = publication.desired_spec.bindings[-1].model
+                    planned[model.model_key] = publication_model_id(publication.id, model.model_key)
+                journal = PersistentProbeJournal(
+                    self._repository,
+                    f"publication:{publication.id}",
+                    authorization.id,
+                    authorization.attempt_limit,
+                    heartbeat,
+                    plan_context={
+                        "policy_sha256": compiled.policy_sha256,
+                        "desired_spec_sha256": publication.desired_spec_sha256,
+                        "credential_generation": publication.resource_manifest.get(
+                            "credential_generation"
+                        ),
+                    },
+                    planned_model_ids=planned,
+                )
+                self._client.probe_revision(
+                    publication.apim_revision, routed_publication, journal=journal
+                )
+            else:
+                self._client.probe_revision(publication.apim_revision, routed_publication)
         elif status == "promoting":
             if not publication.apim_revision:
                 raise RuntimeError("Publication is missing its APIM revision")
+            if heartbeat:
+                heartbeat()
+            if image_release:
+                validate_parent_readback(
+                    self._client.revision_api_policy(publication.apim_revision),
+                    self._parent_policy,
+                    profiles,
+                    expected_contract=publication.resource_manifest.get(
+                        "parent_policy_contract_sha256"
+                    ),
+                    expected_raw=publication.resource_manifest.get("parent_policy_sha256"),
+                )
             if self._client.current_revision() != publication.apim_revision:
                 self._client.promote_revision(
                     publication.apim_revision, f"turnstile-{publication.id.hex[:12]}"

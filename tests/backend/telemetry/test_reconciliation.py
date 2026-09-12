@@ -88,6 +88,29 @@ def test_terminal_evidence_invalid_results_are_not_successful_empty_queries(
         _parse_terminal_rows(payload)
 
 
+@pytest.mark.parametrize("kind", ["tables", "columns", "correlation", "error", "partial"])
+def test_terminal_evidence_rejects_ambiguous_and_partial_results(kind: str) -> None:
+    payload = _terminal_payload([["same", NOW.isoformat(), 200, None, 70, 30, 100]])
+    if kind == "tables":
+        payload["tables"].append(payload["tables"][0])
+    elif kind == "columns":
+        payload["tables"][0]["columns"].append({"name": "CorrelationId"})
+    elif kind == "correlation":
+        payload["tables"][0]["rows"].append(list(payload["tables"][0]["rows"][0]))
+    else:
+        payload["error" if kind == "error" else "partialError"] = None
+    with pytest.raises(RuntimeError):
+        _parse_terminal_rows(payload)
+
+
+@pytest.mark.parametrize("value", [True, 1.0, "1", -1])
+def test_terminal_evidence_does_not_coerce_token_values(value: object) -> None:
+    with pytest.raises(ValueError):
+        _parse_terminal_rows(
+            _terminal_payload([["exact", NOW.isoformat(), 200, None, value, 0, 1]])
+        )
+
+
 def test_terminal_evidence_client_batches_and_does_not_accept_partial_http_success() -> None:
     from unittest.mock import Mock
 

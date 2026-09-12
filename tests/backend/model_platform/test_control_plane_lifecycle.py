@@ -16,8 +16,10 @@ from tests.backend.model_platform.control_plane_support import (
     GatewayControlPlaneService,
     GatewayPublicationWorker,
     StubTokenProvider,
+    activate_publication,
     bedrock_publication,
     publisher_settings,
+    transition_publication,
 )
 from turnstile_core.domain.control_plane import (
     GatewayCredentialRotation,
@@ -148,7 +150,8 @@ def test_terminal_failure_erases_the_publication_api_key() -> None:
         request, "owner@example.com"
     )
 
-    repository.transition_gateway_publication(
+    transition_publication(
+        repository,
         publication.id,
         "queued",
         "failed",
@@ -232,11 +235,9 @@ def test_active_bedrock_runtime_must_be_reused_instead_of_recreated_in_the_same_
         "verifying",
         "promoting",
     ):
-        assert repository.transition_gateway_publication(
-            publication.id, current, status, {}, "worker"
-        )
+        assert transition_publication(repository, publication.id, current, status, {}, "worker")
         current = status
-    repository.activate_gateway_publication(publication.id, "worker")
+    activate_publication(repository, publication.id, "worker")
     provider = next(
         item for item in repository.providers if item["brand_key"] == "amazon_bedrock"
     )
@@ -264,11 +265,9 @@ def test_a_different_bedrock_region_creates_an_independent_runtime() -> None:
         "verifying",
         "promoting",
     ):
-        assert repository.transition_gateway_publication(
-            first.id, current, status, {}, "worker"
-        )
+        assert transition_publication(repository, first.id, current, status, {}, "worker")
         current = status
-    repository.activate_gateway_publication(first.id, "worker")
+    activate_publication(repository, first.id, "worker")
     provider = next(
         item for item in repository.providers if item["brand_key"] == "amazon_bedrock"
     )
@@ -315,7 +314,8 @@ def test_resubmitting_a_failed_publication_requeues_it_with_a_fresh_key() -> Non
     request.runtime.api_key = SecretStr("first-key")
     service = GatewayControlPlaneService(repository, cipher)
     publication = service.publish(request, "owner@example.com")
-    repository.transition_gateway_publication(
+    transition_publication(
+        repository,
         publication.id,
         "queued",
         "failed",
@@ -407,7 +407,7 @@ def test_only_promoted_release_materializes_the_active_registry() -> None:
     publication = service.publish(bedrock_publication(), "owner@example.com")
 
     with pytest.raises(ValueError, match="Only a promoted"):
-        repository.activate_gateway_publication(publication.id, "worker")
+        activate_publication(repository, publication.id, "worker")
 
     statuses = [
         "validating",
@@ -418,12 +418,10 @@ def test_only_promoted_release_materializes_the_active_registry() -> None:
     ]
     current = "queued"
     for status in statuses:
-        assert repository.transition_gateway_publication(
-            publication.id, current, status, {}, "worker"
-        )
+        assert transition_publication(repository, publication.id, current, status, {}, "worker")
         current = status
 
-    active = repository.activate_gateway_publication(publication.id, "worker")
+    active = activate_publication(repository, publication.id, "worker")
     model = next(
         item for item in repository.models if item["model_key"] == "claude-sonnet-4-6-bedrock"
     )
@@ -445,11 +443,9 @@ def test_bedrock_model_removal_is_physical_only_after_apim_promotion() -> None:
         "verifying",
         "promoting",
     ):
-        assert repository.transition_gateway_publication(
-            addition.id, current, status, {}, "worker"
-        )
+        assert transition_publication(repository, addition.id, current, status, {}, "worker")
         current = status
-    repository.activate_gateway_publication(addition.id, "worker")
+    activate_publication(repository, addition.id, "worker")
     model = next(
         item
         for item in repository.models
@@ -490,11 +486,9 @@ def test_bedrock_model_removal_is_physical_only_after_apim_promotion() -> None:
         "verifying",
         "promoting",
     ):
-        assert repository.transition_gateway_publication(
-            removal.id, current, status, {}, "worker"
-        )
+        assert transition_publication(repository, removal.id, current, status, {}, "worker")
         current = status
-    repository.activate_gateway_publication(removal.id, "worker")
+    activate_publication(repository, removal.id, "worker")
 
     assert all(item["id"] != model["id"] for item in repository.models)
     assert any(item["id"] == provider_id for item in repository.providers)
@@ -517,11 +511,9 @@ def test_removed_bedrock_model_can_be_readded_repeatedly() -> None:
             "verifying",
             "promoting",
         ):
-            assert repository.transition_gateway_publication(
-                publication_id, current, status, {}, "worker"
-            )
+            assert transition_publication(repository, publication_id, current, status, {}, "worker")
             current = status
-        repository.activate_gateway_publication(publication_id, "worker")
+        activate_publication(repository, publication_id, "worker")
 
     first_addition = service.publish(bedrock_publication(), "owner@example.com")
     activate(first_addition.id)
@@ -597,11 +589,9 @@ def test_foundry_model_removal_updates_shared_gateway_allowlist_before_deleting_
         "verifying",
         "promoting",
     ):
-        assert repository.transition_gateway_publication(
-            removal.id, current, status, {}, "worker"
-        )
+        assert transition_publication(repository, removal.id, current, status, {}, "worker")
         current = status
-    repository.activate_gateway_publication(removal.id, "worker")
+    activate_publication(repository, removal.id, "worker")
 
     assert all(item["id"] != model["id"] for item in repository.models)
     assert repository.user_model_policies["delete.user@contoso.com"]["model_ids"] == []
@@ -635,7 +625,8 @@ def test_failed_model_removal_requeues_without_api_key_even_if_gateway_is_disabl
         item for item in repository.models if item["model_key"] == "gpt-5.6-luna"
     )
     removal = service.remove_model(model["id"], "owner@example.com")
-    assert repository.transition_gateway_publication(
+    assert transition_publication(
+        repository,
         removal.id,
         "queued",
         "failed",
@@ -679,11 +670,9 @@ def test_second_model_reuses_dynamic_runtime_without_falling_back_to_databricks(
         "verifying",
         "promoting",
     ):
-        assert repository.transition_gateway_publication(
-            first.id, current, status, {}, "worker"
-        )
+        assert transition_publication(repository, first.id, current, status, {}, "worker")
         current = status
-    repository.activate_gateway_publication(first.id, "worker")
+    activate_publication(repository, first.id, "worker")
     provider = next(
         item for item in repository.providers if item["brand_key"] == "amazon_bedrock"
     )
@@ -720,11 +709,9 @@ def test_route_reconcile_rebuilds_effective_release_without_registry_mutation() 
         "verifying",
         "promoting",
     ):
-        assert repository.transition_gateway_publication(
-            initial.id, current, status, {}, "worker"
-        )
+        assert transition_publication(repository, initial.id, current, status, {}, "worker")
         current = status
-    repository.activate_gateway_publication(initial.id, "worker")
+    activate_publication(repository, initial.id, "worker")
     model_keys_before = sorted(model["model_key"] for model in repository.models)
 
     with pytest.raises(ValueError, match="effective gateway release changed"):
@@ -803,11 +790,9 @@ def test_route_reconcile_adopts_and_probes_existing_managed_runtime_models() -> 
         "verifying",
         "promoting",
     ):
-        assert repository.transition_gateway_publication(
-            initial.id, current, status, {}, "worker"
-        )
+        assert transition_publication(repository, initial.id, current, status, {}, "worker")
         current = status
-    repository.activate_gateway_publication(initial.id, "worker")
+    activate_publication(repository, initial.id, "worker")
 
     reconcile = service.reconcile_gateway(APIM_ID, "owner@example.com")
     expected_models = {
@@ -1001,11 +986,9 @@ def test_effective_release_survives_more_than_one_hundred_newer_failures() -> No
         "verifying",
         "promoting",
     ):
-        assert repository.transition_gateway_publication(
-            first.id, current, status, {}, "worker"
-        )
+        assert transition_publication(repository, first.id, current, status, {}, "worker")
         current = status
-    repository.activate_gateway_publication(first.id, "worker")
+    activate_publication(repository, first.id, "worker")
     provider = next(
         item for item in repository.providers if item["brand_key"] == "amazon_bedrock"
     )
@@ -1018,7 +1001,8 @@ def test_effective_release_survives_more_than_one_hundred_newer_failures() -> No
         request.provider = ProviderTarget(existing_id=provider["id"])
         request.runtime = RuntimeTarget(existing_id=runtime["id"])
         failed = service.publish(request, "owner@example.com")
-        assert repository.transition_gateway_publication(
+        assert transition_publication(
+            repository,
             failed.id,
             "queued",
             "failed",
@@ -1048,11 +1032,9 @@ def test_credential_rotation_switches_runtime_only_after_promotion() -> None:
         "verifying",
         "promoting",
     ):
-        assert repository.transition_gateway_publication(
-            first.id, current, status, {}, "worker"
-        )
+        assert transition_publication(repository, first.id, current, status, {}, "worker")
         current = status
-    repository.activate_gateway_publication(first.id, "worker")
+    activate_publication(repository, first.id, "worker")
     runtime = next(
         item
         for item in repository.runtimes

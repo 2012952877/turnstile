@@ -51,12 +51,24 @@ class PostgreSqlRegistryRepositoryMixin:
                                         AS upstream_model_id,
                                     COALESCE(metadata.assignment_required, FALSE)
                                         AS assignment_required,
-                                    metadata.publication_id
+                                    metadata.publication_id,
+                                    binding.value->'model'->'image_profile' AS image_profile
                      FROM managed_model model
                      JOIN model_provider provider ON provider.id = model.provider_id
                      JOIN model_runtime runtime ON runtime.id = model.runtime_id
                      LEFT JOIN managed_model_metadata metadata
                          ON metadata.model_id = model.id
+                     LEFT JOIN effective_gateway_release effective
+                         ON effective.gateway_profile_id = runtime.gateway_profile_id
+                     LEFT JOIN gateway_publication publication
+                         ON publication.id = effective.publication_id
+                     LEFT JOIN LATERAL (
+                         SELECT value FROM jsonb_array_elements(
+                             COALESCE(publication.desired_spec->'bindings', '[]'::jsonb)
+                         ) binding
+                         WHERE lower(value->'model'->>'model_key') = lower(model.model_key)
+                         LIMIT 1
+                     ) binding ON TRUE
                      ORDER BY model.is_default DESC, model.display_name"""
             ).fetchall()
         return {

@@ -4,12 +4,15 @@ import json
 import re
 import stat
 import subprocess
+import tomllib
 import urllib.error
 import zipfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
+from packaging.tags import cpython_tags
+from packaging.utils import parse_wheel_filename
 
 from scripts.deploy import (
     CommandRunner,
@@ -799,7 +802,7 @@ def test_linux_dependency_command_uses_pinned_target_platform(tmp_path: Path) ->
     command = linux_dependency_command(staged)
 
     assert command[:3] == ["uv", "pip", "install"]
-    assert "x86_64-manylinux_2_17" in command
+    assert "x86_64-manylinux_2_28" in command
     assert "3.11" in command
     assert "--compile-bytecode" not in command
     assert "--no-compile" not in command
@@ -814,10 +817,26 @@ def test_pip_fallback_uses_pinned_target_platform(tmp_path: Path) -> None:
     command = pip_linux_dependency_command(staged, "/usr/bin/pip3")
 
     assert command[:2] == ["/usr/bin/pip3", "install"]
+    assert "manylinux_2_28_x86_64" in command
+    assert "manylinux_2_17_x86_64" in command
     assert "manylinux2014_x86_64" in command
     assert "3.11" in command
     assert "--only-binary=:all:" in command
     assert "--requirement" in command
+
+
+def test_linux_fallback_accepts_locked_pillow_and_older_binary_wheels(tmp_path: Path) -> None:
+    command = pip_linux_dependency_command(tmp_path / "staged", "/usr/bin/pip3")
+    platforms = [command[index + 1] for index, value in enumerate(command) if value == "--platform"]
+    compatible = set(cpython_tags(python_version=(3, 11), abis=["cp311"], platforms=platforms))
+    lock = tomllib.loads((REPOSITORY_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    for package_name in ("pillow", "cryptography", "psycopg-binary"):
+        package = next(item for item in lock["package"] if item["name"] == package_name)
+        available = set().union(*(
+            parse_wheel_filename(wheel["url"].rsplit("/", 1)[-1])[3]
+            for wheel in package["wheels"]
+        ))
+        assert compatible.intersection(available), f"No compatible locked wheel for {package_name}"
 
 
 def test_frontend_asset_reads_the_hashed_entrypoint(tmp_path: Path) -> None:

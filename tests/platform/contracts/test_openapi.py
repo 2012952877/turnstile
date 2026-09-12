@@ -24,6 +24,7 @@ import yaml  # type: ignore[import-untyped]
 
 from backend.api import app
 from tests.support.paths import REPOSITORY_ROOT
+from turnstile_core.domain.runtime_models import ModelVendorKey
 
 CONTRACT = REPOSITORY_ROOT / "contracts" / "openapi.yaml"
 METHODS = {"get", "post", "put", "patch", "delete"}
@@ -139,6 +140,27 @@ def test_image_contract_is_single_nonstreaming_passthrough_and_session_protected
     )
     retry = cast(dict[str, dict[str, object]], schemas["GatewayPublicationRetry"]["properties"])
     assert retry["authorize_image_probes"]["default"] is False
+    view = cast(dict[str, dict[str, object]], schemas["GatewayPublication"]["properties"])
+    assert view["retry_can_authorize_image_probes"]["default"] is False
+    assert "retry_can_authorize_image_probes" in (
+        app.openapi()["components"]["schemas"]["GatewayPublicationView"]["properties"]
+    )
+
+
+def test_direct_publication_vendor_contract_matches_runtime_dto() -> None:
+    schema = _documented_schemas()["GatewayRuntimeTarget"]
+    properties = cast(dict[str, dict[str, object]], schema["properties"])
+    assert set(cast(list[str], properties["model_vendor"]["enum"])) == {
+        vendor.value for vendor in ModelVendorKey
+    }
+    actual = app.openapi()["components"]["schemas"]["RuntimeTarget"]
+    assert "model_vendor" in actual["properties"]
+    for branch in cast(list[dict[str, object]], schema["oneOf"]):
+        rejected = cast(dict[str, object], branch["not"])["anyOf"]
+        if "openai_base_url" in cast(list[str], branch["required"]):
+            assert {"required": ["model_vendor"]} not in cast(list[object], rejected)
+        else:
+            assert {"required": ["model_vendor"]} in cast(list[object], rejected)
 
 
 def test_application_ledger_fields_preserve_unknown_and_zero() -> None:

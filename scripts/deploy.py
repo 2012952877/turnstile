@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 import urllib.error
 import urllib.request
 import zipfile
@@ -20,6 +21,7 @@ from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from importlib.metadata import distributions
 from pathlib import Path
 from typing import Any
 
@@ -756,6 +758,8 @@ def linux_dependency_command(staged: Path) -> list[str]:
         str(target),
         "--requirements",
         str(staged / "requirements.txt"),
+        "--constraint",
+        str(staged / "constraints.txt"),
     ]
 
 
@@ -781,10 +785,49 @@ def pip_linux_dependency_command(staged: Path, pip: str) -> list[str]:
         str(target),
         "--requirement",
         str(staged / "requirements.txt"),
+        "--constraint",
+        str(staged / "constraints.txt"),
     ]
 
 
+def validate_packaged_dependencies(staged: Path) -> None:
+    lock_bytes = (REPOSITORY_ROOT / "uv.lock").read_bytes()
+    lock = tomllib.loads(lock_bytes.decode("utf-8"))
+    allowed: dict[str, set[str]] = {}
+    for package in lock["package"]:
+        name = re.sub(r"[-_.]+", "-", package["name"]).lower()
+        allowed.setdefault(name, set()).add(package["version"])
+    installed: dict[str, str] = {}
+    target = staged / ".python_packages" / "lib" / "site-packages"
+    for distribution in distributions(path=[str(target)]):
+        name = re.sub(r"[-_.]+", "-", distribution.metadata["Name"] or "").lower()
+        version = distribution.version
+        if name in installed or version not in allowed.get(name, set()):
+            raise DeploymentError(f"Packaged dependency does not match uv.lock: {name}=={version}")
+        installed[name] = version
+    if not installed:
+        raise DeploymentError("The deployment package contains no installed dependencies")
+    (staged / "dependency-manifest.json").write_text(
+        json.dumps(
+            {
+                "lock_sha256": hashlib.sha256(lock_bytes).hexdigest(),
+                "packages": dict(sorted(installed.items())),
+            },
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _install_linux_dependencies(runner: CommandRunner, staged: Path) -> None:
+    runner.run(
+        [
+            "uv", "export", "--locked", "--no-dev", "--no-emit-project", "--no-hashes",
+            "--format", "requirements-txt", "--output-file", str(staged / "constraints.txt"),
+        ],
+        cwd=REPOSITORY_ROOT,
+        capture=True,
+    )
     try:
         runner.run(linux_dependency_command(staged), cwd=REPOSITORY_ROOT)
     except subprocess.CalledProcessError:
@@ -798,6 +841,7 @@ def _install_linux_dependencies(runner: CommandRunner, staged: Path) -> None:
             pip_linux_dependency_command(staged, pip),
             cwd=REPOSITORY_ROOT,
         )
+    validate_packaged_dependencies(staged)
 
 
 def build_packages(

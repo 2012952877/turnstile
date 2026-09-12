@@ -516,6 +516,8 @@ schemas:
           - foundry_inference_endpoint
         - required:
           - openai_base_url
+        - required:
+          - model_vendor
     - required:
       - bedrock_runtime_url
       - api_key
@@ -529,6 +531,8 @@ schemas:
           - foundry_inference_endpoint
         - required:
           - openai_base_url
+        - required:
+          - model_vendor
     - required:
       - foundry_project_endpoint
       not:
@@ -543,6 +547,8 @@ schemas:
           - api_key
         - required:
           - openai_base_url
+        - required:
+          - model_vendor
     - required:
       - foundry_project_endpoint
       - foundry_inference_endpoint
@@ -555,6 +561,8 @@ schemas:
           - bedrock_runtime_url
         - required:
           - openai_base_url
+        - required:
+          - model_vendor
     - required:
       - openai_base_url
       - api_key
@@ -590,6 +598,11 @@ schemas:
         pattern: ^https://
         description: HTTPS Chat Completions Base URL without credentials, query or fragment;
           requires api_key when creating a new Runtime.
+      model_vendor:
+        type: string
+        enum: [generic, openai, anthropic, deepseek, kimi]
+        description: Vendor for a new OpenAI-compatible Runtime only. Existing connections
+          retain their configured vendor and cannot redefine it in a publication request.
       api_key:
         type: string
         format: password
@@ -736,6 +749,11 @@ schemas:
         type: boolean
         description: True when retry cannot reuse a release-owned APIM credential resource
           from persisted publication or completed provisioning evidence.
+      retry_can_authorize_image_probes:
+        type: boolean
+        default: false
+        description: Whether a failed publication can accept explicit consent for new paid image
+          probes. False for non-image publications, unsupported retry kinds and the 32-attempt limit.
       attempt_count:
         type: integer
         minimum: 0

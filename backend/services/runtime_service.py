@@ -589,7 +589,6 @@ class ModelRuntimeService:
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         self._ensure_unique_connection(runtimes, write.gateway_profile_id, "base_url", base_url)
-        scope = f"{write.gateway_profile_id}:{base_url.casefold()}"
         return {
             "name": openai_compatible_runtime_name(base_url, model_vendor),
             "runtime_kind": "openai_compatible",
@@ -603,9 +602,7 @@ class ModelRuntimeService:
                 "backend_url": backend_url,
                 "backend_path": backend_path,
                 "auth_strategy": "named_value_bearer",
-                "named_value_name": (
-                    "turnstile-openai-" + hashlib.sha256(scope.encode("utf-8")).hexdigest()[:16]
-                ),
+                "named_value_name": f"turnstile-openai-{uuid4().hex}",
                 "credential_kind": "api_key",
                 "credential_provisioned": False,
                 "key_vault_secret_id": None,

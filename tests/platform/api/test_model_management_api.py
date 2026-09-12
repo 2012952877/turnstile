@@ -24,6 +24,7 @@ from tests.backend.model_platform.control_plane_support import (
     activate_publication,
     transition_publication,
 )
+from tests.backend.model_platform.test_image_publication import image_publication
 from turnstile_core.config import Settings
 from turnstile_core.domain.control_plane import GatewayPublication, GatewayPublicationCreate
 from turnstile_core.integrations.apim_control_plane import ApimPolicyCompiler
@@ -59,6 +60,22 @@ def publication_api() -> Iterator[InMemoryRepository]:
     app.dependency_overrides.pop(control_plane_service, None)
     app.dependency_overrides.pop(require_authenticated_session, None)
     app.dependency_overrides.pop(require_publication_owner, None)
+
+
+@pytest.mark.parametrize("deployment_name", ["   ", "\t\n"])
+def test_invalid_image_deployment_returns_conflict_without_publication(
+    publication_api: InMemoryRepository, deployment_name: str
+) -> None:
+    service = GatewayControlPlaneService(
+        publication_api, image_generation_enabled=True, apim_principal_id="unit-principal"
+    )
+    app.dependency_overrides[control_plane_service] = lambda: service
+    payload = image_publication(publication_api).model_dump(mode="json")
+    payload["model"]["deployment_name"] = deployment_name
+    response = client.post("/api/v1/model-management/publications", json=payload)
+    assert response.status_code == 409
+    assert publication_api.gateway_publications == []
+    assert publication_api.gateway_publication_outbox == []
 
 
 @pytest.fixture

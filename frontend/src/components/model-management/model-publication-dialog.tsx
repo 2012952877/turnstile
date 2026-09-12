@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { Check, Circle, Copy, Eye, EyeOff, LoaderCircle, Rocket, Server, ShieldCheck, TriangleAlert, X } from "lucide-react"
+import { Check, Circle, Copy, Eye, EyeOff, LoaderCircle, Rocket, ShieldCheck, TriangleAlert, X } from "lucide-react"
 
 import { dataSource } from "../../data-sources/apim/api"
 import { finopsKeys, finopsQueries } from "../../data-sources/apim/queries"
@@ -18,6 +18,7 @@ import {
   providerBrandFromMetadata,
 } from "../brand-logos"
 import { Button } from "../ui/button"
+import { Checkbox } from "../ui/checkbox"
 import {
   Dialog,
   DialogContent,
@@ -219,6 +220,7 @@ export function ModelPublicationDialog({
   }[selectedRuntime ? publicationConnectionAuth(selectedRuntime, selectedProvider) : "connection"]
 
   const [providerApiKey, setProviderApiKey] = useState("")
+  const [imageProbeAuthorization, setImageProbeAuthorization] = useState<string | null>(null)
   const [foundryDeployment, setFoundryDeployment] = useState("")
   const [modelOperation, setModelOperation] = useState<"chat" | "image_generation">("chat")
   const imageGeneration = foundry && modelOperation === "image_generation"
@@ -239,6 +241,12 @@ export function ModelPublicationDialog({
   const requiredCredentialMissing = selectedRuntimeNeedsCredential && !providerApiKey.trim()
   const effectiveModelKey = openaiCompatible ? publicModelKeyFromProviderId(upstreamModelId) : modelKey.trim()
   const effectiveDisplayName = openaiCompatible ? displayNameFromProviderId(upstreamModelId) : displayName.trim()
+  const priceValues = imageGeneration ? [inputPrice, outputPrice, cacheReadPrice] : [inputPrice, outputPrice, cacheReadPrice, cacheWritePrice]
+  const pricingStatus = priceValues.every(value => value.trim()) ? "价格已填写"
+    : priceValues.some(value => value.trim()) ? "价格部分填写" : "价格未填写"
+  const connectionLogo = (runtime: ModelRuntime) => registry.providers.find(provider => provider.id === runtime.provider_id)?.provider_kind === "openai_compatible"
+    ? <ModelVendorLogo value={modelVendorFromMetadata(runtime.config, `${runtime.name} ${runtime.provider_name}`)} size={15} />
+    : <ProviderBrandLogo brand={providerBrandFromMetadata(runtime.brand_key, runtime.provider_name)} size={15} />
 
   const publication = useQuery(finopsQueries.gatewayPublication(publicationId))
 
@@ -363,6 +371,7 @@ export function ModelPublicationDialog({
       const queued = await dataSource.retryGatewayPublication(
         publicationId,
         retryRequiresCredential ? providerApiKey.trim() : undefined,
+        publication.data?.retry_can_authorize_image_probes === true && imageProbeAuthorization === publicationId,
       )
       setProviderApiKey("")
       setKeyRevealed(false)
@@ -375,6 +384,7 @@ export function ModelPublicationDialog({
     } catch (requestError) {
       setPublishError(String(requestError))
     } finally {
+      setImageProbeAuthorization(null)
       setPublishing(false)
     }
   }
@@ -418,6 +428,7 @@ export function ModelPublicationDialog({
       }}>
         <DialogHeader className="registry-editor-header">
           <DialogTitle>{dialogTitle}</DialogTitle>
+          {!publicationId && <DialogDescription>选择已有连接，将模型或部署发布到所选网关。</DialogDescription>}
           {publication.data && <DialogDescription data-no-localize>{`${publication.data.display_name} · ${publication.data.model_key}`}</DialogDescription>}
         </DialogHeader>
         <button type="button" className="registry-editor-close" onClick={close} disabled={publishing} aria-label="关闭"><X size={16} /></button>
@@ -449,65 +460,74 @@ export function ModelPublicationDialog({
             <Button type="button" variant="outline" onClick={() => void copyAuthorization()}><Copy size={14} />复制授权信息</Button>
           </div>}
 
+          {failed && publication.data?.retry_can_authorize_image_probes === true && <div className="simple-model-section simple-connection-section">
+            <label className="model-editor-checkbox">
+              <Checkbox id="authorize-image-probes" checked={imageProbeAuthorization === publicationId}
+                disabled={publishing} onCheckedChange={checked => setImageProbeAuthorization(checked === true ? publicationId : null)} />
+              <span>授权本次重试新增付费图像探针</span>
+            </label>
+            <p className="publication-form-note">此前图像请求可能已产生费用。确认后，每个待验证图像模型最多新增一次探针；已验证的相同请求不会重放。</p>
+          </div>}
           {failed && publication.data?.retry_requires_credential && <div className="simple-model-section simple-connection-section">
             <div className="simple-section-title"><b>重新发布</b></div>
             <div className="registry-field"><span className="registry-field-label-row"><label className="registry-field-label" htmlFor="retry-api-key">Provider API Key</label><FieldHelp>请输入新的 API Key 后重新发布同一模型。</FieldHelp></span><div className="login-password"><Input id="retry-api-key" type={keyRevealed ? "text" : "password"} autoComplete="off" value={providerApiKey} onChange={(event) => setProviderApiKey(event.target.value)} disabled={publishing} /><button type="button" className="login-reveal" onClick={() => setKeyRevealed((value) => !value)} aria-label={keyRevealed ? "隐藏 API Key" : "显示 API Key"} aria-pressed={keyRevealed} disabled={publishing}>{keyRevealed ? <EyeOff size={15} /> : <Eye size={15} />}</button></div></div>
           </div>}
 
           {!publicationId && <>
-          <section className="simple-model-section simple-target-section" aria-label="发布目标">
-            <div className="publication-connection-heading">
-              <b>发布目标</b>
-              <Button type="button" variant="outline" size="sm" onClick={onManageConnections} disabled={publishing}>
-                <Server size={14} />管理连接
-              </Button>
-            </div>
-            <div className="simple-model-grid single">
-              <div className="registry-field">
-                <span className="registry-field-label">APIM 网关</span>
-                <Select value={selectedGateway?.id ?? ""} onValueChange={chooseGateway} disabled={publishing || apimGateways.length === 0}>
-                  <SelectTrigger className="registry-select-trigger" aria-label="APIM 网关">
-                    <SelectValue>{selectedGateway ? <span className="registry-option"><GatewayBrandLogo brand={gatewayBrandFromIdentity(`${selectedGateway.name} ${selectedGateway.implementation}`)} size={15} /><span>{selectedGateway.name}</span></span> : "选择 APIM 网关"}</SelectValue>
+          <section className="simple-model-section publication-target" aria-label="发布目标">
+            {apimGateways.length > 1 ? <div className="registry-field">
+                <span className="registry-field-label">目标网关</span>
+                <Select value={selectedGateway?.id ?? ""} onValueChange={chooseGateway} disabled={publishing}>
+                  <SelectTrigger className="registry-select-trigger" aria-label="目标网关">
+                    <SelectValue>{selectedGateway ? <span className="registry-option"><GatewayBrandLogo brand={gatewayBrandFromIdentity(`${selectedGateway.name} ${selectedGateway.implementation}`)} size={15} /><span data-no-localize>{selectedGateway.name}</span></span> : "选择目标网关"}</SelectValue>
                   </SelectTrigger>
                   <SelectContent align="start" alignItemWithTrigger={false}>
                     {apimGateways.map((gateway) => <SelectItem key={gateway.id} value={gateway.id}><span className="registry-option"><GatewayBrandLogo brand={gatewayBrandFromIdentity(`${gateway.name} ${gateway.implementation}`)} size={15} /><span>{gateway.name}</span></span></SelectItem>)}
                   </SelectContent>
                 </Select>
-              </div>
-              <div className="registry-field">
-                <span className="registry-field-label">已有连接</span>
-                <Select value={selectedRuntime?.id ?? ""} onValueChange={chooseRuntime} disabled={publishing || apimRuntimes.length === 0}>
-                  <SelectTrigger className="registry-select-trigger" aria-label="已有连接">
+            </div> : selectedGateway ? <div className="publication-target-summary">
+              <span className="registry-field-label">目标网关</span>
+              <span className="registry-option"><GatewayBrandLogo brand={gatewayBrandFromIdentity(`${selectedGateway.name} ${selectedGateway.implementation}`)} size={15} /><span data-no-localize>{selectedGateway.name}</span></span>
+            </div> : <div className="registry-error" role="alert">没有可用的 Azure API Management 网关。</div>}
+          </section>
+
+          {selectedGateway && <>
+          <section className="simple-model-section" aria-labelledby="publication-connection-heading">
+            <div className="publication-section-heading">
+              <span className="simple-section-title"><b id="publication-connection-heading">连接</b><FieldHelp>连接包含服务端点和认证方式。切换网关或连接会清空未提交的模型与凭据。</FieldHelp></span>
+              <Button type="button" variant="ghost" size="xs" className="publication-connection-action" onClick={onManageConnections} disabled={publishing}>管理连接</Button>
+            </div>
+            {apimRuntimes.length > 0 ? <div className="registry-field">
+                <Select value={selectedRuntime?.id ?? ""} onValueChange={chooseRuntime} disabled={publishing}>
+                  <SelectTrigger className="registry-select-trigger" aria-label="连接">
                     <SelectValue>{selectedRuntime ? <span className="registry-option">
-                      <ProviderBrandLogo brand={providerBrandFromMetadata(selectedRuntime.brand_key, selectedRuntime.provider_name)} size={15} />
+                      {connectionLogo(selectedRuntime)}
                       <span data-no-localize>{runtimeChoiceLabel(selectedRuntime)}</span>
-                    </span> : "选择已有连接"}</SelectValue>
+                    </span> : "选择连接"}</SelectValue>
                   </SelectTrigger>
                   <SelectContent align="start" alignItemWithTrigger={false}>
                     {apimRuntimes.map((runtime) => <SelectItem key={runtime.id} value={runtime.id}>
                       <span className="registry-option">
-                        <ProviderBrandLogo brand={providerBrandFromMetadata(runtime.brand_key, runtime.provider_name)} size={15} />
+                        {connectionLogo(runtime)}
                         <span data-no-localize>{runtimeChoiceLabel(runtime)}</span>
                       </span>
                     </SelectItem>)}
                   </SelectContent>
                 </Select>
-              </div>
-            </div>
-            {!selectedGateway && <p className="publication-connection-empty" role="status">没有可用的 Azure API Management 网关。</p>}
-            {selectedGateway && apimRuntimes.length === 0 && <p className="publication-connection-empty" role="status">当前网关没有可用连接。</p>}
-            {selectedRuntime && <dl className="publication-connection-summary" aria-label="连接信息">
-              <div><dt>提供方</dt><dd data-no-localize>{selectedProvider?.name ?? selectedRuntime.provider_name}</dd></div>
+                {!selectedRuntime && <div className="registry-error" role="alert">所选连接已不可用，请重新选择。</div>}
+            </div> : <p className="publication-form-note" role="status">此网关没有可用连接。请先到连接管理添加并启用连接。</p>}
+            {selectedRuntime && selectedProvider && <dl className="publication-connection-summary" aria-label="连接信息">
+              <div><dt>接入类型</dt><dd className="registry-option"><ProviderBrandLogo brand={providerBrandFromMetadata(selectedProvider.brand_key, selectedProvider.name)} size={15} /><span data-no-localize>{openaiCompatible ? "OpenAI-compatible API" : selectedProvider.name}</span></dd></div>
               <div><dt>认证方式</dt><dd>{connectionAuthLabel}</dd></div>
               {selectedVendor && <div><dt>API 服务商</dt><dd className="registry-option"><ModelVendorLogo value={selectedVendor} size={15} /><span>{modelVendorLabel(selectedVendor)}</span></dd></div>}
-              {connectionEndpoint && <div className="publication-connection-endpoint"><dt>Endpoint</dt><dd data-no-localize><code>{connectionEndpoint}</code></dd></div>}
+              {connectionEndpoint && <div className="publication-connection-endpoint"><dt>Endpoint</dt><dd data-no-localize>{connectionEndpoint}</dd></div>}
             </dl>}
           </section>
 
-          {selectedRuntime && <>
-            <section className="simple-model-section simple-connection-section" aria-label="模型">
-              <div className="simple-section-title"><b>模型</b></div>
-              {foundry && <div className="registry-field">
+          {selectedRuntime && selectedProvider && <>
+            <section className="simple-model-section simple-connection-section" aria-labelledby="publication-model-heading">
+              <div className="simple-section-title"><b id="publication-model-heading">模型</b></div>
+              {foundry ? <div className="simple-model-grid publication-model-identity-grid"><div className="registry-field">
                 <span className="registry-field-label">模型用途</span>
                 <Select value={modelOperation} disabled={publishing} onValueChange={operation => {
                   if (operation !== "chat" && operation !== "image_generation") return
@@ -518,20 +538,19 @@ export function ModelPublicationDialog({
                   setCacheReadPrice("")
                   setCacheWritePrice("")
                 }}>
-                  <SelectTrigger aria-label="模型用途"><SelectValue>{imageGeneration ? "文生图" : "对话"}</SelectValue></SelectTrigger>
+                  <SelectTrigger className="registry-select-trigger" aria-label="模型用途"><SelectValue>{imageGeneration ? "文生图" : "对话"}</SelectValue></SelectTrigger>
                   <SelectContent align="start" alignItemWithTrigger={false}>
                     <SelectItem value="chat">对话</SelectItem>
                     <SelectItem value="image_generation" disabled={registry.image_generation_supported !== true || !imageConfigurationSupported}>文生图</SelectItem>
                   </SelectContent>
                 </Select>
-              </div>}
-              {foundry ? <label className="registry-field">
-                <span className="registry-field-label">Deployment Name</span>
-                <Input value={foundryDeployment} onChange={(event) => setFoundryDeployment(event.target.value)} disabled={publishing} />
-              </label> : openaiCompatible ? <>
-                <label className="registry-field"><span className="registry-field-label">上游模型 ID</span>
-                  <Input value={upstreamModelId} onChange={(event) => setUpstreamModelId(event.target.value)} disabled={publishing} maxLength={500} />
-                </label>
+              </div><div className="registry-field">
+                <span className="registry-field-label-row"><label className="registry-field-label" htmlFor="foundry-deployment">部署名称</label><FieldHelp>填写此 Foundry Project 中已有的部署名称。Turnstile 不会创建上游部署。</FieldHelp></span>
+                <Input id="foundry-deployment" value={foundryDeployment} onChange={(event) => setFoundryDeployment(event.target.value)} disabled={publishing} />
+              </div></div> : openaiCompatible ? <>
+                <div className="registry-field"><span className="registry-field-label-row"><label className="registry-field-label" htmlFor="provider-model-id">上游模型 ID</label><FieldHelp>供应商 API 在 model 字段中要求的真实模型 ID。Turnstile 会自动生成公开别名和显示名称。</FieldHelp></span>
+                  <Input id="provider-model-id" value={upstreamModelId} onChange={(event) => setUpstreamModelId(event.target.value)} disabled={publishing} maxLength={500} />
+                </div>
                 {upstreamModelId.trim() && <dl className="publication-connection-summary">
                   <div><dt>模型别名</dt><dd data-no-localize><code>{effectiveModelKey || "-"}</code></dd></div>
                   <div><dt>显示名称</dt><dd data-no-localize>{effectiveDisplayName || "-"}</dd></div>
@@ -543,7 +562,26 @@ export function ModelPublicationDialog({
                 </div>
                 <label className="registry-field"><span className="registry-field-label">上游模型 ID</span><Input value={upstreamModelId} onChange={(event) => setUpstreamModelId(event.target.value)} disabled={publishing} /></label>
               </>}
-              {selectedRuntimeNeedsCredential && <div className="registry-field">
+            </section>
+            {imageGeneration && !imageConfigurationSupported && <div className="registry-error" role="alert">后端尚未支持图像参数透传</div>}
+            <details className="simple-pricing" open={imageGeneration || undefined}>
+              <summary><span>价格与限制</span><span className="publication-pricing-status">{pricingStatus}</span></summary>
+              <div className="simple-pricing-fields">
+                <div className={imageGeneration ? "form-grid" : "form-grid three"}>
+                  {!imageGeneration && <label className="registry-field"><span className="registry-field-label">上下文窗口</span><Input id="publication-context-window" type="number" min="1" value={contextWindow} onChange={(event) => setContextWindow(event.target.value)} disabled={publishing} /></label>}
+                  <label className="registry-field"><span className="registry-field-label">{imageGeneration ? "文字输入 $/M" : "输入 $/M"}</span><Input id="publication-input-price" type="number" min="0" step="0.000001" value={inputPrice} onChange={(event) => setInputPrice(event.target.value)} disabled={publishing} required={imageGeneration} /></label>
+                  <label className="registry-field"><span className="registry-field-label">{imageGeneration ? "图像输出 $/M" : "输出 $/M"}</span><Input id="publication-output-price" type="number" min="0" step="0.000001" value={outputPrice} onChange={(event) => setOutputPrice(event.target.value)} disabled={publishing} required={imageGeneration} /></label>
+                </div>
+                <div className="form-grid">
+                  <label className="registry-field"><span className="registry-field-label">{imageGeneration ? "缓存文字输入 $/M" : "缓存读取 $/M"}</span><Input id="publication-cache-read-price" type="number" min="0" step="0.000001" value={cacheReadPrice} onChange={(event) => setCacheReadPrice(event.target.value)} disabled={publishing} required={imageGeneration} /></label>
+                  {!imageGeneration && <label className="registry-field"><span className="registry-field-label">缓存写入 $/M</span><Input id="publication-cache-write-price" type="number" min="0" step="0.000001" value={cacheWritePrice} onChange={(event) => setCacheWritePrice(event.target.value)} disabled={publishing} /></label>}
+                </div>
+              </div>
+            </details>
+            {selectedRuntimeNeedsCredential && <section className="simple-model-section simple-connection-section" aria-labelledby="publication-credential-heading">
+              <div className="simple-section-title"><b id="publication-credential-heading">首次发布凭据</b></div>
+              <p className="publication-form-note">仅补充已有连接首次发布所需的 API Key，不会创建新连接。</p>
+              <div className="registry-field">
                 <span className="registry-field-label-row">
                   <label className="registry-field-label" htmlFor="existing-provider-api-key">一次性 API Key</label>
                   <FieldHelp>仅首次发布需要。Key 写入 APIM Secret Named Value 后即从 Turnstile 临时记录中清除；后续模型无需重复提供。</FieldHelp>
@@ -552,22 +590,9 @@ export function ModelPublicationDialog({
                   <Input id="existing-provider-api-key" type={keyRevealed ? "text" : "password"} autoComplete="off" value={providerApiKey} onChange={(event) => setProviderApiKey(event.target.value)} disabled={publishing} />
                   <button type="button" className="login-reveal" onClick={() => setKeyRevealed((value) => !value)} aria-label={keyRevealed ? "隐藏 API Key" : "显示 API Key"} aria-pressed={keyRevealed} disabled={publishing}>{keyRevealed ? <EyeOff size={15} /> : <Eye size={15} />}</button>
                 </div>
-              </div>}
-            </section>
-            <details className="simple-pricing" open={imageGeneration || undefined}>
-              <summary>{imageGeneration ? "价格与限制" : "价格与上下文"}</summary>
-              <div className="simple-pricing-fields">
-                <div className={imageGeneration ? "form-grid" : "form-grid three"}>
-                  {!imageGeneration && <label className="registry-field"><span className="registry-field-label">上下文窗口</span><Input type="number" min="1" value={contextWindow} onChange={(event) => setContextWindow(event.target.value)} disabled={publishing} /></label>}
-                  <label className="registry-field"><span className="registry-field-label">{imageGeneration ? "文字输入 $/M" : "输入 $/M"}</span><Input type="number" min="0" step="0.000001" value={inputPrice} onChange={(event) => setInputPrice(event.target.value)} disabled={publishing} required={imageGeneration} /></label>
-                  <label className="registry-field"><span className="registry-field-label">{imageGeneration ? "图像输出 $/M" : "输出 $/M"}</span><Input type="number" min="0" step="0.000001" value={outputPrice} onChange={(event) => setOutputPrice(event.target.value)} disabled={publishing} required={imageGeneration} /></label>
-                </div>
-                <div className="form-grid">
-                  <label className="registry-field"><span className="registry-field-label">{imageGeneration ? "缓存文字输入 $/M" : "缓存读取 $/M"}</span><Input type="number" min="0" step="0.000001" value={cacheReadPrice} onChange={(event) => setCacheReadPrice(event.target.value)} disabled={publishing} required={imageGeneration} /></label>
-                  {!imageGeneration && <label className="registry-field"><span className="registry-field-label">缓存写入 $/M</span><Input type="number" min="0" step="0.000001" value={cacheWritePrice} onChange={(event) => setCacheWritePrice(event.target.value)} disabled={publishing} /></label>}
-                </div>
               </div>
-            </details>
+            </section>}
+          </>}
           </>}
           </>}
 
@@ -575,7 +600,7 @@ export function ModelPublicationDialog({
         </div>
 
         <DialogFooter className="registry-editor-footer">
-          <Button type="button" variant="outline" onClick={close} disabled={publishing}>{publicationId ? "关闭" : "取消"}</Button>
+          <Button type="button" variant="outline" className="publication-dismiss" onClick={close} disabled={publishing}>{publicationId ? "关闭" : "取消"}</Button>
           {failed && <Button type="button" onClick={() => void retry()} disabled={publishing || Boolean(publication.data?.retry_requires_credential && !providerApiKey.trim())}><Rocket size={14} />重新发布</Button>}
           {awaitingAuthorization && <Button type="button" onClick={() => void resumeAuthorization()} disabled={publishing}><ShieldCheck size={14} />我已授权，重新验证</Button>}
           {!publicationId && <Button type="submit" disabled={publishing || !selectedRuntime || !selectedProvider || requiredCredentialMissing}><Rocket size={14} />{publishing ? "正在提交" : "发布模型"}</Button>}

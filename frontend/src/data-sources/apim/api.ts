@@ -126,6 +126,9 @@ function normalizeRegistry(registry: ModelRegistry): ModelRegistry {
   const runtimeIds = new Set(runtimes.map((runtime) => runtime.id))
   return {
     backend_pool_session_affinity_supported: registry.backend_pool_session_affinity_supported === true,
+    image_generation_supported: registry.image_generation_supported === true,
+    image_configuration_defaults: registry.image_configuration_defaults,
+    image_configuration_schema_version: registry.image_configuration_schema_version,
     gateways: registry.gateways.filter(
       (gateway) => gateway.id !== RETIRED_LITELLM_GATEWAY_ID,
     ),
@@ -159,6 +162,7 @@ const normalizeGatewayPublication = (publication: GatewayPublication): GatewayPu
   publication_kind: publication.publication_kind ?? "model_add",
   authorization: publication.authorization ?? null,
   retry_requires_credential: publication.retry_requires_credential ?? false,
+  retry_can_authorize_image_probes: publication.retry_can_authorize_image_probes === true,
 })
 
 const normalizeGatewayPublicationAccepted = (
@@ -477,9 +481,12 @@ export const dataSource = {
       + `/keys/${keyKind}/rotate`,
     { confirmation },
   ),
-  retryGatewayPublication: (id: string, apiKey?: string) => writeJson<GatewayPublication>(
+  retryGatewayPublication: (id: string, apiKey?: string, authorizeImageProbes = false) => writeJson<GatewayPublication>(
     `/api/v1/model-management/publications/${encodeURIComponent(id)}/retry`,
-    apiKey ? { api_key: apiKey } : {},
+    {
+      ...(apiKey ? { api_key: apiKey } : {}),
+      ...(authorizeImageProbes === true ? { authorize_image_probes: true } : {}),
+    },
   ).then(normalizeGatewayPublication),
   resumeGatewayPublicationAuthorization: (id: string) => writeJson<GatewayPublication>(
     `/api/v1/model-management/publications/${encodeURIComponent(id)}/authorization/resume`,

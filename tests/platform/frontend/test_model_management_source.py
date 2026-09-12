@@ -227,7 +227,7 @@ def test_model_publication_selects_existing_connections_and_clears_connection_dr
     assert "preferredPublicationConnection(apimRuntimes)?.id" in source
     assert "apimRuntimes.find((runtime) => runtime.id === runtimeId)" in source
     assert "preferredPublicationConnection(nextConnections, runtimeId)?.id" in source
-    assert 'aria-label="已有连接"' in source
+    assert 'aria-label="连接"' in source
     assert "selectedRuntimeNeedsCredential && !providerApiKey.trim()" in source
     assert "!selectedRuntime || !selectedProvider || requiredCredentialMissing" in source
     for removed in (
@@ -269,7 +269,7 @@ def test_publication_connection_summary_wraps_long_endpoints_on_narrow_screens()
 
     assert "min-width: 0" in summary_rule
     assert "overflow-wrap: anywhere" in summary_rule
-    assert ".publication-connection-endpoint code { white-space: normal;" in styles
+    assert ".publication-connection-endpoint dd { white-space: normal;" in styles
     assert ".publication-connection-dialog .registry-editor-footer { flex-wrap: wrap; }" in styles
     assert ".publication-connection-summary { grid-template-columns: minmax(0, 1fr); }" in styles
 

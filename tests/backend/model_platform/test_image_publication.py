@@ -20,6 +20,9 @@ from turnstile_core.domain.control_plane import (
     ApiFormat,
     GatewayCredentialRotation,
     GatewayPublicationCreate,
+    GatewayPublicationRetry,
+    GatewayPublicationView,
+    PublicationStatus,
     RuntimeTarget,
     StreamingMode,
     publication_model_id,
@@ -162,6 +165,63 @@ def test_probe_journal_reuses_only_same_verified_plan() -> None:
     with pytest.raises(PolicyCompilationError):
         journal.run(binding, "changed-revision", {"prompt": "unit-only"}, send)
     assert len(requests) == 1
+
+
+@pytest.mark.parametrize("status,limit,available", [
+    ("queued", 1, False), ("failed", 1, True), ("failed", 31, True),
+    ("failed", 32, False), ("failed", 0, False), ("failed", True, False),
+])
+def test_image_retry_capability_is_failed_only_and_bounded(
+    status: str, limit: int, available: bool
+) -> None:
+    repository = InMemoryRepository()
+    publication = GatewayControlPlaneService(
+        repository, image_generation_enabled=True, apim_principal_id="unit-principal"
+    ).publish(image_publication(repository), "owner@example.com")
+    publication = publication.model_copy(update={
+        "status": PublicationStatus(status),
+        "resource_manifest": {
+            "image_probe_authorization": {"id": str(uuid4()), "attempt_limit": limit}
+        },
+    })
+    view = GatewayPublicationView.from_publication(publication)
+    assert view.retry_can_authorize_image_probes is available
+    assert "resource_manifest" not in view.model_dump()
+    assert "desired_spec" not in view.model_dump()
+
+
+def test_image_retry_authorization_is_explicit_and_cannot_exceed_limit() -> None:
+    repository = InMemoryRepository()
+    service = GatewayControlPlaneService(
+        repository, image_generation_enabled=True, apim_principal_id="unit-principal"
+    )
+    publication = service.publish(image_publication(repository), "owner@example.com")
+    stored = next(row for row in repository.gateway_publications if row["id"] == publication.id)
+    previous = {"id": str(uuid4()), "attempt_limit": 31}
+    stored.update(status="failed", resource_manifest={"image_probe_authorization": previous})
+    retained = service.retry(publication.id, GatewayPublicationRetry(), "owner@example.com")
+    assert retained.resource_manifest["image_probe_authorization"] == previous
+    stored["status"] = "failed"
+    authorized = service.retry(
+        publication.id, GatewayPublicationRetry(authorize_image_probes=True), "owner@example.com"
+    )
+    current = authorized.resource_manifest["image_probe_authorization"]
+    assert isinstance(current, dict)
+    assert current["id"] != previous["id"] and current["attempt_limit"] == 32
+    stored["status"] = "failed"
+    with pytest.raises(ControlPlaneConflictError, match="attempt limit"):
+        service.retry(
+            publication.id,
+            GatewayPublicationRetry(authorize_image_probes=True),
+            "owner@example.com",
+        )
+    assert stored["resource_manifest"]["image_probe_authorization"] == current
+
+
+@pytest.mark.parametrize("value", [1, "true", None])
+def test_paid_image_retry_consent_requires_a_boolean(value: object) -> None:
+    with pytest.raises(ValueError):
+        GatewayPublicationRetry.model_validate({"authorize_image_probes": value})
 
 
 def test_lost_lease_prevents_future_work() -> None:

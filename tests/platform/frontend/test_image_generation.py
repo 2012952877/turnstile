@@ -14,6 +14,7 @@ def test_image_frontend_unit_cases() -> None:
             "--experimental-strip-types",
             "--test",
             str(Path(__file__).with_name("image-generation.test.mjs")),
+            str(Path(__file__).with_name("model-publication-dialog.test.mjs")),
         ],
         cwd=REPOSITORY_ROOT,
         check=False,

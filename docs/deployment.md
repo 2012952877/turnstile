@@ -88,12 +88,20 @@ Use the authenticated web console to add the existing Foundry Project Endpoint a
 
 Creating connections or models through direct API calls does not count as frontend E2E evidence.
 
+### Image and evidence upgrade boundary
+
+Apply pending migrations `004_apim_usage_identity_guard`, `005_billable_request_lifecycle` and `006_versioned_budget_evidence` through the same authorized migration entry point before running the new packages. Do not edit or replay the earlier migrations. The upgrade adds guarded APIM attempt identity, a durable billable-request journal and versioned budget evidence without rewriting historical usage. Drain old consumers before introducing the new identity guard. PostgreSQL concurrency and upgrade safety require the database checks in [Testing](testing.md).
+
+The API and Control-plane packages both require the pinned Pillow dependency for full image validation. The Control-plane artifact includes the public canonical parent policy at `policies/foundry-finops-policy.xml`; publication and image rollback read it through `CONTROL_PLANE_PARENT_POLICY_PATH`. The publisher verifies the live policy and its readback, and refuses incompatible image policies instead of transforming an unknown live template. Deploy the reviewed public parent-policy change through the normal infrastructure what-if boundary before enabling image generation.
+
+Keep `IMAGE_GENERATION_ENABLED=false` and the evidence-v2 cutoff unset during the code and migration rollout. Enabling images, authorizing paid publication probes and scheduling the future evidence cutoff are separate operational decisions. This upgrade does not provision a Foundry account or model, modify an upstream deployment, or grant new provider roles.
+
 ## Verify
 
 1. Confirm the infrastructure deployment succeeded.
 2. Confirm `/health` returns HTTP 200.
 3. Confirm the served frontend asset belongs to the deployed package.
-4. Confirm the migration ledger contains `001_initial_schema` once.
+4. Confirm the migration ledger contains each migration listed in [Testing](testing.md) once, with unchanged checksums for previously applied files.
 5. Confirm the bootstrapped Owner can sign in with a password.
 6. Verify managed-identity role assignments at their intended resource scopes.
 7. Complete the real workflow in [E2E Validation](e2e-validation.md).

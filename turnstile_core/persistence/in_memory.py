@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -7,8 +8,9 @@ from uuid import UUID, uuid4
 
 from ..domain.anomaly_engine import evaluate_anomaly_rules
 from ..domain.application_access import UsageApplicationAttribution
+from ..domain.billable_requests import BillableRequestAttempt
 from ..domain.enterprise import enterprise_catalog
-from ..domain.ledger import BudgetReservationFinalization
+from ..domain.ledger import BudgetReservationAdmission, BudgetReservationFinalization
 from ..domain.models import (
     ApimCacheReadBucket,
     AuditFindingUpdate,
@@ -20,6 +22,7 @@ from ..domain.models import (
 )
 from .in_memory_applications import InMemoryApplicationRepositoryMixin
 from .in_memory_assistant import InMemoryAssistantRepositoryMixin
+from .in_memory_billable_requests import InMemoryBillableRequestRepositoryMixin
 from .in_memory_budgets import InMemoryBudgetRepositoryMixin
 from .in_memory_publications import InMemoryPublicationRepositoryMixin
 from .in_memory_registry import InMemoryRegistryRepositoryMixin
@@ -79,9 +82,19 @@ class InMemoryRepository(
     InMemoryPublicationRepositoryMixin,
     InMemoryAssistantRepositoryMixin,
     InMemoryBudgetRepositoryMixin,
+    InMemoryBillableRequestRepositoryMixin,
     QueryRepository,
 ):
     def __init__(self) -> None:
+        self.billable_request_lock = threading.RLock()
+        self.budget_evidence_received_at: dict[str, datetime] = {}
+        self.budget_evidence_conflicts: set[tuple[str, str, str, int, int]] = set()
+        self.reconciled_usage_ids: set[str] = set()
+        self.billable_requests: dict[UUID, BillableRequestAttempt] = {}
+        self.evidence_policy_effective_at: datetime | None = None
+        self.budget_reservation_admissions: dict[
+            tuple[str, str, str], BudgetReservationAdmission
+        ] = {}
         now = datetime(2026, 7, 17, 8, tzinfo=UTC)
         self.reconciliation_state: dict[str, datetime] = {}
         self.apim_api_id = "turnstile-llm"
@@ -351,21 +364,35 @@ class InMemoryRepository(
         record: TokenUsageRecord,
         application: UsageApplicationAttribution | None = None,
     ) -> None:
+        with self.billable_request_lock:
+            self._write_token_usage(record, application)
+
+    def _write_token_usage(
+        self,
+        record: TokenUsageRecord,
+        application: UsageApplicationAttribution | None,
+    ) -> None:
         if record.usage_domain == "apim":
-            existing_attempt = max(
-                (
-                    item
-                    for item in self.usage_records
-                    if item.usage_domain == "apim"
-                    and item.correlation_id == record.correlation_id
-                ),
-                key=lambda item: (item.ts, item.id),
-                default=None,
-            )
-            if existing_attempt is not None:
-                record = record.model_copy(update={"id": existing_attempt.id})
+            candidates = [
+                item
+                for item in self.usage_records
+                if (item.usage_domain == "apim" and item.correlation_id == record.correlation_id)
+                or item.id == record.id
+            ]
+            if len(candidates) > 1:
+                raise ValueError("APIM correlation identity is ambiguous")
+            if candidates:
+                existing = candidates[0]
+                if (
+                    existing.usage_domain != "apim"
+                    or existing.correlation_id != record.correlation_id
+                    or existing.user_id != record.user_id
+                ):
+                    raise ValueError("APIM correlation identity conflicts with stored usage")
+                record = record.model_copy(update={"id": existing.id})
         if application is not None:
             self._write_usage_application_attribution(record.id, application)
+        self.budget_evidence_received_at.setdefault("usage:" + record.id, datetime.now(UTC))
         for index, existing in enumerate(self.usage_records):
             if existing.id != record.id:
                 continue
@@ -379,6 +406,20 @@ class InMemoryRepository(
                     }
                 )
             elif not existing.estimated and not record.estimated:
+                existing_tokens = (
+                    existing.input_tokens + existing.cached_tokens + existing.output_tokens
+                )
+                incoming_tokens = record.input_tokens + record.cached_tokens + record.output_tokens
+                if existing_tokens != incoming_tokens:
+                    self.budget_evidence_conflicts.add(
+                        (
+                            "person",
+                            existing.user_id,
+                            existing.correlation_id,
+                            existing_tokens,
+                            incoming_tokens,
+                        )
+                    )
                 updates = {
                     field: getattr(record, field)
                     for field in ("budget_admission", "model_admission")
@@ -479,6 +520,10 @@ class InMemoryRepository(
                         "stream_cache_usage_unavailable" if cache_unknown else None
                     ),
                 }
+            )
+            self.reconciled_usage_ids.add(record.id)
+            self.budget_evidence_received_at.setdefault(
+                "reconciled:" + record.id, datetime.now(UTC)
             )
             matched += 1
         return matched

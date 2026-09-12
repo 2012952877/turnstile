@@ -528,9 +528,12 @@ class InMemoryApplicationRepositoryMixin:
     ) -> Sequence[dict[str, Any]]:
         grouped = {
             application_id: [
-                row
-                for row in self._budget_scope_usage("application", str(application_id))
-                if period_start <= row["ts"].astimezone(UTC).date() < period_end
+                record.model_dump()
+                for record in self.usage_records
+                if record.usage_domain == "apim"
+                and record.id in self.usage_application_attributions
+                and self.usage_application_attributions[record.id].application_id == application_id
+                and period_start <= record.ts.astimezone(UTC).date() < period_end
             ]
             for application_id in application_ids
         }
@@ -564,9 +567,16 @@ class InMemoryApplicationRepositoryMixin:
     ) -> Sequence[dict[str, Any]]:
         zone = ZoneInfo(timezone)
         grouped: dict[datetime, list[Any]] = {}
-        for record in self._budget_scope_usage("application", str(application_id)):
-            if not from_ <= record["ts"] < to:
+        for usage in self.usage_records:
+            attribution = self.usage_application_attributions.get(usage.id)
+            if (
+                usage.usage_domain != "apim"
+                or attribution is None
+                or attribution.application_id != application_id
+                or not from_ <= usage.ts < to
+            ):
                 continue
+            record = usage.model_dump()
             local = record["ts"].astimezone(zone)
             if interval == "week":
                 local -= timedelta(days=local.weekday())

@@ -41,6 +41,8 @@ def _activation_runtime_config(binding: Mapping[str, Any]) -> dict[str, Any]:
         supports_temperature=False,
     )
     config.pop("anthropic_version", None)
+    if binding["api_format"] == "openai_images":
+        config["streaming_mode"] = "native"
     return config
 
 

@@ -13,24 +13,27 @@ from xml.etree import ElementTree
 from xml.sax.saxutils import escape
 
 from ..domain.control_plane import (
-    ApiFormat,
-    AuthStrategy,
-    GatewayBackendPoolConfig,
-    GatewayBackendPoolMember,
-    GatewayModelBinding,
-    GatewayPublication,
-    StreamingMode,
+        ApiFormat,
+        AuthStrategy,
+        GatewayBackendPoolConfig,
+        GatewayBackendPoolMember,
+        GatewayModelBinding,
+        GatewayPublication,
+        StreamingMode,
 )
+from ..domain.image_profiles import validate_image_profile
 from ..domain.runtime_models import BrandKey
 from .apim_control_plane_contract import (
-    BackendCircuitBreakerResource,
-    BackendPoolMemberResource,
-    BackendPoolResource,
-    BackendResource,
-    CompiledGatewayRelease,
-    NamedValueResource,
-    PolicyCompilationError,
+        BackendCircuitBreakerResource,
+        BackendPoolMemberResource,
+        BackendPoolResource,
+        BackendResource,
+        CompiledGatewayRelease,
+        NamedValueResource,
+        OperationResource,
+        PolicyCompilationError,
 )
+from .apim_image_policy import IMAGE_OPERATION_ID, IMAGE_POLICY_VERSION, image_request_validation
 
 
 def _chat_completions_policy(publication: GatewayPublication) -> str:
@@ -106,6 +109,8 @@ class ApimPolicyCompiler:
             if binding.backend_url is None:
                 raise PolicyCompilationError("A managed runtime is missing its backend URL")
             pool = binding.backend_pool
+            if binding.api_format is ApiFormat.OPENAI_IMAGES and pool is not None:
+                raise PolicyCompilationError("Image generation pools are not supported")
             if pool is not None:
                 member_resources: list[BackendPoolMemberResource] = []
                 member_backend_ids: list[str] = []
@@ -203,14 +208,21 @@ class ApimPolicyCompiler:
                 continue
             source_backend_url = str(binding.backend_url).rstrip("/")
             upstream = self._validated_backend_url(source_backend_url)
+            image_backend = binding.api_format is ApiFormat.OPENAI_IMAGES
             target_key = (
                 upstream.scheme.casefold(),
                 upstream.netloc.casefold(),
-                upstream.path.rstrip("/"),
+                upstream.path.rstrip("/") + ("|images" if image_backend else ""),
             )
             backend_id = target_backends.get(target_key)
             if backend_id is None:
-                backend_kind = "obs" if self._usage_observer_url is not None else "dyn"
+                backend_kind = (
+                    "img"
+                    if image_backend
+                    else "obs"
+                    if self._usage_observer_url is not None
+                    else "dyn"
+                )
                 target_digest = hashlib.sha256(
                     "\n".join(target_key).encode("utf-8")
                 ).hexdigest()[:10]
@@ -218,9 +230,10 @@ class ApimPolicyCompiler:
                     f"turnstile-{backend_kind}-{publication.id.hex[:12]}-{target_digest}"
                 )
                 target_backends[target_key] = backend_id
-                backend_url, backend_headers = self._observer_backend(
-                    source_backend_url,
-                    upstream,
+                backend_url, backend_headers = (
+                    (source_backend_url, ())
+                    if image_backend
+                    else self._observer_backend(source_backend_url, upstream)
                 )
                 backends.append(
                     BackendResource(
@@ -265,6 +278,12 @@ class ApimPolicyCompiler:
         )
         count_tokens = self._count_tokens_policy(publication)
         models = self._models_policy(publication)
+        includes_images = any(binding.api_format is ApiFormat.OPENAI_IMAGES for binding in bindings)
+        includes_images = includes_images or any(
+            item.api_format is ApiFormat.OPENAI_IMAGES
+            for item in publication.desired_spec.removed_models
+        )
+        image_policy = self._images_policy(publication, backend_ids) if includes_images else None
         for value in (
             chat_completions,
             responses,
@@ -272,6 +291,7 @@ class ApimPolicyCompiler:
             messages,
             count_tokens,
             models,
+            *([image_policy] if image_policy is not None else []),
         ):
             ElementTree.fromstring(value)
         digest = hashlib.sha256(
@@ -283,6 +303,7 @@ class ApimPolicyCompiler:
                     messages,
                     count_tokens,
                     models,
+                    *([image_policy] if image_policy is not None else []),
                 )
             ).encode("utf-8")
         ).hexdigest()
@@ -296,6 +317,14 @@ class ApimPolicyCompiler:
             policy_sha256=digest,
             backends=tuple(backends),
             named_values=tuple(named_values.values()),
+            images_generations_policy=image_policy,
+            operations=(
+                OperationResource(
+                    IMAGE_OPERATION_ID, "Image generations", "POST", "/images/generations"
+                ),
+            )
+            if image_policy is not None
+            else (),
         )
 
     @staticmethod
@@ -949,6 +978,62 @@ class ApimPolicyCompiler:
   <on-error><base /></on-error>
 </policies>"""
 
+    def _images_policy(self, publication: GatewayPublication, backend_ids: dict[str, str]) -> str:
+        bindings = [
+            binding
+            for binding in publication.desired_spec.bindings
+            if binding.api_format is ApiFormat.OPENAI_IMAGES and binding.routing_managed
+        ]
+        known = self._condition(
+            [binding.model.model_key for binding in bindings], "dynamicImageModel"
+        )
+        profiles = {
+            binding.model.model_key: validate_image_profile(binding.model.image_profile)
+            for binding in bindings
+        }
+        validation = (
+            "\n".join(
+                f'<when condition="@({self._condition([binding.model.model_key], "dynamicImageModel")})">'
+                + image_request_validation(profiles[binding.model.model_key])
+                + "</when>"
+                for binding in bindings
+            )
+            or '<when condition="@(false)" />'
+        )
+        metadata = "\n".join(
+            self._metadata_branch(binding, "dynamicImageModel") for binding in bindings
+        )
+        routing = (
+            "\n".join(
+                self._routing_branch(
+                    binding,
+                    backend_ids[binding.model.model_key],
+                    "dynamicImageModel",
+                    backend_path=profiles[binding.model.model_key].backend_path
+                    + "?api-version="
+                    + profiles[binding.model.model_key].api_version,
+                )
+                for binding in bindings
+            )
+            or '<when condition="@(false)" />'
+        )
+        metadata_choose = f"<choose>{metadata}</choose>" if metadata else ""
+        timeout = max((profile.timeout_seconds for profile in profiles.values()), default=1)
+        return f"""<policies>
+  <inbound>
+    <set-variable name="dynamicImageModel" value="@{{ try {{ return ((string)context.Request.Body.As&lt;JObject&gt;(preserveContent: true)[&quot;model&quot;] ?? &quot;&quot;).Trim().ToLowerInvariant(); }} catch {{ return &quot;&quot;; }} }}" />
+    <choose>{validation}<otherwise><return-response><set-status code="400" reason="Bad Request" /><set-body>{{"error":"image_model_not_published"}}</set-body></return-response></otherwise></choose>
+    <set-variable name="selectedModelKnown" value="@({known})" />
+    {metadata_choose}
+    <base />
+    <choose><when condition="@(context.Variables.GetValueOrDefault&lt;int&gt;(&quot;imageGenerationPolicyVersion&quot;, 0) != {IMAGE_POLICY_VERSION})"><return-response><set-status code="503" reason="Service Unavailable" /><set-body>{{"error":"image_budget_policy_unavailable"}}</set-body></return-response></when></choose>
+    <choose>{routing}<otherwise><return-response><set-status code="400" reason="Bad Request" /><set-body>{{"error":"image_model_not_published"}}</set-body></return-response></otherwise></choose>
+  </inbound>
+  <backend><forward-request timeout="{timeout}" buffer-response="true" /></backend>
+  <outbound><base /><set-header name="Cache-Control" exists-action="override"><value>no-store</value></set-header></outbound>
+  <on-error><base /></on-error>
+</policies>"""
+
     def _messages_policy(
         self,
         publication: GatewayPublication,
@@ -986,6 +1071,7 @@ class ApimPolicyCompiler:
             binding.model.model_key
             for binding in publication.desired_spec.bindings
             if binding.streaming_mode is StreamingMode.BUFFERED
+            and binding.api_format is ApiFormat.ANTHROPIC_MESSAGES
         ]
         known_condition = self._condition(
             [
@@ -1291,7 +1377,7 @@ class ApimPolicyCompiler:
         binding: GatewayModelBinding,
         api_format: str | None = None,
     ) -> str:
-        if self._usage_observer_url is None:
+        if self._usage_observer_url is None or binding.api_format is ApiFormat.OPENAI_IMAGES:
             return ""
         literal_headers = {
             "x-provider-name": binding.provider_brand_key.value,

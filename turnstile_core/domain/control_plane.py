@@ -3,10 +3,11 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 from typing import Literal
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from pydantic import Field, HttpUrl, SecretStr, model_validator
 
+from .image_profiles import ImageGenerationLimits, ImageGenerationProfile, validate_image_profile
 from .models import StrictModel
 from .runtime_models import (
     BrandKey,
@@ -22,6 +23,7 @@ from .runtime_models import (
 class ApiFormat(StrEnum):
     OPENAI_CHAT = "openai_chat"
     ANTHROPIC_MESSAGES = "anthropic_messages"
+    OPENAI_IMAGES = "openai_images"
 
 
 class AuthStrategy(StrEnum):
@@ -152,9 +154,20 @@ class ModelTarget(StrictModel):
     cache_write_cost_per_million: float | None = Field(default=None, ge=0)
     allowed_roles: list[str] = Field(default_factory=lambda: ["owner", "admin", "member"])
     assignment_required: bool = True
+    image_profile: ImageGenerationProfile | None = None
+
+    @model_validator(mode="after")
+    def validate_image_contract(self) -> ModelTarget:
+        if self.image_profile is not None:
+            if self.capabilities != ["image_generation"]:
+                raise ValueError("An image profile belongs only to an image model")
+            validate_image_profile(self.image_profile)
+        return self
 
 
 class ModelCreateTarget(StrictModel):
+    operation: Literal["chat", "image_generation"] = "chat"
+    image_configuration: ImageGenerationLimits | None = None
     deployment_name: str | None = Field(default=None, min_length=1, max_length=500)
     model_key: str | None = Field(
         default=None,
@@ -172,6 +185,13 @@ class ModelCreateTarget(StrictModel):
 
     @model_validator(mode="after")
     def require_deployment_or_explicit_identity(self) -> ModelCreateTarget:
+        if self.operation == "image_generation":
+            if self.deployment_name is None:
+                raise ValueError("Image generation requires an existing Foundry deployment")
+            if self.context_window is not None or self.cache_write_cost_per_million is not None:
+                raise ValueError("Image generation has no text context window or cache-write rate")
+        elif self.image_configuration is not None:
+            raise ValueError("An image profile cannot be attached to a text model")
         explicit = (self.model_key, self.display_name, self.upstream_model_id)
         if self.deployment_name is not None:
             if any(value is not None for value in explicit):
@@ -195,6 +215,16 @@ class GatewayPublicationCreate(StrictModel):
 
 class GatewayPublicationRetry(StrictModel):
     api_key: SecretStr | None = None
+    authorize_image_probes: bool = False
+
+
+class ImageProbeAuthorization(StrictModel):
+    id: UUID
+    attempt_limit: int = Field(default=1, ge=1, le=32)
+
+
+class GatewayReconcileRequest(StrictModel):
+    image_configurations: dict[UUID, ImageGenerationLimits] = Field(default_factory=dict)
 
 
 class GatewayCredentialRotation(StrictModel):
@@ -469,6 +499,10 @@ class GatewayAuthorizationRequirement(StrictModel):
     resource_endpoint: HttpUrl
     role_id: UUID
     role_name: str = Field(min_length=1, max_length=120)
+
+
+def publication_model_id(publication_id: UUID, model_key: str) -> UUID:
+    return uuid5(publication_id, model_key)
 
 
 def publication_materialized_named_values(

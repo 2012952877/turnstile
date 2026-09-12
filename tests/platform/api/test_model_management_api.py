@@ -20,6 +20,10 @@ from backend.http.dependencies import get_repository
 from backend.http.publication_auth import require_publication_owner
 from backend.http.session import SessionIdentity, require_authenticated_session
 from backend.services.runtime_service import ModelRuntimeService
+from tests.backend.model_platform.control_plane_support import (
+    activate_publication,
+    transition_publication,
+)
 from turnstile_core.config import Settings
 from turnstile_core.domain.control_plane import GatewayPublication, GatewayPublicationCreate
 from turnstile_core.integrations.apim_control_plane import ApimPolicyCompiler
@@ -1012,11 +1016,9 @@ def activate(repository: InMemoryRepository, publication_id: str) -> None:
         "verifying",
         "promoting",
     ):
-        assert repository.transition_gateway_publication(
-            item_id, current, status, {}, "worker"
-        )
+        assert transition_publication(repository, item_id, current, status, {}, "worker")
         current = status
-    repository.activate_gateway_publication(item_id, "worker")
+    activate_publication(repository, item_id, "worker")
 
 
 @pytest.mark.parametrize("affinity", (False, True))
@@ -1491,7 +1493,8 @@ def test_foundry_authorization_handoff_is_safe_and_resumable(
     )
     assert queued.status_code == 202
     publication_id = UUID(queued.json()["publication"]["id"])
-    publication_api.transition_gateway_publication(
+    transition_publication(
+        publication_api,
         publication_id,
         "queued",
         "awaiting_authorization",
@@ -1583,7 +1586,8 @@ def test_foundry_authorization_handoff_can_be_cancelled_before_promotion(
     )
     assert queued.status_code == 202
     publication_id = UUID(queued.json()["publication"]["id"])
-    publication_api.transition_gateway_publication(
+    transition_publication(
+        publication_api,
         publication_id,
         "queued",
         "awaiting_authorization",
@@ -1668,7 +1672,8 @@ def test_failed_publication_retries_with_only_a_replacement_key(
 ) -> None:
     publication = queue_model(publication_api)
     publication_id = UUID(str(publication["id"]))
-    publication_api.transition_gateway_publication(
+    transition_publication(
+        publication_api,
         publication_id,
         "queued",
         "failed",

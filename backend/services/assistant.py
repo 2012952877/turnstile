@@ -195,7 +195,10 @@ class AssistantService:
         candidates = [
             model
             for model in registry.models
-            if model.enabled and "tools" in model.capabilities and model.runtime_id in runtimes
+            if model.enabled
+            and "tools" in model.capabilities
+            and model.runtime_id in runtimes
+            and "image_generation" not in model.capabilities
         ]
         candidates.sort(key=lambda model: (not model.is_default, model.display_name))
         return candidates

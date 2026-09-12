@@ -17,6 +17,7 @@ from tests.backend.model_platform.control_plane_support import (
     bedrock_publication,
     foundry_publication,
     publisher_settings,
+    transition_publication,
 )
 from turnstile_core.domain.control_plane import (
     GatewayPublicationCreate,
@@ -33,6 +34,8 @@ from turnstile_core.integrations.apim_control_plane import (
     PolicyCompilationError,
     RetryablePublicationError,
 )
+from turnstile_core.integrations.apim_control_plane_contract import ImageProbeJournal
+from turnstile_core.integrations.apim_policy_components import parse_policy, serialize_policy
 from turnstile_core.persistence.in_memory import InMemoryRepository
 
 
@@ -114,12 +117,13 @@ def test_parent_policy_rejects_publication_without_compact_admission() -> None:
 
 def test_parent_policy_rejects_direct_executable_children_under_choose() -> None:
     source = (ROOT / "infra/policies/foundry-finops-policy.xml").read_text()
-    variable_start = source.index('            <set-variable name="budgetRequestCannotFit"')
-    choose_start = source.index("            <choose>\n", variable_start)
-    when_start = source.index("              <when", choose_start)
-    variables = source[variable_start:choose_start]
-    malformed = source[:variable_start] + source[choose_start:when_start]
-    malformed += variables + source[when_start:]
+    root = parse_policy(source)
+    choose = root.find("./inbound/choose")
+    assert choose is not None
+    ElementTree.SubElement(
+        choose, "set-variable", {"name": "invalidDirectChild", "value": "@(false)"}
+    )
+    malformed = serialize_policy(root)
 
     with pytest.raises(
         PolicyCompilationError,
@@ -292,12 +296,18 @@ def test_foundry_publication_waits_for_rbac_and_resumes_the_same_candidate() -> 
     class AuthorizationClient(FakeApimClient):
         authorized = False
 
-        def probe_revision(self, revision: str, publication: object) -> None:
+        def probe_revision(
+            self,
+            revision: str,
+            publication: object,
+            *,
+            journal: ImageProbeJournal | None = None,
+        ) -> None:
             if not self.authorized:
                 raise AuthorizationRequiredError(
                     "Foundry rejected the APIM managed identity"
                 )
-            super().probe_revision(revision, publication)
+            super().probe_revision(revision, publication, journal=journal)
 
     repository = InMemoryRepository()
     foundry_provider_ids = {
@@ -369,7 +379,8 @@ def test_failed_foundry_publication_retries_without_an_api_key() -> None:
         apim_principal_id="39deeba0-9799-4806-96c4-2f65eb0f22d1",
     )
     publication = service.publish(foundry_publication(), "owner@example.com")
-    repository.transition_gateway_publication(
+    transition_publication(
+        repository,
         publication.id,
         "queued",
         "failed",

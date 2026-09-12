@@ -227,13 +227,18 @@ class LogAnalyticsReservationTerminalLog:
 
 
 def _parse_terminal_rows(payload: dict[str, Any]) -> list[ReservationTerminalEvidence]:
-    if payload.get("error") or payload.get("partialError"):
+    if not isinstance(payload, dict) or "error" in payload or "partialError" in payload:
         raise RuntimeError("terminal evidence query was incomplete")
     tables = payload.get("tables")
-    if not isinstance(tables, list) or not tables:
+    if not isinstance(tables, list) or len(tables) != 1 or not isinstance(tables[0], dict):
         raise RuntimeError("terminal evidence response has no result table")
     table = tables[0]
-    columns = [column.get("name") for column in table.get("columns", [])]
+    raw_columns = table.get("columns")
+    if not isinstance(raw_columns, list) or any(
+        not isinstance(column, dict) for column in raw_columns
+    ):
+        raise RuntimeError("terminal evidence response has invalid columns")
+    columns = [column.get("name") for column in raw_columns]
     fields = {
         "correlation_id": "CorrelationId",
         "observed_at": "ObservedAt",
@@ -243,11 +248,15 @@ def _parse_terminal_rows(payload: dict[str, Any]) -> list[ReservationTerminalEvi
         "completion_tokens": "CompletionTokens",
         "total_tokens": "TotalTokens",
     }
-    if any(name not in columns for name in fields.values()) or not isinstance(
-        table.get("rows"), list
+    if (
+        any(not isinstance(name, str) for name in columns)
+        or len(columns) != len(set(columns))
+        or any(name not in columns for name in fields.values())
+        or not isinstance(table.get("rows"), list)
     ):
         raise RuntimeError("terminal evidence response has an invalid schema")
     items = []
+    correlations: set[str] = set()
     for row in table["rows"]:
         if not isinstance(row, list) or len(row) != len(columns):
             raise RuntimeError("terminal evidence response has an invalid row")
@@ -256,6 +265,9 @@ def _parse_terminal_rows(payload: dict[str, Any]) -> list[ReservationTerminalEvi
         )
         if not item.correlation_id.strip() or item.observed_at.utcoffset() is None:
             raise RuntimeError("terminal evidence requires an identity and timezone")
+        if item.correlation_id in correlations:
+            raise RuntimeError("terminal evidence correlation is ambiguous")
+        correlations.add(item.correlation_id)
         items.append(item)
     return items
 
@@ -406,12 +418,12 @@ def _parse_rows(payload: dict[str, Any]) -> list[ReconciledUsage]:
         if not correlation_id or prompt_tokens is None or completion_tokens is None:
             continue
         raw_cached_tokens = None if cached_index is None else row[cached_index]
-        cached_tokens = None if raw_cached_tokens is None else int(raw_cached_tokens)
+        cached_tokens = raw_cached_tokens
         items.append(
             ReconciledUsage(
                 correlation_id=str(correlation_id),
-                input_tokens=int(prompt_tokens),
-                output_tokens=int(completion_tokens),
+                input_tokens=prompt_tokens,
+                output_tokens=completion_tokens,
                 cached_tokens=cached_tokens,
             )
         )

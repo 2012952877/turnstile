@@ -428,7 +428,10 @@ class ApplicationAccessService:
             budget = None
             if budget_row is not None:
                 token_limit = int(budget_row["token_limit"])
-                remaining = max(token_limit - usage_model.total_tokens, 0)
+                budget_tokens = self._repository.budget_scope_confirmed_tokens(
+                    "application", str(application_id), period_start, period_end
+                )
+                remaining = max(token_limit - budget_tokens, 0)
                 ledger_state = ledger_states.get(application_id)
                 budget = GatewayApplicationBudget.model_validate(
                     {
@@ -439,9 +442,9 @@ class ApplicationAccessService:
                         "warning_threshold_percent": budget_row["warning_threshold_percent"],
                         "updated_by": budget_row["updated_by"],
                         "updated_at": budget_row["updated_at"],
-                        "used_tokens": usage_model.total_tokens,
+                        "used_tokens": budget_tokens,
                         "remaining_tokens": remaining,
-                        "usage_percent": round(usage_model.total_tokens / token_limit * 100, 2),
+                        "usage_percent": round(budget_tokens / token_limit * 100, 2),
                         **{
                             field: None if ledger_state is None else ledger_state[field]
                             for field in (

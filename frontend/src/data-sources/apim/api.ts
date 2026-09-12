@@ -37,6 +37,8 @@ import type {
   ModelConnectionCreate,
   ModelConnectionUpdate,
   ModelInvocationResponse,
+  ImageInvocationRequest,
+  ImageInvocationResponse,
   ModelRegistry,
   OptimizationEvent,
   PeopleBudgetFilter,
@@ -493,6 +495,9 @@ export const dataSource = {
   ),
   invokeModel: (value: Record<string, unknown>) => writeJson<ModelInvocationResponse>(
     "/api/v1/model-gateway/invoke", value,
+  ),
+  generateImage: (value: ImageInvocationRequest) => writeJson<ImageInvocationResponse>(
+    "/api/v1/model-gateway/images/generations", value,
   ),
   planTraffic: (value: TrafficGenerationRequest) => writeJson<TrafficGenerationPlan>(
     "/api/v1/traffic/plan", value,

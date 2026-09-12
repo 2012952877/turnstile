@@ -18,10 +18,12 @@ from tests.backend.model_platform.control_plane_support import (
     GatewayControlPlaneService,
     GatewayPublicationWorker,
     PublicationAuthStore,
+    activate_publication,
     bedrock_publication,
     external_tenant_foundry_publication,
     foundry_publication,
     publication_request,
+    transition_publication,
 )
 from turnstile_core.config import Settings
 from turnstile_core.domain.control_plane import (
@@ -726,7 +728,8 @@ def test_retry_upgrades_legacy_failed_foundry_claude_binding() -> None:
         if item["id"] == legacy_binding["model"]["model_key"]
     )["api_format"] = "openai_chat"
     stored["desired_spec_sha256"] = "legacy-openai-spec"
-    repository.transition_gateway_publication(
+    transition_publication(
+        repository,
         publication.id,
         "queued",
         "failed",
@@ -805,12 +808,10 @@ def test_claude_first_foundry_activation_preserves_shared_connection_protocol() 
         "verifying",
         "promoting",
     ):
-        repository.transition_gateway_publication(
-            publication.id, current, status, {}, "worker"
-        )
+        transition_publication(repository, publication.id, current, status, {}, "worker")
         current = status
 
-    repository.activate_gateway_publication(publication.id, "worker")
+    activate_publication(repository, publication.id, "worker")
 
     runtime = next(
         item
@@ -979,11 +980,9 @@ def test_usage_observer_keeps_same_name_cross_account_projects_separate() -> Non
         "verifying",
         "promoting",
     ):
-        assert repository.transition_gateway_publication(
-            first.id, current, status, {}, "worker"
-        )
+        assert transition_publication(repository, first.id, current, status, {}, "worker")
         current = status
-    repository.activate_gateway_publication(first.id, "worker")
+    activate_publication(repository, first.id, "worker")
 
     second = service.publish(
         external_tenant_foundry_publication(
@@ -1174,12 +1173,10 @@ def test_foundry_activation_normalizes_older_release_token_field() -> None:
         "verifying",
         "promoting",
     ):
-        repository.transition_gateway_publication(
-            publication.id, current, next_status, {}, "worker"
-        )
+        transition_publication(repository, publication.id, current, next_status, {}, "worker")
         current = next_status
 
-    repository.activate_gateway_publication(publication.id, "worker")
+    activate_publication(repository, publication.id, "worker")
 
     runtime = next(
         item
@@ -1196,7 +1193,8 @@ def test_external_tenant_foundry_failed_release_requires_replacement_key() -> No
     publication = service.publish(
         external_tenant_foundry_publication(repository), "owner@example.com"
     )
-    repository.transition_gateway_publication(
+    transition_publication(
+        repository,
         publication.id,
         "queued",
         "failed",
@@ -1234,9 +1232,7 @@ def test_retry_reuses_materialized_credentials_and_the_same_publication(
     provisioned = worker.run_once("worker")
     assert provisioned is not None and provisioned.status.value == "provisioning"
     updates: dict[str, object] = {"resource_manifest": {}} if legacy_manifest else {}
-    repository.transition_gateway_publication(
-        publication.id, "provisioning", "failed", updates, "worker"
-    )
+    transition_publication(repository, publication.id, "provisioning", "failed", updates, "worker")
 
     observed = service.publication(publication.id)
     assert GatewayPublicationView.from_publication(observed).retry_requires_credential is False
@@ -1265,13 +1261,16 @@ def test_retry_replacement_key_clears_old_materialization_for_reprovisioning() -
     publication = service.publish(
         external_tenant_foundry_publication(repository), "owner@example.com"
     )
-    repository.transition_gateway_publication(
+    transition_publication(
+        repository,
         publication.id,
         "queued",
         "failed",
-        {"resource_manifest": {
-            "named_values": [publication.desired_spec.bindings[-1].named_value_name]
-        }},
+        {
+            "resource_manifest": {
+                "named_values": [publication.desired_spec.bindings[-1].named_value_name]
+            }
+        },
         "worker",
     )
 
@@ -1281,7 +1280,8 @@ def test_retry_replacement_key_clears_old_materialization_for_reprovisioning() -
         "owner@example.com",
     )
 
-    assert retried.resource_manifest == {}
+    assert set(retried.resource_manifest) == {"credential_generation"}
+    assert UUID(str(retried.resource_manifest["credential_generation"]))
     encrypted = repository.gateway_publication_credential(publication.id)
     assert encrypted is not None and cipher.decrypt(encrypted) == "replacement-test-key"
 
@@ -1330,11 +1330,9 @@ def test_external_tenant_foundry_key_can_rotate_through_a_candidate_release() ->
         "verifying",
         "promoting",
     ):
-        assert repository.transition_gateway_publication(
-            publication.id, current, status, {}, "worker"
-        )
+        assert transition_publication(repository, publication.id, current, status, {}, "worker")
         current = status
-    repository.activate_gateway_publication(publication.id, "worker")
+    activate_publication(repository, publication.id, "worker")
     original = publication.desired_spec.bindings[-1]
 
     rotation = service.rotate_credential(

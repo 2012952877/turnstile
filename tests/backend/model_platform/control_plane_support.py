@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -30,6 +31,10 @@ from turnstile_core.integrations.apim_control_plane import (
     NamedValueResource,
     ReleaseGcPlanEvidence,
 )
+from turnstile_core.integrations.apim_control_plane_contract import (
+    ImageProbeJournal,
+    OperationResource,
+)
 from turnstile_core.persistence.in_memory import InMemoryRepository
 from turnstile_core.security import CredentialCipher
 from turnstile_core.services.control_plane import (
@@ -44,6 +49,45 @@ APIM_ID = UUID("10000000-0000-4000-8000-000000000001")
 ROOT = Path(__file__).resolve().parents[3]
 
 TEST_CIPHER = CredentialCipher(Fernet.generate_key())
+
+def _claim_for_test(repository: InMemoryRepository, publication_id: UUID, actor: str) -> None:
+    owned = next(
+        (
+            item
+            for item in repository.gateway_publication_outbox
+            if item["publication_id"] == publication_id
+            and item["status"] == "leased"
+            and item["lease_owner"] == actor
+            and item["lease_expires_at"] > datetime.now(UTC)
+        ),
+        None,
+    )
+    if owned is None:
+        claimed = repository.claim_gateway_publication(actor, 180)
+        assert claimed is not None and claimed["id"] == publication_id
+
+
+def transition_publication(
+    repository: InMemoryRepository,
+    publication_id: UUID,
+    expected_status: str,
+    status: str,
+    updates: Mapping[str, Any],
+    actor: str,
+) -> dict[str, Any] | None:
+    if expected_status not in {"failed", "awaiting_authorization"}:
+        _claim_for_test(repository, publication_id, actor)
+    return repository.transition_gateway_publication(
+        publication_id, expected_status, status, updates, actor
+    )
+
+
+def activate_publication(
+    repository: InMemoryRepository, publication_id: UUID, actor: str
+) -> dict[str, Any]:
+    _claim_for_test(repository, publication_id, actor)
+    return repository.activate_gateway_publication(publication_id, actor)
+
 
 class GatewayControlPlaneService(BaseGatewayControlPlaneService):
     def __init__(
@@ -148,8 +192,32 @@ class FakeApimClient:
         self.operation_policies[operation] = policy
         self.calls.append((operation, revision))
 
-    def probe_revision(self, revision: str, publication: object) -> None:
-        del publication
+    def ensure_operation(self, revision: str, operation: OperationResource) -> None:
+        self.calls.append(("operation", operation.id))
+
+    def revision_api_policy(self, revision: str) -> str:
+        return self.api_policies.get(revision, self.policy)
+
+    def probe_revision(
+        self,
+        revision: str,
+        publication: object,
+        *,
+        journal: ImageProbeJournal | None = None,
+    ) -> None:
+        if journal is not None and isinstance(publication, GatewayPublication):
+            for binding in publication.desired_spec.bindings:
+                if binding.api_format == "openai_images":
+                    journal.run(
+                        binding,
+                        revision,
+                        {"model": binding.model.model_key},
+                        lambda request_id, model_id: {
+                            "total_tokens": 30,
+                            "correlation_id": "unit-probe-" + request_id,
+                            "image_validated": True,
+                        },
+                    )
         self.probe_counts[revision] = self.probe_counts.get(revision, 0) + 1
         if self.probe_counts[revision] == self.fail_probe_at.get(revision):
             raise RuntimeError("Injected post-promotion probe failure")

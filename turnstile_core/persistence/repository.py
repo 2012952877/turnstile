@@ -22,6 +22,7 @@ from ..domain.models import (
 )
 from .repository_applications import PostgreSqlApplicationRepositoryMixin
 from .repository_assistant import PostgreSqlAssistantRepositoryMixin
+from .repository_billable_requests import PostgreSqlBillableRequestRepositoryMixin
 from .repository_budgets import PostgreSqlBudgetRepositoryMixin
 from .repository_contract import OpsDbProxy, QueryRepository
 from .repository_publications import PostgreSqlPublicationRepositoryMixin
@@ -62,6 +63,7 @@ class PostgreSqlOpsDbProxy(
     PostgreSqlAssistantRepositoryMixin,
     PostgreSqlApplicationRepositoryMixin,
     PostgreSqlBudgetRepositoryMixin,
+    PostgreSqlBillableRequestRepositoryMixin,
     PostgreSqlRegistryRepositoryMixin,
     PostgreSqlPublicationRepositoryMixin,
     QueryRepository,
@@ -77,41 +79,44 @@ class PostgreSqlOpsDbProxy(
         with self._connection() as connection:
             rows = connection.execute(
                 """SELECT
-                                         date_trunc(
-                                             %s, usage.occurred_at AT TIME ZONE %s
-                                         ) AT TIME ZONE %s AS bucket_start,
-                                         'all' AS key,
-                                         'all' AS label,
-                                         jsonb_build_object(
-                                             'et', COALESCE(SUM(usage.et), 0)::DOUBLE PRECISION,
-                                             'total_tokens', SUM(
-                                                 usage.input_tokens + usage.cached_tokens
-                                                 + usage.output_tokens
-                                             )::BIGINT,
-                                             'input_tokens', SUM(usage.input_tokens)::BIGINT,
-                                             'cached_tokens', SUM(usage.cached_tokens)::BIGINT,
-                                             'cache_read_tokens', SUM(GREATEST(
-                                                 usage.cached_tokens - usage.cache_write_tokens, 0
-                                             ))::BIGINT,
-                                             'cache_write_tokens',
-                                                 SUM(usage.cache_write_tokens)::BIGINT,
-                                             'output_tokens', SUM(usage.output_tokens)::BIGINT,
-                                             'calls', COUNT(*)::BIGINT,
-                                             'estimated_cost', COALESCE(
-                                                 SUM(usage.estimated_cost), 0
-                                             )::DOUBLE PRECISION,
-                                             'p95_latency_ms', COALESCE(
-                                                 percentile_cont(0.95) WITHIN GROUP (
-                                                     ORDER BY usage.latency_ms
-                                                 ), 0
-                                             )::DOUBLE PRECISION,
-                                             'failed_calls', COUNT(*) FILTER (
-                                                 WHERE usage.status_code >= 400
-                                             )::BIGINT
-                                         ) AS totals
-                             FROM budget_scope_usage usage
-                             WHERE usage.scope_type = 'application' AND usage.scope_id = %s
-                                 AND usage.occurred_at >= %s AND usage.occurred_at < %s
+                       date_trunc(
+                       %s, usage.ts AT TIME ZONE %s
+                       ) AT TIME ZONE %s AS bucket_start,
+                       'all' AS key,
+                       'all' AS label,
+                       jsonb_build_object(
+                       'et', COALESCE(SUM(usage.et), 0)::DOUBLE PRECISION,
+                       'total_tokens', SUM(
+                       usage.input_tokens + usage.cached_tokens
+                       + usage.output_tokens
+                       )::BIGINT,
+                       'input_tokens', SUM(usage.input_tokens)::BIGINT,
+                       'cached_tokens', SUM(usage.cached_tokens)::BIGINT,
+                       'cache_read_tokens', SUM(GREATEST(
+                       usage.cached_tokens - usage.cache_write_tokens, 0
+                       ))::BIGINT,
+                       'cache_write_tokens',
+                       SUM(usage.cache_write_tokens)::BIGINT,
+                       'output_tokens', SUM(usage.output_tokens)::BIGINT,
+                       'calls', COUNT(*)::BIGINT,
+                       'estimated_cost', COALESCE(
+                       SUM(usage.estimated_cost), 0
+                       )::DOUBLE PRECISION,
+                       'p95_latency_ms', COALESCE(
+                       percentile_cont(0.95) WITHIN GROUP (
+                       ORDER BY usage.latency_ms
+                       ), 0
+                       )::DOUBLE PRECISION,
+                       'failed_calls', COUNT(*) FILTER (
+                       WHERE usage.status_code >= 400
+                       )::BIGINT
+                       ) AS totals
+                       FROM token_usage usage
+                       JOIN token_usage_application_attribution attribution
+                       ON attribution.usage_id = usage.id
+                       WHERE usage.usage_domain = 'apim'
+                       AND attribution.application_id = %s
+                       AND usage.ts >= %s AND usage.ts < %s
                              GROUP BY 1
                              ORDER BY 1""",
                 (interval, timezone, timezone, str(application_id), from_, to),
@@ -173,14 +178,27 @@ class PostgreSqlOpsDbProxy(
         values["user_ref"] = values.pop("user")
         with self._connection() as connection:
             if record.usage_domain == "apim":
-                existing_attempt = connection.execute(
-                    """SELECT id FROM token_usage
-                       WHERE correlation_id = %s AND usage_domain = 'apim'
-                       ORDER BY ts DESC, id DESC LIMIT 1""",
-                    (record.correlation_id,),
-                ).fetchone()
-                if existing_attempt is not None:
-                    values["id"] = str(existing_attempt["id"])
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (f"apim-attempt:{record.correlation_id}",),
+                )
+                candidates = connection.execute(
+                    """SELECT id, correlation_id, usage_domain, user_id FROM token_usage
+                       WHERE (usage_domain = 'apim' AND correlation_id = %s) OR id = %s
+                       ORDER BY id LIMIT 2 FOR UPDATE""",
+                    (record.correlation_id, record.id),
+                ).fetchall()
+                if len(candidates) > 1:
+                    raise ValueError("APIM correlation identity is ambiguous")
+                if candidates:
+                    existing = candidates[0]
+                    if (
+                        existing["usage_domain"] != "apim"
+                        or existing["correlation_id"] != record.correlation_id
+                        or existing["user_id"] != record.user_id
+                    ):
+                        raise ValueError("APIM correlation identity conflicts with stored usage")
+                    values["id"] = str(existing["id"])
             connection.execute(
                 """
                 INSERT INTO token_usage AS existing (

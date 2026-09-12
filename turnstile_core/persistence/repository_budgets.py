@@ -8,7 +8,11 @@ from uuid import UUID, uuid4
 
 from psycopg.types.json import Jsonb
 
-from ..domain.ledger import BudgetReservationFinalization, LedgerScopeType
+from ..domain.ledger import (
+    BudgetReservationAdmission,
+    BudgetReservationFinalization,
+    LedgerScopeType,
+)
 from .repository_support import BudgetConstraintViolation
 
 _LEDGER_CORRELATION_BATCH_SIZE = 5000
@@ -17,6 +21,41 @@ _LEDGER_CORRELATION_BATCH_SIZE = 5000
 class PostgreSqlBudgetRepositoryMixin:
     def _connection(self) -> AbstractContextManager[Any]:
         raise NotImplementedError
+
+    def budget_evidence_effective_at(self) -> datetime | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT effective_at FROM budget_evidence_policy WHERE version = 2"
+            ).fetchone()
+        return cast(datetime | None, row["effective_at"])
+
+    def register_budget_reservations(self, items: Sequence[BudgetReservationAdmission]) -> None:
+        if not items:
+            return
+        values = Jsonb([item.model_dump(mode="json") for item in items])
+        with self._connection() as connection, connection.transaction():
+            connection.execute(
+                """INSERT INTO budget_reservation_admission
+                     (scope_type, scope_id, correlation_id, created_at, reserved_tokens)
+                   SELECT * FROM jsonb_to_recordset(%s::jsonb) AS incoming(
+                     scope_type TEXT, scope_id TEXT, correlation_id TEXT,
+                     created_at TIMESTAMPTZ, reserved_tokens BIGINT)
+                   ON CONFLICT DO NOTHING""",
+                (values,),
+            )
+            mismatch = connection.execute(
+                """SELECT 1 FROM jsonb_to_recordset(%s::jsonb) AS incoming(
+                     scope_type TEXT, scope_id TEXT, correlation_id TEXT,
+                     created_at TIMESTAMPTZ, reserved_tokens BIGINT)
+                   JOIN budget_reservation_admission stored
+                     USING (scope_type, scope_id, correlation_id)
+                   WHERE (stored.created_at, stored.reserved_tokens)
+                     IS DISTINCT FROM (incoming.created_at, incoming.reserved_tokens)
+                   LIMIT 1""",
+                (values,),
+            ).fetchone()
+            if mismatch is not None:
+                raise ValueError("Budget reservation admission is immutable")
 
     def list_token_budgets(self, period_start: date) -> Sequence[dict[str, Any]]:
         with self._connection() as connection:
@@ -38,34 +77,51 @@ class PostgreSqlBudgetRepositoryMixin:
                 """WITH period_usage AS (
                        SELECT organization_id, department_id, user_id,
                               input_tokens + cached_tokens + output_tokens AS total_tokens
-                                             FROM token_usage usage
-                                             WHERE ts >= %s AND ts < %s AND usage_domain = 'apim'
-                                                 AND NOT EXISTS (
-                                                     SELECT 1
-                                                     FROM budget_reservation_recovery recovery
-                                                     WHERE recovery.scope_type = 'person'
-                                                         AND recovery.scope_id = usage.user_id
-                                                         AND recovery.correlation_id =
-                                                             usage.correlation_id
-                                                 )
-                                             UNION ALL
-                                             SELECT COALESCE(
-                                                 department.parent_scope_id, 'unattributed'
-                                             ), COALESCE(
-                                                 person.parent_scope_id, 'unattributed'
-                                             ), recovery.scope_id, recovery.total_tokens
-                                             FROM budget_reservation_recovery recovery
-                                             LEFT JOIN token_budget person
-                                                 ON person.period_start = recovery.period_start
-                                                 AND person.scope_type = 'user'
-                                                 AND person.scope_id = recovery.scope_id
-                                             LEFT JOIN token_budget department
-                                                 ON department.period_start = recovery.period_start
-                                                 AND department.scope_type = 'department'
-                                                 AND department.scope_id = person.parent_scope_id
-                                             WHERE recovery.scope_type = 'person'
-                                                 AND recovery.reservation_created_at >= %s
-                                                 AND recovery.reservation_created_at < %s
+                       FROM token_usage usage
+                       WHERE ts >= %s AND ts < %s AND usage_domain = 'apim'
+                       AND EXISTS (
+                       SELECT 1 FROM budget_legacy_usage legacy
+                       WHERE legacy.scope_type = 'person'
+                       AND legacy.scope_id = usage.user_id
+                       AND legacy.correlation_id = usage.correlation_id
+                       )
+                       AND NOT EXISTS (
+                       SELECT 1 FROM budget_reservation_recovery recovery
+                       WHERE recovery.scope_type = 'person'
+                       AND recovery.scope_id = usage.user_id
+                       AND recovery.correlation_id = usage.correlation_id
+                       )
+                       UNION ALL
+                       SELECT COALESCE(department.parent_scope_id, 'unattributed'),
+                       COALESCE(person.parent_scope_id, 'unattributed'),
+                       recovery.scope_id, recovery.total_tokens
+                       FROM budget_reservation_recovery recovery
+                       LEFT JOIN token_budget person
+                       ON person.period_start = recovery.period_start
+                       AND person.scope_type = 'user' AND person.scope_id = recovery.scope_id
+                       LEFT JOIN token_budget department
+                       ON department.period_start = recovery.period_start
+                       AND department.scope_type = 'department'
+                       AND department.scope_id = person.parent_scope_id
+                       WHERE recovery.scope_type = 'person'
+                       AND recovery.reservation_created_at >= %s
+                       AND recovery.reservation_created_at < %s
+                       AND EXISTS (
+                       SELECT 1 FROM budget_legacy_usage legacy
+                       WHERE legacy.scope_type = recovery.scope_type
+                       AND legacy.scope_id = recovery.scope_id
+                       AND legacy.correlation_id = recovery.correlation_id
+                       )
+                       UNION ALL
+                       SELECT organization_id, department_id, scope_id, total_tokens
+                       FROM budget_evidence_selected
+                       WHERE scope_type = 'person' AND admitted_at >= %s AND admitted_at < %s
+                       UNION ALL
+                       SELECT 'unattributed', 'unattributed', scope_id, effective_tokens
+                       FROM billable_request_effective_v1
+                       WHERE scope_type = 'person' AND effective_state = 'exact'
+                       AND NOT strict_budget_evidence(created_at)
+                       AND period_start >= %s::date AND period_start < %s::date
                    ), scoped_usage AS (
                        SELECT 'organization'::TEXT AS scope_type,
                               organization_id AS scope_id,
@@ -82,7 +138,7 @@ class PostgreSqlBudgetRepositoryMixin:
                    SELECT scope_type, scope_id, used_tokens
                    FROM scoped_usage
                    WHERE scope_id <> 'unattributed'""",
-                (from_, to, from_, to),
+                (from_, to, from_, to, from_, to, from_, to),
             ).fetchall()
         return cast(Sequence[dict[str, Any]], rows)
 
@@ -601,6 +657,19 @@ class PostgreSqlBudgetRepositoryMixin:
         wanted = sorted({value for value in correlation_ids if value})
         settled: set[str] = set()
         if not wanted:
+            return settled
+        if scope_type is not None and scope_id is not None:
+            with self._connection() as connection:
+                for offset in range(0, len(wanted), _LEDGER_CORRELATION_BATCH_SIZE):
+                    chunk = wanted[offset : offset + _LEDGER_CORRELATION_BATCH_SIZE]
+                    rows = connection.execute(
+                        """SELECT correlation_id FROM settled_budget_reservations(%s, %s, %s)
+                           UNION SELECT id::text FROM billable_request_effective
+                           WHERE scope_type = %s AND scope_id = %s AND id::text = ANY(%s)
+                             AND effective_state = 'exact'""",
+                        (scope_type, scope_id, chunk, scope_type, scope_id, chunk),
+                    ).fetchall()
+                    settled.update(str(row["correlation_id"]) for row in rows)
             return settled
         with self._connection() as connection:
             for offset in range(0, len(wanted), _LEDGER_CORRELATION_BATCH_SIZE):

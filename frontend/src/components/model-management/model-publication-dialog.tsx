@@ -220,6 +220,9 @@ export function ModelPublicationDialog({
 
   const [providerApiKey, setProviderApiKey] = useState("")
   const [foundryDeployment, setFoundryDeployment] = useState("")
+  const [modelOperation, setModelOperation] = useState<"chat" | "image_generation">("chat")
+  const imageGeneration = foundry && modelOperation === "image_generation"
+  const imageConfigurationSupported = registry.image_configuration_schema_version === 4
   const [keyRevealed, setKeyRevealed] = useState(false)
   const [modelKey, setModelKey] = useState("")
   const [displayName, setDisplayName] = useState("")
@@ -248,6 +251,7 @@ export function ModelPublicationDialog({
   const clearConnectionInputs = () => {
     setProviderApiKey("")
     setFoundryDeployment("")
+    setModelOperation("chat")
     setKeyRevealed(false)
     setModelKey("")
     setDisplayName("")
@@ -281,6 +285,11 @@ export function ModelPublicationDialog({
     if (requiredCredentialMissing) return "请输入该连接首次发布所需的一次性 API Key。"
     if (foundry) {
       if (!foundryDeployment.trim()) return "请输入已有的 Foundry Deployment Name。"
+      if (imageGeneration && registry.image_generation_supported !== true) return "后端尚未启用图像生成"
+      if (imageGeneration && !imageConfigurationSupported) return "后端尚未支持图像参数透传"
+      if (imageGeneration && [inputPrice, cacheReadPrice, outputPrice].some(value => !value.trim())) {
+        return "请填写文字输入、缓存文字和图像输出单价。"
+      }
       return optionalNumberError([
         contextWindow, inputPrice, outputPrice, cacheReadPrice, cacheWritePrice,
       ])
@@ -304,15 +313,16 @@ export function ModelPublicationDialog({
       const request: GatewayPublicationCreate = {
         ...publicationConnectionTarget(registry, selectedGateway.id, selectedRuntime.id, providerApiKey),
         model: {
+          operation: imageGeneration ? "image_generation" : undefined,
           deployment_name: foundry ? foundryDeployment.trim() : undefined,
           model_key: foundry ? undefined : effectiveModelKey,
           display_name: foundry ? undefined : effectiveDisplayName,
           upstream_model_id: foundry ? undefined : upstreamModelId.trim(),
-          context_window: numberOrNull(contextWindow),
+          context_window: imageGeneration ? null : numberOrNull(contextWindow),
           input_cost_per_million: numberOrNull(inputPrice),
           output_cost_per_million: numberOrNull(outputPrice),
           cached_cost_per_million: numberOrNull(cacheReadPrice),
-          cache_write_cost_per_million: numberOrNull(cacheWritePrice),
+          cache_write_cost_per_million: imageGeneration ? null : numberOrNull(cacheWritePrice),
         },
       }
       const accepted = await dataSource.publishModel(request)
@@ -497,6 +507,24 @@ export function ModelPublicationDialog({
           {selectedRuntime && <>
             <section className="simple-model-section simple-connection-section" aria-label="模型">
               <div className="simple-section-title"><b>模型</b></div>
+              {foundry && <div className="registry-field">
+                <span className="registry-field-label">模型用途</span>
+                <Select value={modelOperation} disabled={publishing} onValueChange={operation => {
+                  if (operation !== "chat" && operation !== "image_generation") return
+                  setModelOperation(operation)
+                  setContextWindow("")
+                  setInputPrice("")
+                  setOutputPrice("")
+                  setCacheReadPrice("")
+                  setCacheWritePrice("")
+                }}>
+                  <SelectTrigger aria-label="模型用途"><SelectValue>{imageGeneration ? "文生图" : "对话"}</SelectValue></SelectTrigger>
+                  <SelectContent align="start" alignItemWithTrigger={false}>
+                    <SelectItem value="chat">对话</SelectItem>
+                    <SelectItem value="image_generation" disabled={registry.image_generation_supported !== true || !imageConfigurationSupported}>文生图</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>}
               {foundry ? <label className="registry-field">
                 <span className="registry-field-label">Deployment Name</span>
                 <Input value={foundryDeployment} onChange={(event) => setFoundryDeployment(event.target.value)} disabled={publishing} />
@@ -526,9 +554,19 @@ export function ModelPublicationDialog({
                 </div>
               </div>}
             </section>
-            <details className="simple-pricing">
-              <summary>价格与上下文</summary>
-              <div className="simple-pricing-fields"><div className="form-grid three"><label className="registry-field"><span className="registry-field-label">上下文窗口</span><Input type="number" min="1" value={contextWindow} onChange={(event) => setContextWindow(event.target.value)} disabled={publishing} /></label><label className="registry-field"><span className="registry-field-label">输入 $/M</span><Input type="number" min="0" step="0.000001" value={inputPrice} onChange={(event) => setInputPrice(event.target.value)} disabled={publishing} /></label><label className="registry-field"><span className="registry-field-label">输出 $/M</span><Input type="number" min="0" step="0.000001" value={outputPrice} onChange={(event) => setOutputPrice(event.target.value)} disabled={publishing} /></label></div><div className="form-grid"><label className="registry-field"><span className="registry-field-label">缓存读取 $/M</span><Input type="number" min="0" step="0.000001" value={cacheReadPrice} onChange={(event) => setCacheReadPrice(event.target.value)} disabled={publishing} /></label><label className="registry-field"><span className="registry-field-label">缓存写入 $/M</span><Input type="number" min="0" step="0.000001" value={cacheWritePrice} onChange={(event) => setCacheWritePrice(event.target.value)} disabled={publishing} /></label></div></div>
+            <details className="simple-pricing" open={imageGeneration || undefined}>
+              <summary>{imageGeneration ? "价格与限制" : "价格与上下文"}</summary>
+              <div className="simple-pricing-fields">
+                <div className={imageGeneration ? "form-grid" : "form-grid three"}>
+                  {!imageGeneration && <label className="registry-field"><span className="registry-field-label">上下文窗口</span><Input type="number" min="1" value={contextWindow} onChange={(event) => setContextWindow(event.target.value)} disabled={publishing} /></label>}
+                  <label className="registry-field"><span className="registry-field-label">{imageGeneration ? "文字输入 $/M" : "输入 $/M"}</span><Input type="number" min="0" step="0.000001" value={inputPrice} onChange={(event) => setInputPrice(event.target.value)} disabled={publishing} required={imageGeneration} /></label>
+                  <label className="registry-field"><span className="registry-field-label">{imageGeneration ? "图像输出 $/M" : "输出 $/M"}</span><Input type="number" min="0" step="0.000001" value={outputPrice} onChange={(event) => setOutputPrice(event.target.value)} disabled={publishing} required={imageGeneration} /></label>
+                </div>
+                <div className="form-grid">
+                  <label className="registry-field"><span className="registry-field-label">{imageGeneration ? "缓存文字输入 $/M" : "缓存读取 $/M"}</span><Input type="number" min="0" step="0.000001" value={cacheReadPrice} onChange={(event) => setCacheReadPrice(event.target.value)} disabled={publishing} required={imageGeneration} /></label>
+                  {!imageGeneration && <label className="registry-field"><span className="registry-field-label">缓存写入 $/M</span><Input type="number" min="0" step="0.000001" value={cacheWritePrice} onChange={(event) => setCacheWritePrice(event.target.value)} disabled={publishing} /></label>}
+                </div>
+              </div>
             </details>
           </>}
           </>}

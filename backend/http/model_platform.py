@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import logging
-from typing import Annotated
+from typing import Annotated, TypeVar
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from turnstile_core.config import get_settings
 from turnstile_core.domain.control_plane import (
@@ -16,6 +16,7 @@ from turnstile_core.domain.control_plane import (
     GatewayPublicationRequestAccepted,
     GatewayPublicationRetry,
     GatewayPublicationView,
+    GatewayReconcileRequest,
     GatewayReleaseDetail,
     GatewayReleaseDiff,
     GatewayReleaseIntegrity,
@@ -33,6 +34,7 @@ from turnstile_core.domain.enterprise import (
     merge_application_owners,
     merge_observed_users,
 )
+from turnstile_core.domain.images import ImageInvocationRequest, ImageInvocationResponse
 from turnstile_core.domain.runtime_models import (
     GatewayProfileWrite,
     ManagedModelWrite,
@@ -71,6 +73,7 @@ from .session import (
 )
 
 logger = logging.getLogger(__name__)
+InvocationRequest = TypeVar("InvocationRequest", ModelInvocationRequest, ImageInvocationRequest)
 
 protected_router = APIRouter(
     dependencies=[
@@ -341,6 +344,8 @@ def create_gateway_publication(
 ) -> GatewayPublicationRequestAccepted:
     try:
         publication = service.publish(write, owner_email)
+    except ControlPlaneUnavailableError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
     except ControlPlaneConflictError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return GatewayPublicationRequestAccepted(
@@ -358,9 +363,14 @@ def reconcile_gateway_routes(
     gateway_profile_id: UUID,
     service: ControlPlaneService,
     owner_email: PublicationOwner,
+    write: GatewayReconcileRequest | None = None,
 ) -> GatewayPublicationRequestAccepted:
     try:
-        publication = service.reconcile_gateway(gateway_profile_id, owner_email)
+        publication = service.reconcile_gateway(
+            gateway_profile_id, owner_email, write.image_configurations if write else None
+        )
+    except ControlPlaneUnavailableError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
     except ControlPlaneConflictError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return GatewayPublicationRequestAccepted(
@@ -700,6 +710,31 @@ def invoke_model(
     repository: Repository,
     settings: Config,
 ) -> ModelInvocationResponse:
+    return service.invoke(_bind_invocation_identity(request, identity, repository, settings))
+
+
+@protected_router.post(
+    "/api/v1/model-gateway/images/generations", response_model=ImageInvocationResponse
+)
+def generate_image(
+    request: ImageInvocationRequest,
+    service: RuntimeService,
+    identity: CurrentSession,
+    repository: Repository,
+    settings: Config,
+    response: Response,
+) -> ImageInvocationResponse:
+    request = _bind_invocation_identity(request, identity, repository, settings)
+    response.headers["Cache-Control"] = "no-store"
+    return service.generate_image(request, role=identity.role)
+
+
+def _bind_invocation_identity(
+    request: InvocationRequest,
+    identity: CurrentSession,
+    repository: Repository,
+    settings: Config,
+) -> InvocationRequest:
     if identity.role != "owner":
         requested_user_id = request.metadata.user_id.casefold()
         if requested_user_id == identity.email.casefold():
@@ -739,7 +774,7 @@ def invoke_model(
                 )
             }
         )
-    return service.invoke(request)
+    return request
 
 
 @protected_router.post("/api/v1/traffic/plan", response_model=TrafficGenerationPlan)

@@ -108,6 +108,9 @@ def process_gateway_release_operations(timer: func.TimerRequest) -> None:
         ) as store:
             prepare_application_ledger(repository, store, gateway_id, application_id)
 
+    policy_path = Path(
+        os.environ.get("CONTROL_PLANE_PARENT_POLICY_PATH", "policies/foundry-finops-policy.xml")
+    )
     release_worker = GatewayReleaseOperationWorker(
         repository,
         publisher,
@@ -117,13 +120,12 @@ def process_gateway_release_operations(timer: func.TimerRequest) -> None:
             failed_retained_days=settings.gateway_failed_release_retention_days,
             protected_labels=settings.gateway_release_protected_labels,
         ),
-        application_default_token_limit=(
-            settings.gateway_application_default_monthly_token_limit
-        ),
+        application_default_token_limit=(settings.gateway_application_default_monthly_token_limit),
         application_default_tokens_per_minute=(
             settings.gateway_application_default_tokens_per_minute
         ),
         cipher=CredentialCipher.from_settings(settings),
+        parent_policy=policy_path.read_text(encoding="utf-8") if policy_path.is_file() else None,
         application_projector=(
             project_application
             if settings.gateway_application_provisioning_enabled and settings.ledger_table_endpoint

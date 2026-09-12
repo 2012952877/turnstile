@@ -4,11 +4,15 @@ from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
 from datetime import datetime
 from typing import Any, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from psycopg.types.json import Jsonb
 
-from ..domain.control_plane import GatewayPublication, publication_materialized_named_values
+from ..domain.control_plane import (
+    GatewayPublication,
+    publication_materialized_named_values,
+    publication_model_id,
+)
 from .repository_support import _activation_runtime_config
 
 
@@ -145,6 +149,8 @@ class PostgreSqlPublicationRepositoryMixin:
         credential_ciphertext: bytes | None,
         desired_spec: Mapping[str, Any] | None = None,
         desired_spec_sha256: str | None = None,
+        *,
+        image_probe_authorization: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         with self._connection() as connection, connection.transaction():
             publication = connection.execute(
@@ -164,6 +170,7 @@ class PostgreSqlPublicationRepositoryMixin:
                 credential_ciphertext,
                 desired_spec,
                 desired_spec_sha256,
+                image_probe_authorization=image_probe_authorization,
             )
 
     @staticmethod
@@ -174,6 +181,8 @@ class PostgreSqlPublicationRepositoryMixin:
         credential_ciphertext: bytes | None,
         desired_spec: Mapping[str, Any] | None = None,
         desired_spec_sha256: str | None = None,
+        *,
+        image_probe_authorization: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         if publication["status"] != "failed":
             raise ValueError("Only a failed publication can be retried")
@@ -202,11 +211,19 @@ class PostgreSqlPublicationRepositoryMixin:
             GatewayPublication.model_validate(publication),
             provisioning_completed=provisioning_completed is not None,
         )
-        preserved_manifest = (
-            {"named_values": materialized}
-            if credential_ciphertext is None and materialized
-            else {}
+        preserved_manifest: dict[str, Any] = (
+            {"named_values": materialized} if credential_ciphertext is None and materialized else {}
         )
+        authorization = image_probe_authorization or publication["resource_manifest"].get(
+            "image_probe_authorization"
+        )
+        if authorization is not None:
+            preserved_manifest["image_probe_authorization"] = dict(authorization)
+        generation = publication["resource_manifest"].get("credential_generation")
+        if credential_ciphertext is not None:
+            preserved_manifest["credential_generation"] = str(uuid4())
+        elif generation is not None:
+            preserved_manifest["credential_generation"] = generation
         row = connection.execute(
             """UPDATE gateway_publication SET
                    status = 'queued', apim_revision = NULL,
@@ -251,9 +268,13 @@ class PostgreSqlPublicationRepositoryMixin:
             )
         connection.execute(
             """INSERT INTO gateway_publication_audit (
-                   publication_id, from_status, to_status, actor
-               ) VALUES (%s, 'failed', 'queued', %s)""",
-            (publication["id"], created_by),
+                   publication_id, from_status, to_status, actor, detail
+               ) VALUES (%s, 'failed', 'queued', %s, %s)""",
+            (
+                publication["id"],
+                created_by,
+                Jsonb({"image_probe_authorization": image_probe_authorization}),
+            ),
         )
         return cast(dict[str, Any], row)
 
@@ -629,9 +650,9 @@ class PostgreSqlPublicationRepositoryMixin:
             assignments.append("completed_at = now()")
         with self._connection() as connection, connection.transaction():
             row = connection.execute(
-                f"""UPDATE gateway_release_operation SET {', '.join(assignments)}
+                f"""UPDATE gateway_release_operation SET {", ".join(assignments)}
                     WHERE id = %(id)s AND status = %(expected)s
-                      AND lease_owner = %(actor)s RETURNING *""",
+                      AND lease_owner = %(actor)s AND lease_expires_at > now() RETURNING *""",
                 parameters,
             ).fetchone()
             if row is not None:
@@ -677,8 +698,9 @@ class PostgreSqlPublicationRepositoryMixin:
     ) -> dict[str, Any]:
         with self._connection() as connection, connection.transaction():
             operation = connection.execute(
-                "SELECT * FROM gateway_release_operation WHERE id = %s FOR UPDATE",
-                (operation_id,),
+                """SELECT * FROM gateway_release_operation
+                   WHERE id = %s AND lease_owner = %s AND lease_expires_at > now() FOR UPDATE""",
+                (operation_id, actor),
             ).fetchone()
             if (
                 operation is None
@@ -964,6 +986,14 @@ class PostgreSqlPublicationRepositoryMixin:
         if status in {"active", "failed", "rolled_back"}:
             assignments.append("completed_at = now()")
         with self._connection() as connection, connection.transaction():
+            outbox = connection.execute(
+                """SELECT id FROM gateway_publication_outbox WHERE publication_id = %s
+                         AND status = 'leased' AND lease_owner = %s
+                         AND lease_expires_at > now() FOR UPDATE""",
+                (publication_id, actor),
+            ).fetchone()
+            if outbox is None and expected_status not in {"failed", "awaiting_authorization"}:
+                return None
             row = connection.execute(
                 f"""UPDATE gateway_publication SET {', '.join(assignments)}
                     WHERE id = %(id)s AND status = %(expected)s RETURNING *""",
@@ -993,10 +1023,51 @@ class PostgreSqlPublicationRepositoryMixin:
             )
         return cast(dict[str, Any], row)
 
+    def renew_gateway_publication_lease(
+        self,
+        publication_id: UUID,
+        worker_id: str,
+        lease_seconds: int,
+    ) -> bool:
+        with self._connection() as connection:
+            return (
+                connection.execute(
+                    """UPDATE gateway_publication_outbox
+                   SET lease_expires_at = now() + (%s * interval '1 second'), updated_at = now()
+                   WHERE publication_id = %s AND status = 'leased' AND lease_owner = %s
+                     AND lease_expires_at > now() RETURNING id""",
+                    (lease_seconds, publication_id, worker_id),
+                ).fetchone()
+                is not None
+            )
+
+    def renew_gateway_release_operation_lease(
+        self,
+        operation_id: UUID,
+        worker_id: str,
+        lease_seconds: int,
+    ) -> bool:
+        with self._connection() as connection:
+            return (
+                connection.execute(
+                    """UPDATE gateway_release_operation
+                   SET lease_expires_at = now() + (%s * interval '1 second'), updated_at = now()
+                   WHERE id = %s AND lease_owner = %s AND lease_expires_at > now() RETURNING id""",
+                    (lease_seconds, operation_id, worker_id),
+                ).fetchone()
+                is not None
+            )
+
     def activate_gateway_publication(
         self, publication_id: UUID, actor: str
     ) -> dict[str, Any]:
         with self._connection() as connection, connection.transaction():
+            outbox = connection.execute(
+                """SELECT id FROM gateway_publication_outbox WHERE publication_id = %s
+                         AND status = 'leased' AND lease_owner = %s
+                         AND lease_expires_at > now() FOR UPDATE""",
+                (publication_id, actor),
+            ).fetchone()
             publication = connection.execute(
                 "SELECT * FROM gateway_publication WHERE id = %s FOR UPDATE",
                 (publication_id,),
@@ -1005,6 +1076,8 @@ class PostgreSqlPublicationRepositoryMixin:
                 raise ValueError("Unknown gateway publication")
             if publication["status"] == "active":
                 return cast(dict[str, Any], publication)
+            if outbox is None:
+                raise ValueError("Publication activation requires the current worker lease")
             if publication["status"] != "promoting":
                 raise ValueError("Only a promoted gateway publication can be activated")
             if publication["publication_kind"] == "model_remove":
@@ -1070,9 +1143,15 @@ class PostgreSqlPublicationRepositoryMixin:
             if publication["publication_kind"] == "credential_rotation":
                 runtime = connection.execute(
                     """SELECT * FROM model_runtime
-                       WHERE gateway_profile_id = %s AND lower(name) = lower(%s)
+                       WHERE gateway_profile_id = %s
+                       AND (id = %s::uuid OR (%s::uuid IS NULL AND lower(name) = lower(%s)))
                        FOR UPDATE""",
-                    (publication["gateway_profile_id"], binding["runtime_name"]),
+                    (
+                        publication["gateway_profile_id"],
+                        binding.get("runtime_id"),
+                        binding.get("runtime_id"),
+                        binding["runtime_name"],
+                    ),
                 ).fetchone()
                 if runtime is None:
                     raise ValueError("The managed runtime no longer exists")
@@ -1206,16 +1285,17 @@ class PostgreSqlPublicationRepositoryMixin:
             if existing_model is None:
                 model = connection.execute(
                     """INSERT INTO managed_model (
-                           provider_id, runtime_id, model_key, display_name,
+                           id, provider_id, runtime_id, model_key, display_name,
                               enabled, is_default, capabilities, context_window,
                               input_cost_per_million,
                            output_cost_per_million, cached_cost_per_million,
                            cache_write_cost_per_million, allowed_roles
                        ) VALUES (
-                           %s, %s, %s, %s, TRUE, FALSE, %s, %s,
+                           %s, %s, %s, %s, %s, TRUE, FALSE, %s, %s,
                            %s, %s, %s, %s, %s
                        ) RETURNING id""",
                     (
+                        publication_model_id(publication_id, model_spec["model_key"]),
                         provider_id,
                         runtime_id,
                         model_spec["model_key"],
@@ -1318,6 +1398,8 @@ class PostgreSqlPublicationRepositoryMixin:
             row = connection.execute(
                 f"""SELECT
                     model.id AS model_id, model.model_key, model.display_name,
+                    model.capabilities AS model_capabilities,
+                    binding.value->'model'->'image_profile' AS image_profile,
                                         COALESCE(model_metadata.family_key, 'generic')
                                             AS model_family_key,
                                         COALESCE(model_metadata.upstream_model_id, model.model_key)
@@ -1347,7 +1429,18 @@ class PostgreSqlPublicationRepositoryMixin:
                                 LEFT JOIN managed_model_metadata model_metadata
                                     ON model_metadata.model_id = model.id
                 LEFT JOIN gateway_profile gateway ON gateway.id = runtime.gateway_profile_id
-                WHERE {' AND '.join(conditions)}
+                LEFT JOIN effective_gateway_release effective
+                    ON effective.gateway_profile_id = runtime.gateway_profile_id
+                LEFT JOIN gateway_publication publication
+                    ON publication.id = effective.publication_id
+                LEFT JOIN LATERAL (
+                    SELECT value FROM jsonb_array_elements(
+                        COALESCE(publication.desired_spec->'bindings', '[]'::jsonb)
+                    ) binding
+                    WHERE lower(value->'model'->>'model_key') = lower(model.model_key)
+                    LIMIT 1
+                ) binding ON TRUE
+                WHERE {" AND ".join(conditions)}
                 ORDER BY model.is_default DESC, model.created_at
                 LIMIT 1""",
                 parameters,

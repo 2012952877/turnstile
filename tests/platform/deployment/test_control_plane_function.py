@@ -85,6 +85,7 @@ def test_release_timer_never_constructs_publication_worker(
                 "application_default_token_limit": 100_000,
                 "application_default_tokens_per_minute": 100_000,
                 "cipher": cipher,
+                "parent_policy": None,
             }
 
         def run_once(

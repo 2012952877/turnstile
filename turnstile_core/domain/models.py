@@ -711,19 +711,19 @@ class ReconciledUsage(StrictModel):
     """Real per-request token counts recovered from APIM telemetry."""
 
     correlation_id: str
-    input_tokens: int = Field(ge=0)
-    output_tokens: int = Field(ge=0)
-    cached_tokens: int | None = Field(default=None, ge=0)
+    input_tokens: int = Field(ge=0, strict=True)
+    output_tokens: int = Field(ge=0, strict=True)
+    cached_tokens: int | None = Field(default=None, ge=0, strict=True)
 
 
 class ReservationTerminalEvidence(StrictModel):
     correlation_id: str = Field(min_length=1, max_length=255)
     observed_at: datetime
-    status_code: int | None = Field(default=None, ge=0, le=599)
+    status_code: int | None = Field(default=None, ge=0, le=599, strict=True)
     last_error_reason: str | None = Field(default=None, max_length=255)
-    prompt_tokens: int | None = Field(default=None, ge=0)
-    completion_tokens: int | None = Field(default=None, ge=0)
-    total_tokens: int | None = Field(default=None, ge=0)
+    prompt_tokens: int | None = Field(default=None, ge=0, strict=True)
+    completion_tokens: int | None = Field(default=None, ge=0, strict=True)
+    total_tokens: int | None = Field(default=None, ge=0, strict=True)
 
     @property
     def has_exact_usage(self) -> bool:

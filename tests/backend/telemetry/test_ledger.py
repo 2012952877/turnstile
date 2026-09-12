@@ -115,6 +115,58 @@ def test_finalization_contract_distinguishes_evidence_strengths() -> None:
         )
 
 
+@pytest.mark.parametrize("status_code", [400, 429, 500])
+def test_v2_terminal_failure_needs_complete_usage(status_code: int) -> None:
+    row = LedgerReservation(reservation_row_key(PERIOD_START, "attempt"), "attempt", 500)
+    missing = ReservationTerminalEvidence(
+        correlation_id="attempt",
+        observed_at=PERIOD_START,
+        status_code=status_code,
+    )
+    assert (
+        LedgerSyncService._finalization_from_evidence(
+            "person", USER, PERIOD_START.date(), row, missing, strict=True
+        )
+        is None
+    )
+    complete = missing.model_copy(
+        update={"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20}
+    )
+    result = LedgerSyncService._finalization_from_evidence(
+        "person", USER, PERIOD_START.date(), row, complete, strict=True
+    )
+    assert result is not None and result.total_tokens == 20
+    assert result.finalization_kind == "exact_usage"
+
+
+def test_v2_platform_reservation_uses_bound_gateway_correlation() -> None:
+    row = LedgerReservation(reservation_row_key(PERIOD_START, "platform"), "platform", 500)
+    evidence = ReservationTerminalEvidence(
+        correlation_id="gateway",
+        observed_at=PERIOD_START,
+        status_code=200,
+        prompt_tokens=12,
+        completion_tokens=8,
+        total_tokens=20,
+    )
+    assert (
+        LedgerSyncService._finalization_from_evidence(
+            "person", USER, PERIOD_START.date(), row, evidence, strict=True
+        )
+        is None
+    )
+    result = LedgerSyncService._finalization_from_evidence(
+        "person",
+        USER,
+        PERIOD_START.date(),
+        row,
+        evidence,
+        strict=True,
+        evidence_correlation_id="gateway",
+    )
+    assert result is not None and result.correlation_id == "platform"
+
+
 class FakeLedgerStore:
     def __init__(self) -> None:
         self.entities: dict[tuple[str, str], dict[str, Any]] = {}
@@ -411,14 +463,24 @@ def test_person_and_application_recovery_share_evidence_not_balances() -> None:
         == store.entities[(application, "C")]
         == {"ConfirmedUsed": 100}
     )
-    usage = repository.gateway_application_usage(
-        PERIOD_START.date(), date(2026, 8, 1), [application_id]
-    )[0]
-    assert usage["total_tokens"] == 100 and usage["request_count"] == 1
-    activity = repository.gateway_application_usage_activity(
-        application_id, PERIOD_START, PERIOD_START + timedelta(days=2), "day", "UTC"
+    assert (
+        repository.budget_scope_confirmed_tokens(
+            "application", str(application_id), PERIOD_START.date(), date(2026, 8, 1)
+        )
+        == 100
     )
-    assert activity[0]["totals"]["total_tokens"] == 100
+    assert (
+        repository.gateway_application_usage(
+            PERIOD_START.date(), date(2026, 8, 1), [application_id]
+        )
+        == []
+    )
+    assert (
+        repository.gateway_application_usage_activity(
+            application_id, PERIOD_START, PERIOD_START + timedelta(days=2), "day", "UTC"
+        )
+        == []
+    )
     assert repository.usage_records == []
 
 

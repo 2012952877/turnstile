@@ -22,7 +22,7 @@ git diff --check
 
 ## Database validation
 
-For a clean installation, run `uv run python -m backend.migrate` against an authorized new PostgreSQL 16+ database. Verify one `schema_migration` row per numbered migration (currently `001_initial_schema`, `002_apim_request_attempt_identity`, and `003_budget_reservation_finalization`), then run the command again and verify that no migration is reapplied.
+For a clean installation, run `uv run python -m backend.migrate` against an authorized new PostgreSQL 16+ database. Verify one `schema_migration` row per numbered migration (currently `001_initial_schema`, `002_apim_request_attempt_identity`, `003_budget_reservation_finalization`, `004_apim_usage_identity_guard`, `005_billable_request_lifecycle`, and `006_versioned_budget_evidence`), then run the command again and verify that no migration is reapplied.
 
 The initial schema contains no users, credentials, provider connections, runtimes, business models, usage events, or customer data.
 
@@ -40,7 +40,23 @@ For API and browser checks, distinguish a missing snapshot from zero pending usa
 
 ## Browser validation
 
+### Governed image generation and evidence v2
+
+Image generation is off by default. The version-2 budget evidence cutoff is independently disabled (`budget_evidence_policy.effective_at IS NULL`). Applying migrations does not enable either feature or reassess historical requests. Enabling a future cutoff requires separate operational authorization; it cannot be cleared or moved after being set.
+
+Focused local checks include `tests/backend/model_platform/test_image_*.py`, `tests/backend/telemetry/test_billable_requests.py`, `tests/backend/telemetry/test_ledger.py`, and `tests/platform/frontend/test_image_generation.py`. These use unit fixtures and mocked transports, not live images or database evidence.
+
+In a separately authorized environment, test one PNG, JPEG and WebP image through the authenticated backend; assignment and both budget scopes; missing usage, provider failures and timeouts; exact measured zero; and invalid or oversized image responses. Verify pre-dispatch attempt creation, immutable acknowledgement, and no automatic retry after an uncertain outcome. A replacement paid probe needs explicit `authorize_image_probes` authorization. Check release lease expiry, parent-policy tampering and APIM readback before activation and rollback.
+
+For evidence v2, verify formal usage outranks an application acknowledgement, which outranks complete diagnostic recovery. Weak error or estimated rows cannot erase exact usage; equal-rank conflicts retain first received evidence and remain inspectable. Check immutable UTC admission month, platform-request and APIM-correlation aliases, Person and Application independence, retired applications, repeated timers and old-month reservations. Missing after-dispatch usage must remain reserved; an HTTP error alone is not measured zero. Recovery and acknowledgements must not invent raw request counts, prices, cache buckets or latency. Pre-cutover requests must retain their old accounting rules.
+
+SQL source checks cannot prove PostgreSQL parsing, trigger behavior, locking, concurrent ingestion or migration safety. A frontend build cannot prove authenticated browser behavior. Record those checks as unverified until they run against separately authorized real targets.
+
+### Authenticated UI
+
 Use an authenticated real backend. Check desktop and 390 px mobile viewports, loading and empty states, keyboard focus, hover stability, modal layout, and horizontal overflow. Browser interception or fabricated responses do not count as end-to-end evidence.
+
+For images, verify model-operation selection, required text-input/cached-text/image-output prices, preview dimensions, format-aware download and failed-image actions. Changing model or mode must clear the result; image data and prompt must not enter browser storage, query caches or logs. Leaving the result must revoke its Blob URL.
 
 ## Test boundaries
 

@@ -508,7 +508,8 @@ export type ManagedModel = {
   publication_id: string | null
   enabled: boolean
   is_default: boolean
-  capabilities: Array<"chat" | "tools" | "vision" | "reasoning" | "streaming" | "embeddings">
+  capabilities: Array<"chat" | "tools" | "vision" | "reasoning" | "streaming" | "embeddings" | "image_generation">
+  image_profile?: ImageGenerationProfile | null
   context_window: number | null
   input_cost_per_million: number | null
   output_cost_per_million: number | null
@@ -521,6 +522,9 @@ export type ManagedModel = {
 
 export type ModelRegistry = {
   backend_pool_session_affinity_supported?: boolean
+  image_generation_supported?: boolean
+  image_configuration_defaults?: ImageGenerationLimits | null
+  image_configuration_schema_version?: number
   gateways: GatewayProfile[]
   providers: ModelProvider[]
   runtimes: ModelRuntime[]
@@ -564,6 +568,8 @@ export type GatewayPublicationCreate = {
     api_key?: string
   }
   model: {
+    operation?: "chat" | "image_generation"
+    image_configuration?: ImageGenerationLimits | null
     deployment_name?: string
     model_key?: string
     display_name?: string
@@ -1033,4 +1039,42 @@ export type ModelInvocationResponse = {
     estimated: boolean
   } | null
   estimated_cost: number | null
+}
+
+export type ImageGenerationLimits = {
+  max_request_bytes: number
+  max_response_bytes: number
+  output_reservation_tokens: number
+  timeout_seconds: number
+}
+
+export type ImageGenerationProfile = ImageGenerationLimits & {
+  id: string
+  version: number
+  display_name: string
+  provider_model: string
+}
+
+export type ImageGenerationOptions = {
+  size?: string
+  quality?: string
+  output_format?: string
+}
+
+export type ImageInvocationRequest = ImageGenerationOptions & {
+  model_id: string
+  runtime_id?: string
+  metadata: Record<string, string | number>
+  prompt: string
+  n: 1
+  stream: false
+}
+
+export type ImageInvocationResponse = Pick<ModelInvocationResponse,
+  "request_id" | "correlation_id" | "provider" | "runtime" | "model" | "gateway" | "latency_ms" | "usage" | "estimated_cost"
+> & {
+  size: string
+  quality: string | null
+  output_format: "png" | "jpeg" | "webp"
+  data: Array<{ b64_json: string; media_type: "image/png" | "image/jpeg" | "image/webp" }>
 }

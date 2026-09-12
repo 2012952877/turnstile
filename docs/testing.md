@@ -61,3 +61,25 @@ For images, verify model-operation selection, required text-input/cached-text/im
 ## Test boundaries
 
 Unit tests may use in-memory repositories. Integration and E2E results must identify the real deployed environment and resource boundary used for validation.
+
+## Feature acceptance matrix
+
+Passing a helper test or finding a source string does not establish complete feature delivery.
+The image Node suites execute the production registry normalization, publication component and
+invocation component with isolated hook/transport adapters. They verify actual handlers and request
+construction, but do not validate browser layout, authentication, Azure or persisted billing.
+
+| Feature | Required local coverage | Required deployed evidence |
+| --- | --- | --- |
+| Registry image capability | API response through client normalization into both Add model and Invoke, missing/false/unsupported versions | Enabled controls and successful authenticated registry load |
+| Model publication dialog | Zero/single/multiple gateways, unavailable connections, switch resets, pricing completeness including zero, one-time credentials | Same-data desktop/390px layout, keyboard controls, accepted UI publication and Active readback |
+| OpenAI-compatible onboarding | Direct and existing-connection vendor contracts, mismatch rejection, provider reuse, unique persisted credential references | Authorized provider publication and isolated APIM resource references |
+| Image retry | Default no consent, publication-bound explicit consent, cleared consent, unchanged authorization on ordinary retry, 32-attempt cap | Authorized recovery without replaying uncertain paid requests; persisted audit |
+| Text and image invocation | Identity/assignment/budget denials, one image/nonstreaming, typed result and memory clearing | Before-assignment denial, preserve-budget assignment, real response, request/correlation IDs, preview and download |
+| Ledger/evidence v2 | Same caller/distinct attempts, first receipt, immutable admission month, ranked evidence, unknown outcomes, scope separation | Migration checksums, exact API/telemetry/DB accounting, pending reservations and repeated convergence |
+| Model editor, Pool, Application, columns | Identity preservation, cancellation, affinity payloads, staged creation safety, hidden width preservation | Actual supported workflows, failure states, responsive layout and retained history |
+
+Maintain a per-candidate result for every row: passed, failed, blocked or not exercised, with exact
+evidence references. API mutation acceptance is not a completed UI check. Store completion only after
+readback and visible assertions. A failed mandatory image journey must keep the overall gate failed,
+even when independent text checks continue. Never reuse a different candidate's screenshots or results.

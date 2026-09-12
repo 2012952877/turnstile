@@ -565,6 +565,7 @@ export type GatewayPublicationCreate = {
     foundry_project_endpoint?: string
     foundry_inference_endpoint?: string
     openai_base_url?: string
+    model_vendor?: ModelVendorKey
     api_key?: string
   }
   model: {
@@ -600,6 +601,7 @@ export type GatewayPublication = {
     role_name: string
   } | null
   retry_requires_credential: boolean
+  retry_can_authorize_image_probes?: boolean
   attempt_count: number
   created_by: string
   created_at: string

@@ -1,0 +1,187 @@
+import assert from "node:assert/strict"
+import { readFileSync } from "node:fs"
+import { createRequire, stripTypeScriptTypes } from "node:module"
+import test from "node:test"
+import { fileURLToPath } from "node:url"
+import { runInNewContext } from "node:vm"
+
+import * as connections from "../../../frontend/src/components/model-management/model-publication-connections.ts"
+import * as compatible from "../../../frontend/src/components/model-management/openai-compatible.ts"
+
+const frontendRequire = createRequire(new URL("../../../frontend/package.json", import.meta.url))
+const { rolldown } = await import(frontendRequire.resolve("rolldown"))
+const entry = fileURLToPath(new URL("../../../frontend/src/components/model-management/model-publication-dialog.tsx", import.meta.url))
+const bundle = await rolldown({ input: entry, external: id => id !== entry, transform: { jsx: { runtime: "automatic" } }, treeshake: false })
+let compiled
+try { compiled = (await bundle.generate({ format: "cjs" })).output[0].code }
+finally { await bundle.close() }
+const apiSource = readFileSync(new URL("../../../frontend/src/data-sources/apim/api.ts", import.meta.url), "utf8")
+const normalization = apiSource.slice(apiSource.indexOf("const LEGACY_CLOUD_CODE_PROVIDER_ID"), apiSource.indexOf("const normalizeGatewayPublication"))
+const normalizeRegistry = runInNewContext(`${stripTypeScriptTypes(normalization)}\nnormalizeRegistry`)
+
+function registry(overrides = {}) {
+  return {
+    image_generation_supported: true, image_configuration_schema_version: 4,
+    gateways: [{ id: "gateway", name: "Gateway", implementation: "apim", enabled: true }],
+    providers: [{ id: "provider", name: "Foundry", provider_kind: "microsoft_foundry", brand_key: "microsoft_foundry", enabled: true }],
+    runtimes: [{ id: "connection", name: "Foundry connection", gateway_profile_id: "gateway", provider_id: "provider", provider_name: "Foundry", brand_key: "microsoft_foundry", enabled: true,
+      config: { control_plane_managed: true, project_endpoint: "https://unit.services.ai.azure.com/api/projects/unit", auth_strategy: "managed_identity" } }],
+    models: [], ...overrides,
+  }
+}
+
+function nodes(value) {
+  if (Array.isArray(value)) return value.flatMap(nodes)
+  if (!value || typeof value !== "object") return []
+  return [value, ...nodes(value.props?.children)]
+}
+
+function text(value) {
+  if (Array.isArray(value)) return value.map(text).join("")
+  if (value && typeof value === "object") return text(value.props?.children)
+  return value == null || typeof value === "boolean" ? "" : String(value)
+}
+
+function harness(rawRegistry = registry(), publication) {
+  const slots = []
+  let cursor = 0
+  const writes = []
+  const queued = []
+  const props = { registry: normalizeRegistry(rawRegistry), publicationId: publication?.id ?? null,
+    onPublicationQueued: id => queued.push(id), onManageConnections() {}, onClose() {} }
+  const primitives = new Proxy({}, { get: (_target, name) => name })
+  const hooks = {
+    useState(initial) {
+      const index = cursor++
+      if (!(index in slots)) slots[index] = typeof initial === "function" ? initial() : initial
+      return [slots[index], next => { slots[index] = typeof next === "function" ? next(slots[index]) : next }]
+    },
+    useRef(initial) { return { current: initial } },
+    useEffect() {},
+  }
+  const queryClient = { setQueryData() {}, invalidateQueries() {} }
+  const exports = {}
+  const imports = {
+    react: hooks, "react/jsx-runtime": frontendRequire("react/jsx-runtime"),
+    "@tanstack/react-query": { useQuery: () => ({ data: publication }), useQueryClient: () => queryClient },
+    "../../data-sources/apim/api": { dataSource: {
+      publishModel: async request => { writes.push(request); return { publication: { id: "accepted" } } },
+      retryGatewayPublication: async (...args) => { writes.push(args); return { id: publication.id } },
+    } },
+    "../../data-sources/apim/queries": { finopsKeys: { gatewayPublication: id => [id] }, finopsQueries: { gatewayPublication: () => ({}) } },
+    "./model-publication-connections": connections, "./openai-compatible": compatible,
+    "../brand-logos": { GatewayBrandLogo: "GatewayBrandLogo", ProviderBrandLogo: "ProviderBrandLogo", gatewayBrandFromIdentity: () => "generic", providerBrandFromMetadata: () => "generic" },
+  }
+  runInNewContext(compiled, { exports, require: name => imports[name] ?? primitives })
+  const render = () => { cursor = 0; return exports.ModelPublicationDialog(props) }
+  const find = predicate => nodes(render()).find(predicate)
+  const input = (id, value) => {
+    const control = find(node => node.type === "Input" && node.props.id === id)
+    assert.ok(control, `Missing input ${id}`)
+    control.props.onChange({ target: { value } })
+  }
+  const select = (value, next) => {
+    const control = find(node => node.type === "Select" && node.props.value === value)
+    assert.ok(control, `Missing selection ${value}`)
+    control.props.onValueChange(next)
+  }
+  const submit = async () => {
+    find(node => node.type === "form").props.onSubmit({ preventDefault() {} })
+    await Promise.resolve()
+  }
+  return { props, writes, queued, render, find, input, select, submit }
+}
+
+test("normalized backend image capability controls the real component option", () => {
+  for (const [enabled, version, disabled] of [[true, 4, false], [false, 4, true], [undefined, 4, true], [true, 3, true]]) {
+    const view = harness(registry({ image_generation_supported: enabled, image_configuration_schema_version: version }))
+    assert.equal(view.find(node => node.type === "SelectItem" && node.props.value === "image_generation").props.disabled, disabled)
+  }
+})
+
+test("single gateway uses summary, multiple gateways use a selector and empty stays blocked", () => {
+  const single = harness()
+  assert.ok(single.find(node => node.props?.className === "publication-target-summary"))
+  assert.equal(single.find(node => node.type === "SelectTrigger" && node.props["aria-label"] === "目标网关"), undefined)
+  const data = registry()
+  data.gateways.push({ ...data.gateways[0], id: "other", name: "Other gateway" })
+  const multiple = harness(data)
+  multiple.select("gateway", "other")
+  assert.ok(text(multiple.render()).includes("此网关没有可用连接"))
+  assert.equal(multiple.find(node => node.type === "Button" && node.props.type === "submit").props.disabled, true)
+})
+
+test("source dialog composition retains connection help, deployment help and credential section", () => {
+  const data = registry()
+  data.runtimes[0].config = { ...data.runtimes[0].config, auth_strategy: "named_value_api_key", credential_provisioned: false }
+  const view = harness(data)
+  const copy = text(view.render())
+  for (const phrase of ["选择已有连接，将模型或部署发布到所选网关。", "连接包含服务端点和认证方式", "Turnstile 不会创建上游部署", "首次发布凭据", "价格未填写"]) assert.ok(copy.includes(phrase), phrase)
+  const grid = view.find(node => node.props?.className?.includes("publication-model-identity-grid"))
+  assert.ok(nodes(grid).some(node => node.props?.id === "foundry-deployment"))
+  assert.ok(nodes(grid).some(node => node.props?.["aria-label"] === "模型用途"))
+})
+
+test("image price states accept explicit zero and submit all three rates without chat fields", async () => {
+  const view = harness()
+  view.select("chat", "image_generation")
+  view.input("foundry-deployment", " image-deployment ")
+  await view.submit()
+  assert.equal(view.writes.length, 0)
+  view.input("publication-input-price", "0")
+  assert.ok(text(view.render()).includes("价格部分填写"))
+  view.input("publication-output-price", "30")
+  view.input("publication-cache-read-price", "1.25")
+  assert.ok(text(view.render()).includes("价格已填写"))
+  assert.equal(view.find(node => node.props?.id === "publication-context-window"), undefined)
+  await view.submit()
+  const sent = view.writes[0]
+  assert.equal(sent.runtime.existing_id, "connection")
+  assert.equal(sent.runtime.api_key, undefined)
+  assert.equal(sent.model.operation, "image_generation")
+  assert.equal(sent.model.deployment_name, "image-deployment")
+  assert.equal(sent.model.input_cost_per_million, 0)
+  assert.equal(sent.model.output_cost_per_million, 30)
+  assert.equal(sent.model.cached_cost_per_million, 1.25)
+  assert.equal(sent.model.context_window, null)
+  assert.equal(sent.model.cache_write_cost_per_million, null)
+})
+
+test("connection changes clear credentials, model operation, prices and deployment", () => {
+  const data = registry()
+  data.runtimes[0].config = { ...data.runtimes[0].config, auth_strategy: "named_value_api_key", credential_provisioned: false }
+  data.runtimes.push({ ...data.runtimes[0], id: "second", name: "Second connection" })
+  const view = harness(data)
+  view.select("chat", "image_generation")
+  view.input("existing-provider-api-key", "unit-key")
+  view.input("foundry-deployment", "unit-model")
+  view.input("publication-input-price", "5")
+  view.select("connection", "second")
+  for (const id of ["existing-provider-api-key", "foundry-deployment", "publication-input-price"]) assert.equal(view.find(node => node.type === "Input" && node.props.id === id).props.value, "")
+  assert.ok(view.find(node => node.type === "Select" && node.props.value === "chat"))
+  assert.ok(text(view.render()).includes("价格未填写"))
+})
+
+test("paid image retry consent is opt-in, publication-bound and consumed by each retry", async () => {
+  const publication = { id: "failed-image", status: "failed", publication_kind: "model_add",
+    retry_can_authorize_image_probes: true, retry_requires_credential: false }
+  const view = harness(registry(), publication)
+  const consent = () => view.find(node => node.type === "Checkbox" && node.props.id === "authorize-image-probes")
+  const retry = async () => {
+    view.find(node => node.type === "Button" && text(node) === "重新发布").props.onClick()
+    await Promise.resolve()
+  }
+  assert.equal(consent().props.checked, false)
+  await retry()
+  assert.equal(view.writes[0][2], false)
+  consent().props.onCheckedChange(true)
+  await retry()
+  assert.equal(view.writes[1][2], true)
+  assert.equal(consent().props.checked, false)
+  consent().props.onCheckedChange(true)
+  view.props.publicationId = "another-publication"
+  await retry()
+  assert.equal(view.writes[2][2], false)
+  const oldBackend = harness(registry(), { ...publication, retry_can_authorize_image_probes: undefined })
+  assert.equal(oldBackend.find(node => node.type === "Checkbox" && node.props.id === "authorize-image-probes"), undefined)
+})

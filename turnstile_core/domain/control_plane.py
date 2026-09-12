@@ -13,6 +13,7 @@ from .runtime_models import (
     BrandKey,
     ModelCapability,
     ModelFamilyKey,
+    ModelVendorKey,
     ProviderKind,
     ProviderTarget,
     RuntimeKind,
@@ -98,6 +99,7 @@ class RuntimeTarget(StrictModel):
     foundry_project_endpoint: HttpUrl | None = None
     foundry_inference_endpoint: HttpUrl | None = None
     openai_base_url: HttpUrl | None = None
+    model_vendor: ModelVendorKey | None = None
     api_key: SecretStr | None = Field(
         default=None,
         min_length=1,
@@ -111,6 +113,7 @@ class RuntimeTarget(StrictModel):
             or self.foundry_project_endpoint is not None
             or self.foundry_inference_endpoint is not None
             or self.openai_base_url is not None
+            or self.model_vendor is not None
         ):
             raise ValueError("an existing runtime cannot redefine its connection")
         if self.existing_id is not None:
@@ -130,6 +133,8 @@ class RuntimeTarget(StrictModel):
             raise ValueError("a new Bedrock runtime requires its Runtime URL and API key")
         if has_openai and self.api_key is None:
             raise ValueError("a new OpenAI-compatible runtime requires its Base URL and API key")
+        if self.model_vendor is not None and not has_openai:
+            raise ValueError("model_vendor belongs only to a new OpenAI-compatible runtime")
         if not has_bedrock and not has_foundry and not has_openai:
             raise ValueError("a new runtime requires a supported provider connection")
         if has_foundry and (self.foundry_inference_endpoint is None) != (
@@ -215,7 +220,7 @@ class GatewayPublicationCreate(StrictModel):
 
 class GatewayPublicationRetry(StrictModel):
     api_key: SecretStr | None = None
-    authorize_image_probes: bool = False
+    authorize_image_probes: bool = Field(default=False, strict=True)
 
 
 class ImageProbeAuthorization(StrictModel):
@@ -565,6 +570,7 @@ class GatewayPublicationView(StrictModel):
     error_message: str | None
     authorization: GatewayAuthorizationRequirement | None = None
     retry_requires_credential: bool = False
+    retry_can_authorize_image_probes: bool = False
     attempt_count: int
     created_by: str
     created_at: datetime
@@ -597,6 +603,22 @@ class GatewayPublicationView(StrictModel):
                 authorization = GatewayAuthorizationRequirement.model_validate(
                     raw_authorization
                 )
+        probe_authorization = publication.resource_manifest.get("image_probe_authorization", {})
+        probe_limit = (
+            probe_authorization.get("attempt_limit", 1)
+            if isinstance(probe_authorization, dict)
+            else None
+        )
+        can_authorize_probes = (
+            publication.status is PublicationStatus.FAILED
+            and publication.publication_kind
+            in {PublicationKind.MODEL_ADD, PublicationKind.CREDENTIAL_ROTATION}
+            and any(
+                binding.api_format is ApiFormat.OPENAI_IMAGES
+                for binding in publication.desired_spec.bindings
+            )
+            and type(probe_limit) is int and 1 <= probe_limit < 32
+        )
         return cls(
             id=publication.id,
             gateway_profile_id=publication.gateway_profile_id,
@@ -614,6 +636,7 @@ class GatewayPublicationView(StrictModel):
             ),
             error_message=None,
             authorization=authorization,
+            retry_can_authorize_image_probes=can_authorize_probes,
             retry_requires_credential=publication_retry_requires_credential(publication),
             attempt_count=publication.attempt_count,
             created_by=publication.created_by,

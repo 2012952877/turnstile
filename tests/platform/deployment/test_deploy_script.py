@@ -19,6 +19,7 @@ from scripts.deploy import (
     DeploymentError,
     DeploymentInputs,
     ExistingCore,
+    _install_linux_dependencies,
     build_and_start_observer,
     deploy_packages,
     deploy_webapp_package,
@@ -38,6 +39,7 @@ from scripts.deploy import (
     runtime_release_parameters,
     temporary_parameter_file,
     validate_flex_consumption_capabilities,
+    validate_packaged_dependencies,
     validate_postgres_capabilities,
     verify_owner_login,
     wait_for_health,
@@ -807,6 +809,7 @@ def test_linux_dependency_command_uses_pinned_target_platform(tmp_path: Path) ->
     assert "--compile-bytecode" not in command
     assert "--no-compile" not in command
     assert "--requirements" in command
+    assert command[command.index("--constraint") + 1] == str(staged / "constraints.txt")
 
 
 def test_pip_fallback_uses_pinned_target_platform(tmp_path: Path) -> None:
@@ -823,6 +826,51 @@ def test_pip_fallback_uses_pinned_target_platform(tmp_path: Path) -> None:
     assert "3.11" in command
     assert "--only-binary=:all:" in command
     assert "--requirement" in command
+    assert command[command.index("--constraint") + 1] == str(staged / "constraints.txt")
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+def test_linux_install_locks_primary_and_fallback_dependencies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fallback: bool
+) -> None:
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    commands: list[list[str]] = []
+    runner = CommandRunner()
+
+    def run(command: Sequence[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(list(command))
+        if list(command[:2]) == ["uv", "export"]:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if fallback and list(command[:3]) == ["uv", "pip", "install"]:
+            raise subprocess.CalledProcessError(1, command)
+        metadata = staged / ".python_packages/lib/site-packages/fastapi-0.139.2.dist-info"
+        metadata.mkdir(parents=True, exist_ok=True)
+        (metadata / "METADATA").write_text("Name: fastapi\nVersion: 0.139.2\n")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(runner, "run", run)
+    monkeypatch.setattr("scripts.deploy.shutil.which", lambda _: "/usr/bin/pip3")
+    _install_linux_dependencies(runner, staged)
+    assert commands[0][:3] == ["uv", "export", "--locked"]
+    assert "--no-dev" in commands[0] and "--no-emit-project" in commands[0]
+    assert commands[0][-1] == str(staged / "constraints.txt")
+    for command in commands[1:]:
+        assert command[command.index("--constraint") + 1] == str(staged / "constraints.txt")
+    manifest = json.loads((staged / "dependency-manifest.json").read_text())
+    assert manifest["packages"] == {"fastapi": "0.139.2"}
+    assert len(manifest["lock_sha256"]) == 64
+
+
+@pytest.mark.parametrize("name,version", [("fastapi", "0.1.0"), ("unexpected-package", "1.0")])
+def test_packaged_dependencies_reject_versions_outside_the_lock(
+    tmp_path: Path, name: str, version: str
+) -> None:
+    metadata = tmp_path / ".python_packages/lib/site-packages/unit.dist-info"
+    metadata.mkdir(parents=True)
+    (metadata / "METADATA").write_text(f"Name: {name}\nVersion: {version}\n")
+    with pytest.raises(DeploymentError, match="does not match uv.lock"):
+        validate_packaged_dependencies(tmp_path)
 
 
 def test_linux_fallback_accepts_locked_pillow_and_older_binary_wheels(tmp_path: Path) -> None:

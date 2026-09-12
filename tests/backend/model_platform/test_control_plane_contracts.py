@@ -45,7 +45,12 @@ from turnstile_core.domain.control_plane import (
     publication_materialized_named_values,
     publication_retry_requires_credential,
 )
-from turnstile_core.domain.runtime_models import ModelConnectionCreate, ProviderTarget
+from turnstile_core.domain.runtime_models import (
+    ModelConnectionCreate,
+    ModelVendorKey,
+    ProviderTarget,
+    model_vendor_label,
+)
 from turnstile_core.integrations.apim_control_plane import (
     ApimPolicyCompiler,
     BackendPoolResource,
@@ -118,6 +123,132 @@ def test_openai_direct_publication_uses_the_same_https_connection_rules() -> Non
     assert binding.backend_path == "/v1/chat/completions"
     assert binding.named_value_name is not None
     assert binding.named_value_name.startswith("turnstile-openai-")
+
+
+@pytest.mark.parametrize("direct_publication", [False, True])
+def test_openai_credential_names_are_isolated_and_persisted(direct_publication: bool) -> None:
+    names = []
+    for index in range(2):
+        repository = InMemoryRepository()
+        service = GatewayControlPlaneService(repository)
+        if direct_publication:
+            request = GatewayPublicationCreate(
+                gateway_profile_id=APIM_ID,
+                provider=ProviderTarget(template="openai_compatible"),
+                runtime=RuntimeTarget(
+                    openai_base_url=HttpUrl("https://shared.vendor.test/v1"),
+                    api_key=SecretStr("unit-key"),
+                ),
+                model=ModelCreateTarget(
+                    model_key="shared-model", display_name="Shared model",
+                    upstream_model_id="chat-v1",
+                ),
+            )
+            publication = service.publish(request, "owner@example.com")
+            name = publication.desired_spec.bindings[-1].named_value_name
+            transition_publication(
+                repository, publication.id, "queued", "failed", {}, "unit-worker"
+            )
+            retried = service.retry(
+                publication.id,
+                GatewayPublicationRetry(api_key=SecretStr("unit-replacement-key")),
+                "owner@example.com",
+            )
+            assert retried.desired_spec.bindings[-1].named_value_name == name
+        else:
+            registry = ModelRuntimeService(
+                repository, Settings(apim_api_id=f"release-{index}-llm")
+            ).save_connection(ModelConnectionCreate(
+                gateway_profile_id=APIM_ID,
+                provider=ProviderTarget(template="openai_compatible"),
+                openai_base_url=HttpUrl("https://shared.vendor.test/v1"),
+            ))
+            runtime = next(
+                item for item in registry.runtimes
+                if item.config.get("base_url") == "https://shared.vendor.test/v1"
+            )
+            name = runtime.config["named_value_name"]
+            request = GatewayPublicationCreate(
+                gateway_profile_id=APIM_ID,
+                provider=ProviderTarget(existing_id=runtime.provider_id),
+                runtime=RuntimeTarget(existing_id=runtime.id, api_key=SecretStr("unit-key")),
+                model=ModelCreateTarget(
+                    model_key="shared-model", display_name="Shared model",
+                    upstream_model_id="chat-v1",
+                ),
+            )
+            publication = service.publish(request, "owner@example.com")
+            assert publication.desired_spec.bindings[-1].named_value_name == name
+        assert isinstance(name, str) and name.startswith("turnstile-openai-")
+        names.append(name)
+    assert names[0] != names[1]
+
+
+@pytest.mark.parametrize("vendor", list(ModelVendorKey))
+def test_openai_direct_publication_preserves_vendor(vendor: ModelVendorKey) -> None:
+    repository = InMemoryRepository()
+    request = GatewayPublicationCreate(
+        gateway_profile_id=APIM_ID,
+        provider=ProviderTarget(template="openai_compatible"),
+        runtime=RuntimeTarget(
+            openai_base_url=HttpUrl("https://vendor.example.test/v1"),
+            api_key=SecretStr("unit-vendor-key"),
+            model_vendor=vendor,
+        ),
+        model=ModelCreateTarget(
+            model_key="vendor-chat", display_name="Vendor chat", upstream_model_id="chat-v1"
+        ),
+    )
+    service = GatewayControlPlaneService(repository)
+    binding = service.publish(request, "owner@example.com").desired_spec.bindings[-1]
+    assert binding.provider_name == model_vendor_label(vendor)
+    assert binding.provider_config["model_vendor"] == vendor.value
+    assert binding.runtime_config["model_vendor"] == vendor.value
+    assert model_vendor_label(vendor) in binding.runtime_name
+
+
+def test_openai_direct_publication_reuses_vendor_provider_and_rejects_mismatch() -> None:
+    repository = InMemoryRepository()
+    connection = ModelRuntimeService(repository, Settings()).save_connection(
+        ModelConnectionCreate(
+            gateway_profile_id=APIM_ID,
+            provider=ProviderTarget(template="openai_compatible"),
+            openai_base_url=HttpUrl("https://existing.vendor.test/v1"),
+            model_vendor=ModelVendorKey.DEEPSEEK,
+        )
+    )
+    provider = next(item for item in connection.providers if item.name == "DeepSeek")
+    request = GatewayPublicationCreate(
+        gateway_profile_id=APIM_ID,
+        provider=ProviderTarget(template="openai_compatible"),
+        runtime=RuntimeTarget(
+            openai_base_url=HttpUrl("https://new.vendor.test/v1"),
+            api_key=SecretStr("unit-vendor-key"), model_vendor=ModelVendorKey.DEEPSEEK,
+        ),
+        model=ModelCreateTarget(
+            model_key="vendor-chat", display_name="Vendor chat", upstream_model_id="chat-v1"
+        ),
+    )
+    service = GatewayControlPlaneService(repository)
+    assert service._resolve_provider(request, repository.providers)["id"] == provider.id
+    request.provider = ProviderTarget(existing_id=provider.id)
+    request.runtime.model_vendor = ModelVendorKey.OPENAI
+    with pytest.raises(ControlPlaneConflictError, match="vendor does not match"):
+        service.publish(request, "owner@example.com")
+    assert repository.gateway_publications == []
+
+
+@pytest.mark.parametrize("runtime", [
+    {"existing_id": str(APIM_ID)},
+    {"foundry_project_endpoint": "https://unit.services.ai.azure.com/api/projects/unit"},
+    {
+        "bedrock_runtime_url": "https://bedrock-runtime.us-east-1.amazonaws.com",
+        "api_key": "unit-key",
+    },
+])
+def test_runtime_vendor_cannot_redefine_existing_or_other_provider(runtime: dict[str, str]) -> None:
+    with pytest.raises(ValueError, match="redefine|only to a new OpenAI"):
+        RuntimeTarget.model_validate({**runtime, "model_vendor": "deepseek"})
 
 
 @pytest.mark.parametrize("field,value", (

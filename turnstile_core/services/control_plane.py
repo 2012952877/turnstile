@@ -75,7 +75,9 @@ from ..domain.runtime_models import (
     BrandKey,
     ModelCapability,
     ModelFamilyKey,
+    ModelVendorKey,
     foundry_runtime_name,
+    model_vendor_label,
     openai_compatible_endpoint_values,
     openai_compatible_runtime_name,
 )
@@ -1999,11 +2001,24 @@ class GatewayControlPlaneService:
             return provider
         assert target.template is not None
         template = target.template
+        model_vendor = write.runtime.model_vendor or ModelVendorKey.GENERIC
         provider_name = {
             "amazon_bedrock": "Amazon Bedrock",
             "microsoft_foundry": "Microsoft Foundry",
-            "openai_compatible": "OpenAI-compatible",
+            "openai_compatible": model_vendor_label(model_vendor),
         }[template]
+        if template == "openai_compatible":
+            existing_provider = next(
+                (
+                    row for row in providers
+                    if row["enabled"] and row["provider_kind"] == "openai_compatible"
+                    and str((row.get("config") or {}).get("model_vendor", "generic"))
+                    == model_vendor.value
+                ),
+                None,
+            )
+            if existing_provider is not None:
+                return existing_provider
         if any(
             str(row["name"]).casefold() == provider_name.casefold()
             for row in providers
@@ -2024,8 +2039,14 @@ class GatewayControlPlaneService:
                 "id": None,
                 "name": provider_name,
                 "provider_kind": "openai_compatible",
-                "brand_key": BrandKey.GENERIC,
-                "config": {"hosting_platform": "openai_compatible"},
+                "brand_key": {
+                    ModelVendorKey.OPENAI: BrandKey.OPENAI,
+                    ModelVendorKey.ANTHROPIC: BrandKey.ANTHROPIC,
+                }.get(model_vendor, BrandKey.GENERIC),
+                "config": {
+                    "hosting_platform": "openai_compatible",
+                    "model_vendor": model_vendor.value,
+                },
             }
         return {
             "id": None,
@@ -2138,16 +2159,24 @@ class GatewayControlPlaneService:
                 raise ControlPlaneConflictError(
                     "An OpenAI-compatible runtime already exists for this gateway and Base URL"
                 )
-            scope = f"{write.gateway_profile_id}:{base_url.casefold()}"
-            named_value = (
-                "turnstile-openai-" + hashlib.sha256(scope.encode("utf-8")).hexdigest()[:16]
-            )
+            named_value = f"turnstile-openai-{uuid4().hex}"
+            configured_vendor = str((provider.get("config") or {}).get("model_vendor", "generic"))
+            model_vendor = target.model_vendor or ModelVendorKey(configured_vendor)
+            if target.model_vendor is not None and configured_vendor not in {
+                "generic", target.model_vendor.value,
+            }:
+                raise ControlPlaneConflictError(
+                    "The selected runtime vendor does not match its provider"
+                )
             return {
                 "id": None,
                 "routing_managed": True,
-                "name": openai_compatible_runtime_name(base_url),
+                "name": openai_compatible_runtime_name(base_url, model_vendor),
                 "runtime_kind": "openai_compatible",
-                "brand_key": brand,
+                "brand_key": {
+                    ModelVendorKey.OPENAI: BrandKey.OPENAI,
+                    ModelVendorKey.ANTHROPIC: BrandKey.ANTHROPIC,
+                }.get(model_vendor, BrandKey.GENERIC),
                 "api_format": ApiFormat.OPENAI_CHAT,
                 "backend_url": backend_url,
                 "backend_path": backend_path,
@@ -2158,6 +2187,7 @@ class GatewayControlPlaneService:
                 "streaming_mode": StreamingMode.NATIVE,
                 "config": {
                     "base_url": base_url,
+                    "model_vendor": model_vendor.value,
                     "credential_kind": "api_key",
                     "max_tokens_field": "max_tokens",
                     "supports_temperature": True,
@@ -2376,9 +2406,12 @@ class GatewayControlPlaneService:
                 raise ControlPlaneConflictError(
                     "Image generation requires explicit text, cached-text and image-output prices"
                 )
-            profile = create_image_profile(
-                model.image_configuration, (model.deployment_name or "").strip()
-            )
+            try:
+                profile = create_image_profile(
+                    model.image_configuration, (model.deployment_name or "").strip()
+                )
+            except ValueError as error:
+                raise ControlPlaneConflictError(str(error)) from error
         if brand is BrandKey.MICROSOFT_FOUNDRY:
             if model.deployment_name is None:
                 raise ControlPlaneConflictError(

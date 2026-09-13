@@ -134,6 +134,21 @@ def test_member_governance_views_hide_owner_only_controls() -> None:
     assert "{canManage && editing !== undefined" in anomaly_source
 
 
+def test_budget_block_and_people_status_headers_are_centered() -> None:
+    styles = (FRONTEND_SOURCE / "styles/finops.css").read_text(encoding="utf-8")
+
+    assert (
+        ".budget-table-head > span:nth-child(6), "
+        ".budget-table-head > span:nth-child(7) { text-align: center; }"
+        in styles
+    )
+    assert (
+        ".people-table-head .people-status-heading "
+        "{ padding: 0 14px; text-align: center; }"
+        in styles
+    )
+
+
 def test_data_source_switcher_replaces_the_legacy_access_channel_filter() -> None:
     app_source = (FRONTEND_SOURCE / "app.tsx").read_text(encoding="utf-8")
     apim_source = (FRONTEND_SOURCE / "data-sources/apim/source.tsx").read_text(

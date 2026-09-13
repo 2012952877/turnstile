@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
+from xml.etree import ElementTree
 
 import httpx
 import pytest
@@ -19,9 +21,12 @@ from tests.backend.model_platform.test_image_options import _limits
 from turnstile_core.domain.control_plane import (
     ApiFormat,
     GatewayCredentialRotation,
+    GatewayPublication,
     GatewayPublicationCreate,
     GatewayPublicationRetry,
     GatewayPublicationView,
+    ModelRemovalTarget,
+    PublicationKind,
     PublicationStatus,
     RuntimeTarget,
     StreamingMode,
@@ -32,6 +37,7 @@ from turnstile_core.integrations.apim_control_plane_contract import (
     PolicyCompilationError,
     RetryablePublicationError,
 )
+from turnstile_core.integrations.apim_policy_compiler import ApimPolicyCompiler
 from turnstile_core.integrations.apim_publisher_client import AzureApimPublisherClient
 from turnstile_core.persistence.in_memory import InMemoryRepository
 from turnstile_core.services.control_plane import (
@@ -283,7 +289,7 @@ def test_removed_image_probe_uses_image_endpoint() -> None:
 
     def handle(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        return httpx.Response(400, json={"error": "Model is not published"})
+        return httpx.Response(400, json={"error": "image_model_not_published"})
 
     client = AzureApimPublisherClient(
         publisher_settings(),
@@ -295,6 +301,181 @@ def test_removed_image_probe_uses_image_endpoint() -> None:
     assert len(requests) == 1
     assert requests[0].url.path == "/images/generations"
     assert b'"prompt"' in requests[0].content and b'"messages"' not in requests[0].content
+
+
+@pytest.mark.parametrize("remaining_images", [False, True], ids=["last-image", "survivor"])
+@pytest.mark.parametrize("rejection_index", [0, 1], ids=["validation", "routing"])
+def test_image_removal_probe_accepts_compiled_rejection(
+    rejection_index: int, remaining_images: bool,
+) -> None:
+    repository = InMemoryRepository()
+    publication = GatewayControlPlaneService(
+        repository, apim_principal_id="unit-principal", image_generation_enabled=True,
+    ).publish(image_publication(repository), "owner@example.com")
+    removed_model = "removed-image"
+    publication.publication_kind = PublicationKind.MODEL_REMOVE
+    publication.desired_spec.removed_models = [ModelRemovalTarget(
+        model_id=publication.id, model_key=removed_model, display_name="Removed image",
+        api_format=ApiFormat.OPENAI_IMAGES,
+    )]
+    if not remaining_images:
+        publication.desired_spec.bindings = [
+            item for item in publication.desired_spec.bindings
+            if item.api_format is not ApiFormat.OPENAI_IMAGES
+        ]
+        publication.desired_spec.discovery_models = [
+            item for item in publication.desired_spec.discovery_models
+            if item.api_format is not ApiFormat.OPENAI_IMAGES
+        ]
+    publication = GatewayPublication.model_validate(publication.model_dump())
+    assert all(item.id != removed_model for item in publication.desired_spec.discovery_models)
+    policy = ApimPolicyCompiler().compile(publication).images_generations_policy
+    assert policy is not None
+    root = ElementTree.fromstring(policy)
+    if not remaining_images:
+        assert not root.findall(".//set-backend-service")
+    rejections = root.findall("./inbound/choose/otherwise/return-response")
+    assert len(rejections) == 2
+    rejection = rejections[rejection_index]
+    status = rejection.find("set-status")
+    body = rejection.find("set-body")
+    assert status is not None and body is not None and body.text is not None
+    status_code = int(status.attrib["code"])
+    response_body = body.text
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "POST"
+        assert request.url.path == "/llm;rev=candidate/images/generations"
+        assert json.loads(request.content)["model"] == removed_model
+        return httpx.Response(status_code, text=response_body)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as transport_client:
+        client = AzureApimPublisherClient(publisher_settings(), client=transport_client)
+        client._probe_removed_model(
+            "https://gateway.example/llm;rev=candidate", {}, removed_model, ApiFormat.OPENAI_IMAGES,
+        )
+    assert len(requests) == 1
+
+
+def test_image_removal_probe_accepts_exact_code_without_message() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(400, json={"error": {"code": "image_model_not_published"}})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as transport_client:
+        client = AzureApimPublisherClient(publisher_settings(), client=transport_client)
+        client._probe_removed_model(
+            "https://gateway.example/llm", {}, "removed-image", ApiFormat.OPENAI_IMAGES,
+        )
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize("payload", [
+    pytest.param({}, id="missing-error"),
+    pytest.param({"message": "image_model_not_published"}, id="wrong-field"),
+    pytest.param({"error": "invalid_request_error"}, id="other-code"),
+    pytest.param({"error": "image_model_not_published_extra"}, id="code-suffix"),
+    pytest.param({"error": "prefix_image_model_not_published"}, id="code-prefix"),
+    pytest.param({"error": "IMAGE_MODEL_NOT_PUBLISHED"}, id="wrong-case"),
+    pytest.param({"error": "image model not published"}, id="similar-message"),
+    pytest.param({"error": {"message": "not published"}}, id="message-only"),
+    pytest.param({"error": {"message": "image_model_not_published"}}, id="code-in-message"),
+    pytest.param({"error": {"code": "other_error", "message": "not published"}},
+                 id="other-code-with-message"),
+    pytest.param({"error": {"type": "image_model_not_published"}}, id="type-not-code"),
+    pytest.param({"error": {"code": " image_model_not_published "}}, id="code-whitespace"),
+    pytest.param({"error": {"code": ["image_model_not_published"]}}, id="code-array"),
+    pytest.param({"error": {"code": {"value": "image_model_not_published"}}}, id="code-object"),
+    pytest.param({"error": {"code": None}}, id="code-null"),
+    pytest.param({"error": ["image_model_not_published"]}, id="error-array"),
+    pytest.param({"error": None}, id="error-null"),
+    pytest.param({"error": True}, id="error-boolean"),
+    pytest.param({"error": 400}, id="error-number"),
+    pytest.param([{"error": "image_model_not_published"}], id="root-array"),
+    pytest.param("image_model_not_published", id="root-string"),
+    pytest.param(None, id="root-null"),
+    pytest.param(400, id="root-number"),
+    pytest.param(True, id="root-boolean"),
+])
+def test_image_removal_probe_rejects_unrelated_json(payload: object) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(400, content=json.dumps(payload).encode())
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as transport_client:
+        client = AzureApimPublisherClient(publisher_settings(), client=transport_client)
+        with pytest.raises(RuntimeError, match="HTTP 400") as error:
+            client._probe_removed_model(
+                "https://gateway.example/llm", {}, "removed-image", ApiFormat.OPENAI_IMAGES,
+            )
+    assert type(error.value) is RuntimeError
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize("body", [
+    pytest.param(b'{"error":"image_model_not_published"', id="truncated-json"),
+    pytest.param(b'{"error":{"code":"image_model_not_published"}} not published',
+                 id="trailing-text"),
+    pytest.param(b'{"error":"not published",}', id="trailing-comma"),
+    pytest.param(b"image_model_not_published: not published", id="plain-text"),
+    pytest.param(b"<html>not published</html>", id="html"),
+    pytest.param(b"", id="empty"),
+    pytest.param(b'{"error":"image_model_not_published"}\xff', id="invalid-encoding"),
+])
+def test_image_removal_probe_rejects_invalid_json(body: bytes) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(400, content=body)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as transport_client:
+        client = AzureApimPublisherClient(publisher_settings(), client=transport_client)
+        with pytest.raises(RuntimeError, match="HTTP 400") as error:
+            client._probe_removed_model(
+                "https://gateway.example/llm", {}, "removed-image", ApiFormat.OPENAI_IMAGES,
+            )
+    assert type(error.value) is RuntimeError
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize("payload", [
+    pytest.param({"error": "image_model_not_published"}, id="error-string"),
+    pytest.param({"error": {"code": "image_model_not_published", "message": "not published"}},
+                 id="error-code"),
+])
+@pytest.mark.parametrize(("status_code", "error_type"), [
+    (200, RuntimeError), (201, RuntimeError), (302, RuntimeError),
+    (401, RuntimeError), (403, RuntimeError), (422, RuntimeError),
+    (404, RetryablePublicationError), (408, RetryablePublicationError),
+    (409, RetryablePublicationError), (425, RetryablePublicationError),
+    (429, RetryablePublicationError), (500, RetryablePublicationError),
+    (502, RetryablePublicationError), (503, RetryablePublicationError),
+    (504, RetryablePublicationError), (599, RetryablePublicationError),
+])
+def test_image_removal_probe_requires_http_400(
+    payload: object, status_code: int, error_type: type[Exception],
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(status_code, json=payload)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as transport_client:
+        client = AzureApimPublisherClient(publisher_settings(), client=transport_client)
+        with pytest.raises(error_type, match=f"HTTP {status_code}") as error:
+            client._probe_removed_model(
+                "https://gateway.example/llm", {}, "removed-image", ApiFormat.OPENAI_IMAGES,
+            )
+    assert type(error.value) is error_type
+    assert len(requests) == 1
 
 
 def test_image_worker_checks_parent_and_journals_before_activation() -> None:

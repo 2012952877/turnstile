@@ -69,10 +69,14 @@ def test_model_editor_layout_contains_long_identity_and_role_values() -> None:
     assert "calc(100dvh - 24px)" in styles
     assert ".model-editor-identity dd > span { min-width: 0; white-space: normal;" in styles
     assert ".model-editor-checkbox > span { min-width: 0; overflow-wrap: anywhere; }" in styles
-    assert ".model-edit-dialog .form-grid, .model-edit-dialog .form-grid.three," in styles
     assert (
-        ".model-editor-identity, .model-editor-checkbox-grid { "
+        ".model-edit-dialog .form-grid, .model-edit-dialog .form-grid.three { "
         "grid-template-columns: minmax(0, 1fr); }"
+    ) in styles
+    assert ".model-editor-identity { grid-template-columns: 1fr; }" in styles
+    assert (
+        ".model-editor-checkbox-grid { "
+        "grid-template-columns: repeat(2, minmax(0, 1fr)); }"
     ) in styles
 
 

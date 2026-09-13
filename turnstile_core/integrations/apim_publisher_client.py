@@ -1203,7 +1203,10 @@ class AzureApimPublisherClient:
             json=body,
             timeout=self._CANDIDATE_PROBE_TIMEOUT_SECONDS,
         )
-        if response.status_code == 400 and "not published" in response.text.casefold():
+        if api_format is ApiFormat.OPENAI_IMAGES:
+            if self._is_image_model_not_published(response):
+                return
+        elif response.status_code == 400 and "not published" in response.text.casefold():
             if api_format is ApiFormat.OPENAI_CHAT:
                 probes = (
                     (
@@ -1257,6 +1260,21 @@ class AzureApimPublisherClient:
     @staticmethod
     def _is_transient_probe_status(status_code: int) -> bool:
         return status_code in {404, 408, 409, 425, 429} or status_code >= 500
+
+    @staticmethod
+    def _is_image_model_not_published(response: httpx.Response) -> bool:
+        if response.status_code != 400:
+            return False
+        try:
+            payload = response.json()
+        except ValueError:
+            return False
+        if not isinstance(payload, dict):
+            return False
+        error = payload.get("error")
+        if isinstance(error, dict):
+            error = error.get("code")
+        return isinstance(error, str) and error == "image_model_not_published"
 
     @staticmethod
     def _is_model_assignment_denial(response: httpx.Response) -> bool:

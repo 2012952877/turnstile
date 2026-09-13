@@ -384,6 +384,41 @@ def test_apim_employee_quota_moved_off_the_token_counter() -> None:
     assert 'name="applicationReservedTokens"' in policy
 
 
+def test_application_output_clamp_uses_monthly_budget_not_tpm() -> None:
+    root = ElementTree.fromstring(POLICY_PATH.read_text())
+    clamp = root.find(".//set-variable[@name='applicationClampedMaxTokens']")
+    assert clamp is not None
+    expression = " ".join(clamp.attrib["value"].split())
+    assert "tokensPerMinute" not in expression
+    assert "reservationHeadroom" not in expression
+    assert (
+        'if (!(bool)context.Variables["applicationLedgerEnforced"]) { return -1L; }'
+        in expression
+    )
+    assert (
+        'long headroom = (long)context.Variables["applicationLedgerRemaining"] '
+        '- (long)context.Variables["applicationInputBound"];'
+        in expression
+    )
+    assert "if (headroom <= 0) { return -1L; }" in expression
+    assert (
+        'return (long)context.Variables["applicationMaxOutputBound"] '
+        '> headroom ? headroom : -1L;'
+        in expression
+    )
+
+    limits = root.findall(".//llm-token-limit")
+    assert len(limits) == 2
+    assert {limit.attrib["tokens-per-minute"] for limit in limits} == {
+        "__TOKENS_PER_MINUTE__", "__EMPLOYEE_TOKENS_PER_MINUTE__",
+    }
+    assert all(limit.attrib["estimate-prompt-tokens"] == "true" for limit in limits)
+    assert all(limit.attrib["retry-after-header-name"] == "Retry-After" for limit in limits)
+    assert all("token-quota" not in limit.attrib for limit in limits)
+    assert any("finops:subscription:" in limit.attrib["counter-key"] for limit in limits)
+    assert any("finops:employee:" in limit.attrib["counter-key"] for limit in limits)
+
+
 def test_apim_token_metrics_have_only_the_fixed_api_dimension() -> None:
     root = ElementTree.fromstring(POLICY_PATH.read_text())
     metrics = root.findall(".//llm-emit-token-metric")

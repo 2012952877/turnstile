@@ -61,6 +61,16 @@ def operation_definition(value: dict[str, Any]) -> dict[str, Any]:
     return dict(normalize({key: item for key, item in value.items() if key != "policies"}))
 
 
+def operation_readback_matches(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
+    def without_empty_derived_path(value: dict[str, Any]) -> dict[str, Any]:
+        return {
+            name: item for name, item in value.items()
+            if name != "effectivePath" or item is not None
+        }
+
+    return without_empty_derived_path(expected) == without_empty_derived_path(actual)
+
+
 @dataclass(frozen=True)
 class GatewaySnapshot:
     revision: str
@@ -163,7 +173,10 @@ def verify_upgrade_snapshot(
     expected_operations = dict(plan.source.operations)
     if plan.create_operation:
         expected_operations[IMAGE_OPERATION_ID] = dict(IMAGE_OPERATION_PROPERTIES)
-    if observed.operations != expected_operations:
+    if observed.operations.keys() != expected_operations.keys() or any(
+        not operation_readback_matches(properties, observed.operations[name])
+        for name, properties in expected_operations.items()
+    ):
         raise ApimUpgradeError("The upgrade changed existing operation definitions")
     expected_policies = dict(plan.source.operation_policies)
     if plan.initialize_image_policy:
@@ -407,7 +420,9 @@ def _verify_partial_candidate(
         if policy is None and actual is not None and name != IMAGE_OPERATION_ID:
             raise ApimUpgradeError("An interrupted candidate added an existing operation policy")
     image = observed.operations.get(IMAGE_OPERATION_ID)
-    if plan.create_operation and image is not None and image != IMAGE_OPERATION_PROPERTIES:
+    if plan.create_operation and image is not None and not operation_readback_matches(
+        IMAGE_OPERATION_PROPERTIES, image
+    ):
         raise ApimUpgradeError("An interrupted candidate changed the image operation")
     image_policy = observed.operation_policies.get(IMAGE_OPERATION_ID)
     if plan.initialize_image_policy and image_policy is not None and (

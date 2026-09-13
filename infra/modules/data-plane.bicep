@@ -28,6 +28,7 @@ param ledgerTableName string
 param gatewayReleaseWorkerEnabled bool = false
 param gatewayApplicationKeyManagementEnabled bool = false
 param gatewayApplicationProvisioningEnabled bool = false
+param databricksOAuthEnabled bool = false
 @minValue(1)
 param gatewayApplicationDefaultMonthlyTokenLimit int = 100000
 @minValue(1)
@@ -628,6 +629,7 @@ resource api 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'CREDENTIAL_ENCRYPTION_KEY', value: credentialEncryptionKey }
         { name: 'MANAGEMENT_API_KEY', value: managementApiKey }
         { name: 'APIM_PRINCIPAL_ID', value: apimPrincipalId }
+        { name: 'DATABRICKS_OAUTH_ENABLED', value: string(databricksOAuthEnabled) }
         { name: 'AZURE_SUBSCRIPTION_ID', value: subscription().subscriptionId }
         { name: 'APIM_RESOURCE_GROUP', value: apimResourceGroupName }
         { name: 'APIM_SERVICE_NAME', value: apimName }
@@ -639,6 +641,7 @@ resource api 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'GATEWAY_APPLICATION_PROVISIONING_ENABLED', value: string(gatewayApplicationProvisioningEnabled) }
         { name: 'GATEWAY_APPLICATION_DEFAULT_MONTHLY_TOKEN_LIMIT', value: string(gatewayApplicationDefaultMonthlyTokenLimit) }
         { name: 'GATEWAY_APPLICATION_DEFAULT_TOKENS_PER_MINUTE', value: string(gatewayApplicationDefaultTokensPerMinute) }
+        { name: 'LEDGER_SYNC_ENABLED', value: 'true' }
         { name: 'LEDGER_TABLE_ENDPOINT', value: ledgerTableEndpoint }
         { name: 'LEDGER_TABLE_NAME', value: ledgerTableName }
         { name: 'GATEWAY_APPLICATION_KEY_MANAGEMENT_ENABLED', value: string(gatewayApplicationKeyManagementEnabled) }
@@ -793,6 +796,16 @@ resource functionLogAnalyticsReader 'Microsoft.Authorization/roleAssignments@202
     principalId: functionApp.identity.principalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: logAnalyticsReaderRoleDefinitionId
+  }
+}
+
+resource apiLedgerContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(ledgerTable.id, api.id, 'table-data-contributor')
+  scope: ledgerTable
+  properties: {
+    principalId: api.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: tableDataContributorRoleDefinitionId
   }
 }
 

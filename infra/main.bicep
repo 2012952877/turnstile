@@ -188,6 +188,9 @@ param gatewayApplicationKeyManagementEnabled bool = false
 @description('Allow governed Application creation after ledger and APIM dependencies are ready.')
 param gatewayApplicationProvisioningEnabled bool = false
 
+@description('Enable Databricks OAuth M2M connection support and its scoped Publisher permissions.')
+param databricksOAuthEnabled bool = false
+
 @minValue(1)
 param gatewayApplicationDefaultMonthlyTokenLimit int = 100000
 
@@ -270,6 +273,7 @@ module dataPlane 'modules/data-plane.bicep' = {
     gatewayReleaseWorkerEnabled: provisionControlPlane && gatewayReleaseWorkerEnabled && apimUsageObserver.mode == 'enabled'
     gatewayApplicationKeyManagementEnabled: gatewayApplicationKeyManagementEnabled
     gatewayApplicationProvisioningEnabled: provisionControlPlane && gatewayApplicationProvisioningEnabled
+    databricksOAuthEnabled: provisionControlPlane && databricksOAuthEnabled
     gatewayApplicationDefaultMonthlyTokenLimit: gatewayApplicationDefaultMonthlyTokenLimit
     gatewayApplicationDefaultTokensPerMinute: gatewayApplicationDefaultTokensPerMinute
     entraClientId: entraClientId
@@ -345,6 +349,7 @@ module controlPlane 'modules/control-plane-function.bicep' = if (provisionContro
     publicationWorkerEnabled: controlPlaneEnabled
     releaseWorkerEnabled: gatewayReleaseWorkerEnabled
     applicationProvisioningEnabled: gatewayApplicationProvisioningEnabled
+    databricksOAuthEnabled: databricksOAuthEnabled
     applicationDefaultMonthlyTokenLimit: gatewayApplicationDefaultMonthlyTokenLimit
     applicationDefaultTokensPerMinute: gatewayApplicationDefaultTokensPerMinute
     ledgerStorageName: dataPlane.outputs.ledgerStorageName
@@ -359,6 +364,7 @@ module controlPlaneApimRbac 'modules/control-plane-apim-rbac.bicep' = if (provis
   params: {
     apimName: effectiveApimName
     controlPlanePrincipalId: controlPlane!.outputs.principalId
+    databricksOAuthEnabled: databricksOAuthEnabled
   }
 }
 

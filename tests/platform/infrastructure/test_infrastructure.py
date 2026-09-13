@@ -372,6 +372,50 @@ def test_ledger_and_telemetry_roles_are_deterministic_and_scoped() -> None:
     assert "name: guid(workspace.id, functionApp.id, 'log-analytics-reader')" in DATA_PLANE
 
 
+def test_api_projects_model_access_using_its_exact_ledger_and_identity() -> None:
+    api = DATA_PLANE.split("resource api 'Microsoft.Web/sites", 1)[1].split(
+        "resource functionApp ", 1
+    )[0]
+    for setting in (
+        "{ name: 'LEDGER_SYNC_ENABLED', value: 'true' }",
+        "{ name: 'LEDGER_TABLE_ENDPOINT', value: ledgerTableEndpoint }",
+        "{ name: 'LEDGER_TABLE_NAME', value: ledgerTableName }",
+    ):
+        assert api.count(setting) == 1
+    role = DATA_PLANE.split("resource apiLedgerContributor ", 1)[1].split(
+        "resource telemetryLedgerContributor ", 1
+    )[0]
+    assert "name: guid(ledgerTable.id, api.id, 'table-data-contributor')" in role
+    assert "scope: ledgerTable" in role
+    assert "principalId: api.identity.principalId" in role
+    assert "roleDefinitionId: tableDataContributorRoleDefinitionId" in role
+    assert "scope: ledgerStorage" not in role
+
+
+def test_databricks_oauth_is_opt_in_for_api_publisher_and_scoped_permissions() -> None:
+    for template in (MAIN, DATA_PLANE, CONTROL_PLANE, CONTROL_PLANE_APIM_RBAC):
+        assert "param databricksOAuthEnabled bool = false" in template
+    assert "databricksOAuthEnabled: provisionControlPlane && databricksOAuthEnabled" in MAIN
+    assert MAIN.count("databricksOAuthEnabled: databricksOAuthEnabled") == 2
+    for template in (DATA_PLANE, CONTROL_PLANE):
+        assert (
+            "{ name: 'DATABRICKS_OAUTH_ENABLED', value: string(databricksOAuthEnabled) }"
+            in template
+        )
+    oauth = CONTROL_PLANE_APIM_RBAC.split("var oauthActions = ", 1)[1].split(
+        "resource apim ", 1
+    )[0]
+    assert oauth.startswith("databricksOAuthEnabled ? [")
+    assert "] : []" in oauth
+    assert "*" not in oauth and "/delete'" not in oauth
+    for suffix in ("", "/authorizations", "/authorizations/accessPolicies"):
+        for operation in ("read", "write"):
+            action = f"Microsoft.ApiManagement/service/authorizationProviders{suffix}/{operation}"
+            assert action in oauth
+    assert "], oauthActions)" in CONTROL_PLANE_APIM_RBAC
+    assert "Microsoft.ApiManagement/service/apis/operations/write" not in CONTROL_PLANE_APIM_RBAC
+
+
 def test_control_plane_features_default_to_disabled() -> None:
     for declaration in (
         "param provisionControlPlane bool = false",

@@ -2,8 +2,17 @@ targetScope = 'resourceGroup'
 
 param apimName string
 param controlPlanePrincipalId string
+param databricksOAuthEnabled bool = false
 
 var roleNameSuffix = uniqueString(resourceGroup().id)
+var oauthActions = databricksOAuthEnabled ? [
+  'Microsoft.ApiManagement/service/authorizationProviders/read'
+  'Microsoft.ApiManagement/service/authorizationProviders/write'
+  'Microsoft.ApiManagement/service/authorizationProviders/authorizations/read'
+  'Microsoft.ApiManagement/service/authorizationProviders/authorizations/write'
+  'Microsoft.ApiManagement/service/authorizationProviders/authorizations/accessPolicies/read'
+  'Microsoft.ApiManagement/service/authorizationProviders/authorizations/accessPolicies/write'
+] : []
 
 resource apim 'Microsoft.ApiManagement/service@2024-05-01' existing = {
   name: apimName
@@ -17,7 +26,7 @@ resource publisherRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
     type: 'CustomRole'
     permissions: [
       {
-        actions: [
+        actions: concat([
           'Microsoft.ApiManagement/service/apis/operations/policies/read'
           'Microsoft.ApiManagement/service/apis/operations/policies/write'
           'Microsoft.ApiManagement/service/apis/operations/read'
@@ -41,7 +50,7 @@ resource publisherRole 'Microsoft.Authorization/roleDefinitions@2022-04-01' = {
           'Microsoft.ApiManagement/service/read'
           'Microsoft.ApiManagement/service/subscriptions/read'
           'Microsoft.ApiManagement/service/subscriptions/write'
-        ]
+        ], oauthActions)
         notActions: []
         dataActions: []
         notDataActions: []

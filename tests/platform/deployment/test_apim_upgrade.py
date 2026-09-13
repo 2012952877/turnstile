@@ -145,6 +145,16 @@ def test_readback_checks_all_existing_operations_and_policies() -> None:
         verify_upgrade_snapshot(plan, upgraded, IMAGE_DENIAL)
 
 
+def test_azure_null_effective_path_does_not_change_the_operation_contract() -> None:
+    plan = plan_image_upgrade(API_ID, snapshot(), CANONICAL_PARENT)
+    upgraded = replace(snapshot(image=True), revision=plan.revision)
+    upgraded.operations["images-generations"]["effectivePath"] = None
+    verify_upgrade_snapshot(plan, upgraded, IMAGE_DENIAL)
+    upgraded.operations["images-generations"]["effectivePath"] = "/unexpected"
+    with pytest.raises(ApimUpgradeError, match="operation definitions"):
+        verify_upgrade_snapshot(plan, upgraded, IMAGE_DENIAL)
+
+
 class UpgradeFake:
     def __init__(self, plan: ImageUpgradePlan) -> None:
         self.plan = plan
@@ -205,6 +215,18 @@ def test_resume_uses_owned_partial_revision_without_recloning() -> None:
     record = {"planSha256": document_digest(plan.document()), "status": "preparing"}
     execute_image_upgrade(plan, backend, IMAGE_DENIAL, record, lambda _: None)
     assert backend.calls == ["prepare:False", f"promote:{plan.revision}"]
+
+
+def test_resume_accepts_a_verified_azure_candidate_without_recreating_it() -> None:
+    plan = plan_image_upgrade(API_ID, snapshot(), CANONICAL_PARENT)
+    backend = UpgradeFake(plan)
+    candidate = replace(snapshot(image=True), revision=plan.revision)
+    candidate.operations["images-generations"]["effectivePath"] = None
+    backend.snapshots[plan.revision] = candidate
+    record = {"planSha256": document_digest(plan.document()), "status": "preparing"}
+    result = execute_image_upgrade(plan, backend, IMAGE_DENIAL, record, lambda _: None)
+    assert result["status"] == "passed"
+    assert backend.calls == [f"promote:{plan.revision}"]
 
 
 def test_resume_refuses_to_overwrite_a_policy_added_to_the_interrupted_candidate() -> None:

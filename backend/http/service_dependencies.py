@@ -61,6 +61,7 @@ def control_plane_service(repository: Repository) -> GatewayControlPlaneService:
         application_product_id=settings.apim_product_id,
         image_generation_enabled=settings.image_generation_enabled,
         image_generation_defaults=settings.image_generation_defaults,
+        databricks_oauth_enabled=settings.databricks_oauth_enabled,
     )
 
 

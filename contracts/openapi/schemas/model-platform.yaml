@@ -149,6 +149,31 @@ schemas:
           - auth_mode
         - required:
           - foundry_inference_endpoint
+    - required:
+      - databricks_workspace_url
+      - auth_mode
+    allOf:
+    - if:
+        required: [databricks_workspace_url]
+        properties:
+          databricks_workspace_url: {}
+      then:
+        properties:
+          auth_mode: {enum: [managed_identity, oauth_m2m]}
+    - if:
+        required: [auth_mode]
+        properties:
+          auth_mode: {const: oauth_m2m}
+      then:
+        required: [databricks_workspace_url, oauth_client_id]
+        properties:
+          databricks_workspace_url: {}
+          oauth_client_id: {}
+      else:
+        not:
+          required: [oauth_client_id]
+          properties:
+            oauth_client_id: {}
     properties:
       gateway_profile_id:
         type: string
@@ -160,6 +185,7 @@ schemas:
         enum:
         - managed_identity
         - api_key
+        - oauth_m2m
       foundry_project_endpoint:
         type: string
         format: uri
@@ -187,6 +213,23 @@ schemas:
         - openai
         - anthropic
         description: Display metadata for OpenAI-compatible connections only; not a routing rule.
+      databricks_workspace_url:
+        type: string
+        format: uri
+        description: Azure Databricks HTTPS Workspace origin without credentials, path, query, fragment or custom port. Claude uses native Anthropic Messages.
+      oauth_client_id:
+        type: string
+        format: uuid
+        description: Databricks service principal Client ID, required only for default-off OAuth M2M. No secret is collected here.
+  DatabricksConnectionAdopt:
+    type: object
+    additionalProperties: false
+    required: [workspace_url]
+    properties:
+      workspace_url:
+        type: string
+        format: uri
+        description: Azure Databricks HTTPS Workspace origin for the existing native Claude models.
   ModelConnectionUpdate:
     type: object
     additionalProperties: false
@@ -215,6 +258,14 @@ schemas:
         type: boolean
         default: false
         description: Explicit opt-in support for native APIM Pool cookie affinity.
+      databricks_connections_supported:
+        type: boolean
+        default: false
+        description: API supports native Claude Workspace connections and explicit legacy adoption. Compatible Publisher is also required.
+      databricks_oauth_supported:
+        type: boolean
+        default: false
+        description: True only when Databricks OAuth M2M is explicitly enabled. Does not assert cross-tenant or token-renewal validation.
       image_generation_supported:
         type: boolean
         default: false
@@ -272,6 +323,11 @@ schemas:
   GatewayPublicationRetry:
     type: object
     additionalProperties: false
+    not:
+      required: [api_key, oauth_client_secret]
+      properties:
+        api_key: {}
+        oauth_client_secret: {}
     properties:
       authorize_image_probes:
         type: boolean
@@ -283,12 +339,29 @@ schemas:
         - 'null'
         format: password
         writeOnly: true
+      oauth_client_secret:
+        type: [string, 'null']
+        format: password
+        writeOnly: true
+        minLength: 1
+        maxLength: 4096
+        description: Replacement Databricks OAuth Secret only when retry_requires_credential is true. Never an Entra secret or PAT.
   GatewayCredentialRotation:
     type: object
     additionalProperties: false
     required:
     - model_key
-    - api_key
+    oneOf:
+    - required: [api_key]
+      not:
+        required: [oauth_client_secret]
+        properties:
+          oauth_client_secret: {}
+    - required: [oauth_client_secret]
+      not:
+        required: [api_key]
+        properties:
+          api_key: {}
     properties:
       model_key:
         type: string
@@ -299,6 +372,13 @@ schemas:
         type: string
         format: password
         writeOnly: true
+      oauth_client_secret:
+        type: string
+        format: password
+        writeOnly: true
+        minLength: 1
+        maxLength: 4096
+        description: Creates a new Credential Manager resource generation; effective credentials switch only after candidate promotion.
   GatewayBackendPoolMemberWrite:
     type: object
     additionalProperties: false
@@ -500,9 +580,24 @@ schemas:
         - amazon_bedrock
         - microsoft_foundry
         - openai_compatible
+        - azure_databricks
   GatewayRuntimeTarget:
     type: object
     additionalProperties: false
+    allOf:
+    - not:
+        required: [api_key, oauth_client_secret]
+        properties:
+          api_key: {}
+          oauth_client_secret: {}
+    - if:
+        required: [oauth_client_secret]
+        properties:
+          oauth_client_secret: {}
+      then:
+        required: [existing_id]
+        properties:
+          existing_id: {}
     oneOf:
     - required:
       - existing_id
@@ -610,6 +705,13 @@ schemas:
         description: One-time Bedrock, Foundry or OpenAI-compatible provider key. It may accompany a new runtime or the first
           model on a registered API-key connection; it is encrypted on receipt and removed after APIM
           secret provisioning.
+      oauth_client_secret:
+        type: string
+        format: password
+        writeOnly: true
+        minLength: 1
+        maxLength: 4096
+        description: One-time Databricks OAuth Secret for an existing pending OAuth connection. Encrypted outside the release snapshot and erased after verified Credential Manager provisioning.
   GatewayModelTarget:
     type: object
     additionalProperties: false
@@ -744,7 +846,13 @@ schemas:
       authorization:
         oneOf:
         - $ref: ../../openapi.yaml#/components/schemas/GatewayAuthorizationRequirement
+        - $ref: ../../openapi.yaml#/components/schemas/DatabricksAuthorizationRequirement
+        - $ref: ../../openapi.yaml#/components/schemas/DatabricksOAuthAuthorizationRequirement
         - type: 'null'
+      credential_kind:
+        type: [string, 'null']
+        enum: [api_key, oauth_m2m, null]
+        default: null
       retry_requires_credential:
         type: boolean
         description: True when retry cannot reuse a release-owned APIM credential resource
@@ -849,6 +957,11 @@ schemas:
         type: array
         items:
           type: string
+      oauth_credentials:
+        type: array
+        default: []
+        items: {type: string}
+        description: Release-owned APIM Credential Manager provider IDs, including connection and APIM identity access-policy checks.
       recorded_complete:
         type: boolean
       live_status:
@@ -1534,6 +1647,27 @@ schemas:
           type: array
           items:
             $ref: ../../openapi.yaml#/components/schemas/GatewayReleaseProtectionAuditEvent
+  DatabricksAuthorizationRequirement:
+    type: object
+    additionalProperties: false
+    required: [kind, principal_id, resource_endpoint, role_name]
+    properties:
+      kind: {type: string, const: databricks_workspace}
+      principal_id:
+        type: string
+        format: uuid
+        description: APIM Entra Object ID, not the Application Client ID used for Databricks assignment.
+      resource_endpoint: {type: string, format: uri}
+      role_name: {type: string, const: CAN_QUERY}
+  DatabricksOAuthAuthorizationRequirement:
+    type: object
+    additionalProperties: false
+    required: [kind, client_id, resource_endpoint, role_name]
+    properties:
+      kind: {type: string, const: databricks_oauth}
+      client_id: {type: string, format: uuid}
+      resource_endpoint: {type: string, format: uri}
+      role_name: {type: string, const: CAN_QUERY}
   GatewayAuthorizationRequirement:
     type: object
     additionalProperties: false

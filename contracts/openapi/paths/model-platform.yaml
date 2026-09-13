@@ -158,6 +158,48 @@ paths:
           $ref: ../../openapi.yaml#/components/responses/ErrorResponse
         default:
           $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+  /api/v1/model-management/connections/{runtime_id}/adopt:
+    post:
+      tags: [Model Control Plane]
+      security:
+      - sessionCookie: []
+      operationId: adoptDatabricksConnection
+      summary: Publish managed routes for an existing legacy Databricks connection
+      description: >-
+        Owner-only and Origin-protected. Accepts an Azure Databricks Workspace origin for
+        same-tenant APIM managed identity. Queues a candidate route-reconciliation release;
+        no connection or model row is rewritten. The effective release supplies the adopted
+        connection configuration, so rollback restores the previous configuration.
+        Existing model IDs, aliases, prices and access remain unchanged. Normal publication
+        probes are billable and may include other models already in the gateway release.
+      parameters:
+      - name: runtime_id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/DatabricksConnectionAdopt
+      responses:
+        '202':
+          description: Candidate publication queued; existing routes remain active
+          content:
+            application/json:
+              schema:
+                $ref: ../../openapi.yaml#/components/schemas/GatewayPublicationAccepted
+        '403':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '404':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '409':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        '422':
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
+        default:
+          $ref: ../../openapi.yaml#/components/responses/ErrorResponse
   /api/v1/model-management/models/{item_id}:
     delete:
       tags:

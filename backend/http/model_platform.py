@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import logging
-from typing import Annotated, TypeVar
+from collections.abc import Callable, Coroutine
+from typing import Annotated, Any, TypeVar
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
 
 from turnstile_core.config import get_settings
 from turnstile_core.domain.control_plane import (
@@ -36,6 +39,7 @@ from turnstile_core.domain.enterprise import (
 )
 from turnstile_core.domain.images import ImageInvocationRequest, ImageInvocationResponse
 from turnstile_core.domain.runtime_models import (
+    DatabricksConnectionAdopt,
     GatewayProfileWrite,
     ManagedModelWrite,
     ModelConnectionCreate,
@@ -75,13 +79,31 @@ from .session import (
 logger = logging.getLogger(__name__)
 InvocationRequest = TypeVar("InvocationRequest", ModelInvocationRequest, ImageInvocationRequest)
 
+class ModelPlatformRoute(APIRoute):
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        handler = super().get_route_handler()
+
+        async def credential_safe_handler(request: Request) -> Response:
+            try:
+                return await handler(request)
+            except RequestValidationError as error:
+                detail = [
+                    {key: issue[key] for key in ("type", "loc", "msg") if key in issue}
+                    for issue in error.errors()
+                ]
+                raise HTTPException(status_code=422, detail=detail) from None
+
+        return credential_safe_handler
+
+
 protected_router = APIRouter(
+    route_class=ModelPlatformRoute,
     dependencies=[
         Depends(require_authenticated_session),
         Depends(require_allowed_write_origin),
     ]
 )
-publication_router = APIRouter()
+publication_router = APIRouter(route_class=ModelPlatformRoute)
 
 
 @protected_router.get("/api/v1/model-management", response_model=RegistryResponse)
@@ -190,6 +212,31 @@ def update_model_connection(
 ) -> RegistryResponse:
     del identity
     return service.update_connection(runtime_id, write)
+
+
+@protected_router.post(
+    "/api/v1/model-management/connections/{runtime_id}/adopt",
+    response_model=GatewayPublicationRequestAccepted,
+    status_code=202,
+)
+def adopt_databricks_connection(
+    runtime_id: UUID,
+    write: DatabricksConnectionAdopt,
+    service: ControlPlaneService,
+    identity: OwnerSession,
+) -> GatewayPublicationRequestAccepted:
+    try:
+        publication = service.adopt_databricks_connection(
+            runtime_id, str(write.workspace_url), identity.email,
+        )
+    except ControlPlaneNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ControlPlaneConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return GatewayPublicationRequestAccepted(
+        publication=GatewayPublicationView.from_publication(publication),
+        status_url=f"/api/v1/model-management/publications/{publication.id}",
+    )
 
 
 @protected_router.delete(

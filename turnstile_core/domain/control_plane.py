@@ -5,7 +5,14 @@ from enum import StrEnum
 from typing import Literal
 from uuid import UUID, uuid5
 
-from pydantic import Field, HttpUrl, SecretStr, model_validator
+from pydantic import (
+    Field,
+    HttpUrl,
+    SecretStr,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 from .image_profiles import ImageGenerationLimits, ImageGenerationProfile, validate_image_profile
 from .models import StrictModel
@@ -14,6 +21,7 @@ from .runtime_models import (
     ModelCapability,
     ModelFamilyKey,
     ModelVendorKey,
+    OAuthClientCredentialsConfig,
     ProviderKind,
     ProviderTarget,
     RuntimeKind,
@@ -32,6 +40,7 @@ class AuthStrategy(StrEnum):
     MANAGED_IDENTITY = "managed_identity"
     NAMED_VALUE_BEARER = "named_value_bearer"
     NAMED_VALUE_API_KEY = "named_value_api_key"
+    OAUTH_CLIENT_CREDENTIALS = "oauth_client_credentials"
 
 
 class StreamingMode(StrEnum):
@@ -105,9 +114,16 @@ class RuntimeTarget(StrictModel):
         min_length=1,
         max_length=4096,
     )
+    oauth_client_secret: SecretStr | None = Field(default=None, min_length=1, max_length=4096)
 
     @model_validator(mode="after")
     def require_existing_or_new_runtime(self) -> RuntimeTarget:
+        if self.oauth_client_secret is not None and (
+            self.existing_id is None or self.api_key is not None
+        ):
+            raise ValueError(
+                "OAuth credentials require an existing connection and cannot use API key"
+            )
         if self.existing_id is not None and (
             self.bedrock_runtime_url is not None
             or self.foundry_project_endpoint is not None
@@ -220,7 +236,14 @@ class GatewayPublicationCreate(StrictModel):
 
 class GatewayPublicationRetry(StrictModel):
     api_key: SecretStr | None = None
+    oauth_client_secret: SecretStr | None = Field(default=None, min_length=1, max_length=4096)
     authorize_image_probes: bool = Field(default=False, strict=True)
+
+    @model_validator(mode="after")
+    def require_one_credential_type(self) -> GatewayPublicationRetry:
+        if self.api_key is not None and self.oauth_client_secret is not None:
+            raise ValueError("Select only one credential type")
+        return self
 
 
 class ImageProbeAuthorization(StrictModel):
@@ -234,7 +257,14 @@ class GatewayReconcileRequest(StrictModel):
 
 class GatewayCredentialRotation(StrictModel):
     model_key: str = Field(min_length=1, max_length=255, pattern=r"^[a-zA-Z0-9._:-]+$")
-    api_key: SecretStr
+    api_key: SecretStr | None = None
+    oauth_client_secret: SecretStr | None = Field(default=None, min_length=1, max_length=4096)
+
+    @model_validator(mode="after")
+    def require_one_credential_type(self) -> GatewayCredentialRotation:
+        if (self.api_key is None) == (self.oauth_client_secret is None):
+            raise ValueError("Provide exactly one replacement credential")
+        return self
 
 
 class GatewayBackendPoolMemberWrite(StrictModel):
@@ -389,6 +419,12 @@ class GatewayModelBinding(StrictModel):
     model: ModelTarget
 
     @property
+    def oauth(self) -> OAuthClientCredentialsConfig | None:
+        if self.auth_strategy is not AuthStrategy.OAUTH_CLIENT_CREDENTIALS:
+            return None
+        return OAuthClientCredentialsConfig.model_validate(self.runtime_config.get("oauth"))
+
+    @property
     def backend_pool(self) -> GatewayBackendPoolConfig | None:
         raw_pool = self.runtime_config.get("apim_backend_pool")
         if raw_pool is None:
@@ -403,6 +439,15 @@ class GatewayModelBinding(StrictModel):
 
     @model_validator(mode="after")
     def require_managed_backend_details(self) -> GatewayModelBinding:
+        if self.auth_strategy is AuthStrategy.OAUTH_CLIENT_CREDENTIALS:
+            oauth = self.oauth
+            if (
+                self.provider_brand_key is not BrandKey.AZURE_DATABRICKS
+                or oauth is None or not self.routing_managed
+                or self.named_value_name is not None or self.managed_identity_resource is not None
+                or str(oauth.token_url) != str(self.backend_url).rstrip("/") + "/oidc/v1/token"
+            ):
+                raise ValueError("OAuth credentials must belong to their Databricks Workspace")
         if self.runtime_id is None and self.backend_url is None:
             raise ValueError("a new runtime binding requires backend_url")
         if self.auth_strategy in {
@@ -506,6 +551,20 @@ class GatewayAuthorizationRequirement(StrictModel):
     role_name: str = Field(min_length=1, max_length=120)
 
 
+class DatabricksAuthorizationRequirement(StrictModel):
+    kind: Literal["databricks_workspace"]
+    principal_id: UUID
+    resource_endpoint: HttpUrl
+    role_name: Literal["CAN_QUERY"]
+
+
+class DatabricksOAuthAuthorizationRequirement(StrictModel):
+    kind: Literal["databricks_oauth"]
+    client_id: UUID
+    resource_endpoint: HttpUrl
+    role_name: Literal["CAN_QUERY"]
+
+
 def publication_model_id(publication_id: UUID, model_key: str) -> UUID:
     return uuid5(publication_id, model_key)
 
@@ -550,6 +609,9 @@ def publication_retry_requires_credential(publication: GatewayPublication) -> bo
     }:
         return False
     binding = publication.desired_spec.bindings[-1]
+    if binding.oauth is not None:
+        materialized = publication.resource_manifest.get("oauth_credentials")
+        return not isinstance(materialized, list) or binding.oauth.provider_id not in materialized
     return (
         binding.auth_strategy
         in {AuthStrategy.NAMED_VALUE_BEARER, AuthStrategy.NAMED_VALUE_API_KEY}
@@ -568,8 +630,12 @@ class GatewayPublicationView(StrictModel):
     status: PublicationStatus
     error_code: str | None
     error_message: str | None
-    authorization: GatewayAuthorizationRequirement | None = None
+    authorization: (
+        GatewayAuthorizationRequirement | DatabricksAuthorizationRequirement
+        | DatabricksOAuthAuthorizationRequirement | None
+    ) = None
     retry_requires_credential: bool = False
+    credential_kind: Literal["api_key", "oauth_m2m"] | None = None
     retry_can_authorize_image_probes: bool = False
     attempt_count: int
     created_by: str
@@ -591,7 +657,10 @@ class GatewayPublicationView(StrictModel):
             model = publication.desired_spec.bindings[-1].model
             model_key = model.model_key
             display_name = model.display_name
-        authorization = None
+        authorization: (
+            GatewayAuthorizationRequirement | DatabricksAuthorizationRequirement
+            | DatabricksOAuthAuthorizationRequirement | None
+        ) = None
         if (
             publication.status is PublicationStatus.AWAITING_AUTHORIZATION
             and publication.publication_kind is not PublicationKind.MODEL_REMOVE
@@ -600,9 +669,14 @@ class GatewayPublicationView(StrictModel):
                 "authorization"
             )
             if isinstance(raw_authorization, dict):
-                authorization = GatewayAuthorizationRequirement.model_validate(
-                    raw_authorization
+                requirement_type = (
+                    DatabricksOAuthAuthorizationRequirement
+                    if raw_authorization.get("kind") == "databricks_oauth"
+                    else DatabricksAuthorizationRequirement
+                    if raw_authorization.get("kind") == "databricks_workspace"
+                    else GatewayAuthorizationRequirement
                 )
+                authorization = requirement_type.model_validate(raw_authorization)
         probe_authorization = publication.resource_manifest.get("image_probe_authorization", {})
         probe_limit = (
             probe_authorization.get("attempt_limit", 1)
@@ -648,6 +722,12 @@ class GatewayPublicationView(StrictModel):
             authorization=authorization,
             retry_can_authorize_image_probes=can_authorize_probes,
             retry_requires_credential=publication_retry_requires_credential(publication),
+            credential_kind=(
+                "oauth_m2m" if publication.desired_spec.bindings
+                and publication.desired_spec.bindings[-1].oauth is not None
+                else "api_key" if publication_retry_requires_credential(publication)
+                else None
+            ),
             attempt_count=publication.attempt_count,
             created_by=publication.created_by,
             created_at=publication.created_at,
@@ -677,10 +757,20 @@ class GatewayReleaseDependencies(StrictModel):
     backends: list[str] = Field(default_factory=list)
     backend_pools: list[str] = Field(default_factory=list)
     named_values: list[str] = Field(default_factory=list)
+    oauth_credentials: list[str] = Field(default_factory=list)
     recorded_complete: bool
     live_status: Literal["not_checked", "healthy", "missing", "mismatched"]
     live_checked_at: datetime | None = None
     issues: list[str] = Field(default_factory=list)
+
+    @model_serializer(mode="wrap")
+    def serialize_legacy_compatible_dependencies(
+        self, handler: SerializerFunctionWrapHandler,
+    ) -> dict[str, object]:
+        result: dict[str, object] = handler(self)
+        if not self.oauth_credentials:
+            result.pop("oauth_credentials", None)
+        return result
 
 
 class GatewayReleaseRetentionPolicy(StrictModel):

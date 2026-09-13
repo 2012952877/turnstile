@@ -5,6 +5,8 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
+from ..domain.runtime_models import apply_databricks_adoption
+
 
 class InMemoryRegistryRepositoryMixin:
     gateways: list[dict[str, Any]]
@@ -28,11 +30,30 @@ class InMemoryRegistryRepositoryMixin:
                 return binding["model"].get("image_profile")
         return None
 
+    def _published_databricks_runtime(self, runtime: dict[str, Any]) -> dict[str, Any]:
+        gateway_id = runtime.get("gateway_profile_id")
+        publication_id = self.effective_gateway_releases.get(gateway_id) if gateway_id else None
+        publication = next(
+            (row for row in self.gateway_publications if row["id"] == publication_id), None,
+        )
+        for binding in publication["desired_spec"]["bindings"] if publication else []:
+            if (
+                str(binding.get("runtime_id")) == str(runtime["id"])
+                and str(binding.get("provider_id")) == str(runtime["provider_id"])
+                and binding.get("routing_managed") is True
+                and (
+                    (binding.get("runtime_config") or {}).get("databricks_connection_adoption")
+                    is True or binding.get("auth_strategy") == "oauth_client_credentials"
+                )
+            ):
+                return apply_databricks_adoption(runtime, binding["runtime_config"])
+        return runtime
+
     def registry(self) -> dict[str, Sequence[dict[str, Any]]]:
         return {
             "gateways": self.gateways,
             "providers": self.providers,
-            "runtimes": self.runtimes,
+            "runtimes": [self._published_databricks_runtime(row) for row in self.runtimes],
             "models": [
                 {**model, "image_profile": self._published_image_profile(model)}
                 for model in self.models
@@ -86,6 +107,15 @@ class InMemoryRegistryRepositoryMixin:
         if (provider_id is None) == (provider_values is None):
             raise ValueError("select an existing provider or one provider template")
         runtime_config = dict(runtime_values.get("config") or {})
+        if runtime_config.get("workspace_url") and any(
+            row["gateway_profile_id"] == runtime_values["gateway_profile_id"]
+            and row["status"] in {
+                "queued", "validating", "provisioning", "building_revision",
+                "verifying", "awaiting_authorization", "promoting", "rolling_back",
+            }
+            for row in self.gateway_publications
+        ):
+            raise ValueError("Wait for the gateway publication before creating a connection")
         project_endpoint = str(runtime_config.get("project_endpoint") or "").rstrip("/")
         if project_endpoint and any(
             runtime.get("gateway_profile_id") == runtime_values["gateway_profile_id"]
@@ -95,6 +125,14 @@ class InMemoryRegistryRepositoryMixin:
             .casefold()
             == project_endpoint.casefold()
             for runtime in self.runtimes
+        ):
+            raise ValueError("This connection already exists")
+        workspace_url = str(runtime_config.get("workspace_url") or "").rstrip("/")
+        if workspace_url and any(
+            runtime.get("gateway_profile_id") == runtime_values["gateway_profile_id"]
+            and str((runtime.get("config") or {}).get("workspace_url") or "")
+            .rstrip("/").casefold() == workspace_url.casefold()
+            for runtime in self.registry()["runtimes"]
         ):
             raise ValueError("This connection already exists")
         provider_count = len(self.providers)

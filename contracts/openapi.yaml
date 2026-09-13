@@ -108,6 +108,8 @@ paths:
     $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1connections
   /api/v1/model-management/connections/{runtime_id}:
     $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1connections~1{runtime_id}
+  /api/v1/model-management/connections/{runtime_id}/adopt:
+    $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1connections~1{runtime_id}~1adopt
   /api/v1/model-management/models/{item_id}:
     $ref: ./openapi/paths/model-platform.yaml#/paths/~1api~1v1~1model-management~1models~1{item_id}
   /api/v1/model-management/models/{item_id}/backend-pool:
@@ -357,6 +359,8 @@ components:
       $ref: ./openapi/schemas/model-platform.yaml#/schemas/ModelConnectionCreate
     ModelConnectionUpdate:
       $ref: ./openapi/schemas/model-platform.yaml#/schemas/ModelConnectionUpdate
+    DatabricksConnectionAdopt:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/DatabricksConnectionAdopt
     ModelRegistry:
       $ref: ./openapi/schemas/model-platform.yaml#/schemas/ModelRegistry
     ImageGenerationLimits:
@@ -445,6 +449,10 @@ components:
       $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayReleaseDetail
     GatewayAuthorizationRequirement:
       $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayAuthorizationRequirement
+    DatabricksAuthorizationRequirement:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/DatabricksAuthorizationRequirement
+    DatabricksOAuthAuthorizationRequirement:
+      $ref: ./openapi/schemas/model-platform.yaml#/schemas/DatabricksOAuthAuthorizationRequirement
     GatewayPublicationAccepted:
       $ref: ./openapi/schemas/model-platform.yaml#/schemas/GatewayPublicationAccepted
     PasswordLogin:

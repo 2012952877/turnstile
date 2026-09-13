@@ -70,12 +70,17 @@ from ..domain.image_profiles import (
     validate_image_profile,
 )
 from ..domain.runtime_models import (
+    DATABRICKS_ANTHROPIC_PATH,
+    DATABRICKS_INFERENCE_RESOURCE,
     FOUNDRY_INFERENCE_RESOURCE,
     FOUNDRY_INFERENCE_ROLE_ID,
     BrandKey,
     ModelCapability,
     ModelFamilyKey,
     ModelVendorKey,
+    OAuthClientCredentialsConfig,
+    databricks_connection_config,
+    databricks_workspace_url,
     foundry_runtime_name,
     model_vendor_label,
     openai_compatible_endpoint_values,
@@ -120,10 +125,12 @@ class GatewayControlPlaneService:
         application_product_id: str = _APPLICATION_PRODUCT_ID,
         image_generation_enabled: bool = False,
         image_generation_defaults: ImageGenerationLimits | None = None,
+        databricks_oauth_enabled: bool = False,
     ) -> None:
         self._repository = repository
         self._cipher = cipher
         self._apim_principal_id = apim_principal_id
+        self._databricks_oauth_enabled = databricks_oauth_enabled
         self._release_worker_enabled = release_worker_enabled
         self._application_provisioning_enabled = application_provisioning_enabled
         self._application_default_token_limit = application_default_token_limit
@@ -877,6 +884,14 @@ class GatewayControlPlaneService:
         manifest = publication.resource_manifest
         raw_backends = manifest.get("backends")
         raw_named_values = manifest.get("named_values")
+        raw_oauth = manifest.get("oauth_credentials")
+        oauth_credentials = (
+            sorted(str(value) for value in raw_oauth) if isinstance(raw_oauth, list) else []
+        )
+        expected_oauth = sorted({
+            oauth.provider_id for binding in publication.desired_spec.bindings
+            if (oauth := binding.oauth) is not None
+        })
         backend_ids = (
             [str(value) for value in raw_backends]
             if isinstance(raw_backends, list)
@@ -901,6 +916,8 @@ class GatewayControlPlaneService:
             "named_values": raw_named_values if isinstance(raw_named_values, list) else None,
         }
         issues = [f"missing_recorded_{key}" for key, value in required.items() if value is None]
+        if oauth_credentials != expected_oauth:
+            issues.append("mismatched_recorded_oauth_credentials")
         recorded = GatewayReleaseDependencies(
             apim_revision=publication.apim_revision,
             parent_policy_sha256=(
@@ -916,6 +933,7 @@ class GatewayControlPlaneService:
             backends=backends,
             backend_pools=pools,
             named_values=sorted(named_values),
+            oauth_credentials=oauth_credentials,
             recorded_complete=not issues,
             live_status="not_checked",
             issues=issues,
@@ -941,6 +959,7 @@ class GatewayControlPlaneService:
             "backends",
             "backend_pools",
             "named_values",
+            "oauth_credentials",
         )
         if any(
             getattr(recorded, key) != getattr(checked, key) for key in identity_fields
@@ -1047,6 +1066,75 @@ class GatewayControlPlaneService:
         except ValueError as error:
             raise ControlPlaneConflictError(str(error)) from error
         return GatewayPublication.model_validate(row)
+
+    def adopt_databricks_connection(
+        self, runtime_id: UUID, workspace_url: str, created_by: str,
+    ) -> GatewayPublication:
+        registry = self._repository.registry()
+        runtime = self._find(registry["runtimes"], runtime_id)
+        if runtime is None or runtime.get("brand_key") != BrandKey.AZURE_DATABRICKS:
+            raise ControlPlaneNotFoundError("Databricks connection not found")
+        if not runtime["enabled"] or (runtime.get("config") or {}).get("control_plane_managed"):
+            raise ControlPlaneConflictError(
+                "Only an enabled legacy Databricks connection can be adopted"
+            )
+        if not self._apim_principal_id:
+            raise ControlPlaneConflictError("APIM managed identity is not configured")
+        gateway_id = runtime.get("gateway_profile_id")
+        gateway = self._find(registry["gateways"], gateway_id) if gateway_id else None
+        if gateway is None or not gateway["enabled"] or gateway["implementation"] != "apim":
+            raise ControlPlaneConflictError("The selected APIM gateway is unavailable")
+        gateway_id = UUID(str(gateway["id"]))
+        provider = self._find(registry["providers"], runtime["provider_id"])
+        if provider is None or not provider["enabled"]:
+            raise ControlPlaneConflictError("The selected provider is unavailable")
+        previous = self._repository.effective_gateway_publication(gateway_id)
+        if previous is None:
+            raise ControlPlaneConflictError("The gateway has no effective release to reconcile")
+        try:
+            config = databricks_connection_config(workspace_url, self._apim_principal_id)
+        except ValueError as error:
+            raise ControlPlaneConflictError(str(error)) from error
+        config["databricks_connection_adoption"] = True
+        bindings = []
+        for model in registry["models"]:
+            if model["runtime_id"] != runtime_id or not model["enabled"]:
+                continue
+            if self._model_api_format(model, runtime) is not ApiFormat.ANTHROPIC_MESSAGES:
+                raise ControlPlaneConflictError("Only native Claude models can use this connection")
+            target = ModelTarget.model_validate({
+                key: model[key] for key in ModelTarget.model_fields if key in model
+            })
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,254}", target.upstream_model_id) is None:
+                raise ControlPlaneConflictError("The Databricks serving endpoint name is invalid")
+            bindings.append(GatewayModelBinding(
+                provider_id=provider["id"], provider_name=provider["name"],
+                provider_kind=provider["provider_kind"], provider_brand_key=provider["brand_key"],
+                provider_config=dict(provider.get("config") or {}),
+                runtime_id=runtime_id, runtime_name=runtime["name"],
+                runtime_kind=runtime["runtime_kind"], runtime_brand_key=runtime["brand_key"],
+                routing_managed=True, api_format=ApiFormat.ANTHROPIC_MESSAGES,
+                backend_url=config["backend_url"], backend_path=config["backend_path"],
+                auth_strategy=AuthStrategy.MANAGED_IDENTITY,
+                managed_identity_resource=DATABRICKS_INFERENCE_RESOURCE,
+                streaming_mode=StreamingMode.NATIVE, runtime_config=config, model=target,
+            ))
+        if not bindings:
+            raise ControlPlaneConflictError("The legacy connection has no enabled models to adopt")
+        effective = GatewayPublication.model_validate(previous)
+        discovery = {item.id.casefold(): item for item in effective.desired_spec.discovery_models}
+        discovery.update({
+            item.id.casefold(): item for item in self._existing_discovery(gateway_id, registry)
+        })
+        updated = effective.desired_spec.model_copy(update={
+            "discovery_models": sorted(discovery.values(), key=lambda item: item.id),
+            "bindings": [
+                binding for binding in effective.desired_spec.bindings
+                if binding.runtime_id != runtime_id
+            ] + bindings,
+        })
+        reconciled = self._reconciled_release_spec(updated, registry)
+        return self._queue_route_reconcile(effective, reconciled, created_by)
 
     def configure_model_backend_pool(
         self,
@@ -1274,16 +1362,7 @@ class GatewayControlPlaneService:
         runtime_brand = BrandKey(
             runtime.get("brand_key", target.runtime_brand_key)
         )
-        raw_api_format = str(config.get("api_format") or "")
-        api_format = (
-            ApiFormat.ANTHROPIC_MESSAGES
-            if raw_api_format == ApiFormat.ANTHROPIC_MESSAGES.value
-            or runtime_brand in {
-                BrandKey.AMAZON_BEDROCK,
-                BrandKey.AZURE_DATABRICKS,
-            }
-            else ApiFormat.OPENAI_CHAT
-        )
+        api_format = self._runtime_api_format({**runtime, "brand_key": runtime_brand})
         backend_url = config.get("backend_url")
         backend_path = config.get("backend_path")
         if not backend_url or not backend_path:
@@ -1379,6 +1458,32 @@ class GatewayControlPlaneService:
         effective: GatewayReleaseSpec,
         registry: Mapping[str, Sequence[dict[str, Any]]],
     ) -> GatewayReleaseSpec:
+        for binding in effective.bindings:
+            if binding.runtime_config.get("databricks_connection_adoption") is not True:
+                continue
+            runtime = (
+                cls._find(registry["runtimes"], binding.runtime_id) if binding.runtime_id else None
+            )
+            if (
+                runtime is None or not runtime["enabled"]
+                or runtime["provider_id"] != binding.provider_id
+                or runtime.get("gateway_profile_id") != effective.gateway_profile_id
+            ):
+                raise ControlPlaneConflictError("The adopted Databricks connection has changed")
+            workspace = binding.runtime_config.get("workspace_url")
+            if any(
+                row["id"] != binding.runtime_id
+                and row.get("gateway_profile_id") == effective.gateway_profile_id
+                and (row.get("config") or {}).get("workspace_url") == workspace
+                for row in registry["runtimes"]
+            ):
+                raise ControlPlaneConflictError(
+                    "This Databricks Workspace connection already exists"
+                )
+            cls._validate_connection(
+                {"brand_key": binding.provider_brand_key, "provider_kind": binding.provider_kind},
+                {**binding.model_dump(), "config": binding.runtime_config},
+            )
         bindings = list(effective.bindings)
         bound_aliases = {binding.model.model_key.casefold() for binding in bindings}
         discovery_aliases = {item.id.casefold() for item in effective.discovery_models}
@@ -1476,6 +1581,14 @@ class GatewayControlPlaneService:
                 "Submit a fresh route reconciliation against the effective release"
             )
         binding = publication.desired_spec.bindings[-1]
+        uses_oauth = binding.oauth is not None
+        if uses_oauth and not self._databricks_oauth_enabled:
+            raise ControlPlaneConflictError("Databricks OAuth M2M is not enabled")
+        if (
+            uses_oauth and write.api_key is not None
+            or not uses_oauth and write.oauth_client_secret is not None
+        ):
+            raise ControlPlaneConflictError("The credential type does not match the publication")
         accepts_credential = (
             binding.auth_strategy
             in {
@@ -1489,15 +1602,23 @@ class GatewayControlPlaneService:
                 "This publication does not use a directly managed API key"
             )
         requires_credential = publication_retry_requires_credential(publication)
-        if write.api_key is not None:
-            if not accepts_credential:
+        submitted_credential = write.oauth_client_secret if uses_oauth else write.api_key
+        if submitted_credential is not None:
+            if not accepts_credential and not uses_oauth:
                 raise ControlPlaneConflictError("This publication does not accept an API key")
             if self._cipher is None:
                 raise ControlPlaneConflictError("Credential encryption is unavailable")
-            encrypted = self._cipher.encrypt(write.api_key.get_secret_value())
+            if uses_oauth and not requires_credential:
+                raise ControlPlaneConflictError(
+                    "Use credential rotation for a provisioned OAuth connection"
+                )
+            encrypted = self._cipher.encrypt(submitted_credential.get_secret_value())
         else:
             if requires_credential:
-                raise ControlPlaneConflictError("A replacement API key is required")
+                raise ControlPlaneConflictError(
+                    "A replacement OAuth client secret is required" if uses_oauth
+                    else "A replacement API key is required"
+                )
             encrypted = None
         normalized_spec = self._normalize_release_spec(publication.desired_spec)
         desired_spec, desired_hash = self._release_payload(normalized_spec)
@@ -1669,11 +1790,12 @@ class GatewayControlPlaneService:
             bindings=bindings,
         )
         credential_ciphertext = None
-        if write.runtime.api_key is not None:
+        submitted_credential = write.runtime.api_key or write.runtime.oauth_client_secret
+        if submitted_credential is not None:
             if self._cipher is None:
                 raise ControlPlaneConflictError("Credential encryption is unavailable")
             credential_ciphertext = self._cipher.encrypt(
-                write.runtime.api_key.get_secret_value()
+                submitted_credential.get_secret_value()
             )
         return self._queue_release(
             spec,
@@ -1764,6 +1886,42 @@ class GatewayControlPlaneService:
         )
         if target is None:
             raise ControlPlaneConflictError("The model is not managed by this gateway release")
+        if target.oauth is not None:
+            if not self._databricks_oauth_enabled or write.oauth_client_secret is None:
+                raise ControlPlaneConflictError(
+                    "OAuth rotation requires enablement and a client secret"
+                )
+            if self._cipher is None:
+                raise ControlPlaneConflictError("Credential encryption is unavailable")
+            registry = self._repository.registry()
+            connection = self._binding_connection(target, gateway_profile_id, registry)
+            oauth = target.oauth.model_copy(update={
+                "provider_id": f"turnstile-oauth-{uuid4().hex}",
+            })
+            updated_bindings = []
+            updated_target = target
+            for binding in previous.desired_spec.bindings:
+                if binding.runtime_id == connection["id"]:
+                    if binding.oauth != target.oauth:
+                        raise ControlPlaneConflictError(
+                            "OAuth connection bindings have inconsistent ownership"
+                        )
+                    binding = binding.model_copy(update={"runtime_config": {
+                        **binding.runtime_config, "oauth": oauth.model_dump(mode="json"),
+                    }})
+                if binding.model.model_key == target.model.model_key:
+                    updated_target = binding
+                else:
+                    updated_bindings.append(binding)
+            spec = previous.desired_spec.model_copy(update={
+                "bindings": [*updated_bindings, updated_target],
+            })
+            return self._queue_release(
+                spec, PublicationKind.CREDENTIAL_ROTATION, created_by,
+                self._cipher.encrypt(write.oauth_client_secret.get_secret_value()),
+            )
+        if write.api_key is None:
+            raise ControlPlaneConflictError("This connection requires an API key")
         if (
             not target.routing_managed
             or target.auth_strategy
@@ -2006,7 +2164,12 @@ class GatewayControlPlaneService:
             "amazon_bedrock": "Amazon Bedrock",
             "microsoft_foundry": "Microsoft Foundry",
             "openai_compatible": model_vendor_label(model_vendor),
+            "azure_databricks": "Azure Databricks",
         }[template]
+        if template == "azure_databricks":
+            raise ControlPlaneConflictError(
+                "Select an existing Databricks Workspace connection and its provider"
+            )
         if template == "openai_compatible":
             existing_provider = next(
                 (
@@ -2079,19 +2242,32 @@ class GatewayControlPlaneService:
             auth_strategy = AuthStrategy(
                 config.get("auth_strategy", AuthStrategy.NONE)
             )
+            uses_oauth = auth_strategy is AuthStrategy.OAUTH_CLIENT_CREDENTIALS
+            if uses_oauth and not self._databricks_oauth_enabled:
+                raise ControlPlaneConflictError("Databricks OAuth M2M is not enabled")
+            if (
+                uses_oauth and target.api_key is not None
+                or not uses_oauth and target.oauth_client_secret is not None
+            ):
+                raise ControlPlaneConflictError("The credential type does not match the connection")
+            submitted_credential = target.oauth_client_secret if uses_oauth else target.api_key
             credential_pending = (
                 config.get("credential_provisioned") is False
                 and auth_strategy
                 in {
                     AuthStrategy.NAMED_VALUE_BEARER,
                     AuthStrategy.NAMED_VALUE_API_KEY,
+                    AuthStrategy.OAUTH_CLIENT_CREDENTIALS,
                 }
             )
-            if credential_pending and target.api_key is None:
+            if credential_pending and submitted_credential is None:
                 raise ControlPlaneConflictError(
+                    "The selected connection requires a one-time OAuth client secret "
+                    "for its first model"
+                    if uses_oauth else
                     "The selected connection requires a one-time API key for its first model"
                 )
-            if not credential_pending and target.api_key is not None:
+            if not credential_pending and submitted_credential is not None:
                 raise ControlPlaneConflictError(
                     "The selected connection already has a provisioned credential"
                 )
@@ -2100,15 +2276,7 @@ class GatewayControlPlaneService:
             runtime_brand = BrandKey(
                 runtime.get("brand_key", provider["brand_key"])
             )
-            api_format = (
-                ApiFormat.ANTHROPIC_MESSAGES
-                if config.get("api_format") == "anthropic_messages"
-                or runtime_brand in {
-                    BrandKey.AMAZON_BEDROCK,
-                    BrandKey.AZURE_DATABRICKS,
-                }
-                else ApiFormat.OPENAI_CHAT
-            )
+            api_format = self._runtime_api_format({**runtime, "brand_key": runtime_brand})
             routing_managed = bool(config.get("control_plane_managed", False))
             backend_path = config.get("backend_path")
             if not backend_path and routing_managed:
@@ -2139,6 +2307,8 @@ class GatewayControlPlaneService:
                 "config": config,
             }
         brand = BrandKey(provider["brand_key"])
+        if brand is BrandKey.AZURE_DATABRICKS:
+            raise ControlPlaneConflictError("Select an existing Databricks Workspace connection")
         if provider["provider_kind"] == "openai_compatible":
             if target.openai_base_url is None or target.api_key is None:
                 raise ControlPlaneConflictError(
@@ -2464,6 +2634,10 @@ class GatewayControlPlaneService:
         assert model.model_key is not None
         assert model.display_name is not None
         assert model.upstream_model_id is not None
+        if brand is BrandKey.AZURE_DATABRICKS and re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._-]{0,254}", model.upstream_model_id
+        ) is None:
+            raise ControlPlaneConflictError("The Databricks serving endpoint name is invalid")
         identity = f"{model.model_key} {model.display_name} {model.upstream_model_id}".casefold()
         if brand is BrandKey.AMAZON_BEDROCK and "claude" not in identity:
             raise ControlPlaneConflictError(
@@ -2471,7 +2645,7 @@ class GatewayControlPlaneService:
             )
         family = (
             ModelFamilyKey.CLAUDE
-            if "claude" in identity
+            if "claude" in identity or brand is BrandKey.AZURE_DATABRICKS
             else ModelFamilyKey.OPENAI
             if "gpt" in identity or "openai" in identity
             else ModelFamilyKey.GENERIC
@@ -2479,6 +2653,7 @@ class GatewayControlPlaneService:
         capabilities: list[ModelCapability] = (
             ["chat", "tools", "vision", "reasoning", "streaming"]
             if runtime["api_format"] == ApiFormat.ANTHROPIC_MESSAGES
+            and brand is not BrandKey.AZURE_DATABRICKS
             else ["chat", "streaming"]
         )
         return ModelTarget(
@@ -2553,6 +2728,44 @@ class GatewayControlPlaneService:
         cls, provider: Mapping[str, Any], runtime: Mapping[str, Any]
     ) -> None:
         brand = BrandKey(provider["brand_key"])
+        if brand is BrandKey.AZURE_DATABRICKS:
+            config = dict(runtime.get("config") or {})
+            if not runtime.get("routing_managed") or not config.get("workspace_url"):
+                raise ControlPlaneConflictError(
+                    "Adopt the legacy Databricks connection before publishing new models"
+                )
+            try:
+                workspace = databricks_workspace_url(str(config["workspace_url"]))
+                backend = databricks_workspace_url(str(runtime.get("backend_url") or ""))
+            except ValueError as error:
+                raise ControlPlaneConflictError(str(error)) from error
+            if workspace != backend or runtime.get("backend_path") != DATABRICKS_ANTHROPIC_PATH:
+                raise ControlPlaneConflictError("The Databricks backend must match its Workspace")
+            if (
+                provider["provider_kind"] != "anthropic"
+                or runtime["api_format"] != ApiFormat.ANTHROPIC_MESSAGES
+                or runtime["streaming_mode"] != StreamingMode.NATIVE
+            ):
+                raise ControlPlaneConflictError(
+                    "Databricks Claude requires native Anthropic Messages"
+                )
+            if runtime["auth_strategy"] == AuthStrategy.OAUTH_CLIENT_CREDENTIALS:
+                oauth = OAuthClientCredentialsConfig.model_validate(config.get("oauth"))
+                if (
+                    str(oauth.token_url) != workspace + "/oidc/v1/token"
+                    or runtime.get("managed_identity_resource") is not None
+                    or runtime.get("named_value_name") is not None
+                ):
+                    raise ControlPlaneConflictError("Databricks OAuth must match its Workspace")
+                return
+            if (
+                runtime["auth_strategy"] != AuthStrategy.MANAGED_IDENTITY
+                or runtime.get("managed_identity_resource") != DATABRICKS_INFERENCE_RESOURCE
+            ):
+                raise ControlPlaneConflictError(
+                    "Databricks requires its configured managed-identity token audience"
+                )
+            return
         if runtime.get("id") is not None and brand is not BrandKey.MICROSOFT_FOUNDRY:
             return
         url = str(runtime["backend_url"])
@@ -2698,6 +2911,8 @@ class GatewayControlPlaneService:
     @staticmethod
     def _runtime_api_format(runtime: Mapping[str, Any]) -> ApiFormat:
         config = dict(runtime.get("config") or {})
+        if config.get("api_format"):
+            return ApiFormat(config["api_format"])
         brand = runtime.get("brand_key")
         if config.get("api_format") == ApiFormat.ANTHROPIC_MESSAGES or brand in {
             BrandKey.AMAZON_BEDROCK,

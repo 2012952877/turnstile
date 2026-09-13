@@ -15,10 +15,16 @@ from pydantic import HttpUrl, SecretStr
 
 from backend.services.runtime_service import ModelRuntimeService
 from turnstile_core.config import Settings
-from turnstile_core.domain.control_plane import RuntimeTarget
+from turnstile_core.domain.control_plane import (
+    GatewayCredentialRotation,
+    GatewayPublicationRetry,
+    GatewayReleaseDependencies,
+    RuntimeTarget,
+)
 from turnstile_core.domain.models import TokenUsageRecord
 from turnstile_core.domain.runtime_models import (
     AuthType,
+    BrandKey,
     ChatMessage,
     GatewayKind,
     GatewayProfileWrite,
@@ -28,11 +34,15 @@ from turnstile_core.domain.runtime_models import (
     ModelFamilyKey,
     ModelInvocationRequest,
     ModelVendorKey,
+    OAuthClientCredentialsConfig,
     ProviderKind,
     ProviderTarget,
     ProviderWrite,
     RuntimeKind,
     RuntimeWrite,
+    databricks_connection_config,
+    databricks_runtime_name,
+    databricks_workspace_url,
     openai_compatible_endpoint_values,
     openai_compatible_runtime_name,
 )
@@ -179,6 +189,169 @@ def test_openai_connection_registration_defers_credentials_and_model_publication
             model_vendor=ModelVendorKey.DEEPSEEK,
         ))
     assert mismatched_vendor.value.status_code == 409
+
+
+def test_databricks_connection_normalizes_workspace_and_uses_native_anthropic_route() -> None:
+    workspace = "https://adb-unit.1.azuredatabricks.net"
+    assert databricks_workspace_url(f"{workspace.upper()}/") == workspace
+    config = databricks_connection_config(workspace, str(UUID(int=7)))
+    assert config["backend_url"] == workspace
+    assert config["backend_path"] == "/serving-endpoints/anthropic/v1/messages"
+    assert config["path"] == "/v1/messages"
+    assert config["managed_identity_resource"] == "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d"
+    assert config["authorization"]["principal_id"] == str(UUID(int=7))
+    assert config["authorization"]["role_name"] == "CAN_QUERY"
+    assert databricks_runtime_name(workspace) == (
+        "Azure Databricks adb-unit.1.azuredatabricks.net via APIM"
+    )
+
+
+@pytest.mark.parametrize("workspace", (
+    "http://adb-unit.1.azuredatabricks.net",
+    "https://adb-unit.1.azuredatabricks.net/serving-endpoints",
+    "https://adb-unit.1.azuredatabricks.net:443",
+    "https://adb-unit.1.azuredatabricks.net?token=unit-value",
+    "https://adb-unit.1.azuredatabricks.net#fragment",
+    "https://unit-user:unit-password@adb-unit.1.azuredatabricks.net",
+    "https://adb-unit.1.azuredatabricks.net.example.test",
+))
+def test_databricks_connection_rejects_non_workspace_origins(workspace: str) -> None:
+    with pytest.raises(ValueError, match="Azure Databricks HTTPS workspace URL"):
+        databricks_workspace_url(workspace)
+
+
+def test_databricks_connection_contract_keeps_provider_and_credential_shapes_separate() -> None:
+    values = {
+        "gateway_profile_id": UUID(int=1),
+        "provider": {"template": "azure_databricks"},
+        "databricks_workspace_url": "https://adb-unit.1.azuredatabricks.net",
+        "auth_mode": "managed_identity",
+    }
+    connection = ModelConnectionCreate.model_validate(values)
+    assert connection.auth_mode == "managed_identity"
+    assert connection.oauth_client_id is None
+    oauth = ModelConnectionCreate.model_validate({
+        **values, "auth_mode": "oauth_m2m", "oauth_client_id": UUID(int=7),
+    })
+    assert oauth.oauth_client_id == UUID(int=7)
+    for invalid in (
+        {"auth_mode": "api_key"}, {"auth_mode": "oauth_m2m"},
+        {"oauth_client_id": UUID(int=7)}, {"provider": {"template": "openai_compatible"}},
+        {"openai_base_url": "https://api.example.test/v1"}, {"model_vendor": "anthropic"},
+    ):
+        with pytest.raises(ValueError):
+            ModelConnectionCreate.model_validate({**values, **invalid})
+
+
+@pytest.mark.parametrize("oauth", (False, True))
+def test_databricks_connection_registration_defers_model_and_credentials(
+    tmp_path: Path, oauth: bool,
+) -> None:
+    repository = InMemoryRepository()
+    principal_id = str(UUID(int=7))
+    settings = Settings(
+        credential_key_file=tmp_path / "key", apim_principal_id=principal_id,
+        databricks_oauth_enabled=oauth,
+    )
+    service = ModelRuntimeService(repository, settings)
+    model_count = len(repository.models)
+    gateway_id = next(row["id"] for row in repository.gateways if row["implementation"] == "apim")
+    values: dict[str, Any] = {
+        "gateway_profile_id": gateway_id,
+        "provider": {"template": "azure_databricks"},
+        "databricks_workspace_url": "https://adb-unit.1.azuredatabricks.net",
+        "auth_mode": "oauth_m2m" if oauth else "managed_identity",
+    }
+    if oauth:
+        values["oauth_client_id"] = UUID(int=8)
+    registry = service.save_connection(ModelConnectionCreate.model_validate(values))
+    runtime = next(
+        row for row in registry.runtimes
+        if row.config.get("workspace_url") == values["databricks_workspace_url"]
+    )
+    assert runtime.brand_key is BrandKey.AZURE_DATABRICKS
+    assert runtime.config["control_plane_managed"] is True
+    assert runtime.config["backend_path"] == "/serving-endpoints/anthropic/v1/messages"
+    assert runtime.config["auth_strategy"] == (
+        "oauth_client_credentials" if oauth else "managed_identity"
+    )
+    assert registry.databricks_connections_supported is True
+    assert registry.databricks_oauth_supported is oauth
+    if oauth:
+        assert runtime.config["credential_provisioned"] is False
+        assert runtime.config["oauth"]["provider_id"].startswith("turnstile-oauth-")
+    else:
+        assert runtime.config["authorization"]["principal_id"] == principal_id
+    assert len(repository.models) == model_count
+    assert repository.gateway_publications == []
+    assert repository.gateway_publication_secrets == {}
+    with pytest.raises(HTTPException) as duplicate:
+        service.save_connection(ModelConnectionCreate.model_validate({
+            **values, "provider": {"existing_id": runtime.provider_id},
+        }))
+    assert duplicate.value.status_code == 409
+    with pytest.raises(HTTPException, match="publication workflows"):
+        service.save_runtime(RuntimeWrite(
+            provider_id=runtime.provider_id, gateway_profile_id=gateway_id,
+            name="Bypass attempt", runtime_kind=runtime.runtime_kind,
+            brand_key=BrandKey.GENERIC,
+        ), runtime.id)
+
+
+@pytest.mark.parametrize("missing", ("principal", "oauth_feature"))
+def test_databricks_connection_registration_requires_deployed_authentication(
+    tmp_path: Path, missing: str,
+) -> None:
+    repository = InMemoryRepository()
+    settings = Settings(
+        credential_key_file=tmp_path / "key",
+        apim_principal_id=None if missing == "principal" else str(UUID(int=7)),
+    )
+    service = ModelRuntimeService(repository, settings)
+    gateway_id = next(row["id"] for row in repository.gateways if row["implementation"] == "apim")
+    runtime_count = len(repository.runtimes)
+    with pytest.raises(HTTPException) as rejected:
+        service.save_connection(ModelConnectionCreate.model_validate({
+            "gateway_profile_id": gateway_id, "provider": {"template": "azure_databricks"},
+            "databricks_workspace_url": "https://adb-unit.1.azuredatabricks.net",
+            "auth_mode": "oauth_m2m", "oauth_client_id": UUID(int=8),
+        }))
+    assert rejected.value.status_code == 409
+    assert len(repository.runtimes) == runtime_count
+
+
+def test_databricks_oauth_contract_scopes_credentials_and_preserves_legacy_dependencies() -> None:
+    oauth = OAuthClientCredentialsConfig(
+        provider_id=f"turnstile-oauth-{UUID(int=8).hex}", client_id=UUID(int=7),
+        token_url=HttpUrl("https://adb-unit.1.azuredatabricks.net/oidc/v1/token"),
+    )
+    assert oauth.scopes == "all-apis"
+    for endpoint in (
+        "https://adb-unit.1.azuredatabricks.net/oauth/token",
+        "https://tokens.example.test/oidc/v1/token",
+    ):
+        with pytest.raises(ValueError):
+            OAuthClientCredentialsConfig.model_validate({
+                **oauth.model_dump(), "token_url": endpoint,
+            })
+    secret = SecretStr("unit-oauth-value")
+    runtime = RuntimeTarget(existing_id=UUID(int=9), oauth_client_secret=secret)
+    assert "unit-oauth-value" not in runtime.model_dump_json()
+    with pytest.raises(ValueError, match="existing connection"):
+        RuntimeTarget(oauth_client_secret=secret)
+    with pytest.raises(ValueError, match="one credential"):
+        GatewayPublicationRetry(api_key=secret, oauth_client_secret=secret)
+    with pytest.raises(ValueError, match="exactly one"):
+        GatewayCredentialRotation(model_key="unit-model")
+    rotation = GatewayCredentialRotation(model_key="unit-model", oauth_client_secret=secret)
+    assert rotation.api_key is None
+    dependencies = GatewayReleaseDependencies(
+        apim_revision="unit", parent_policy_sha256=None, compiled_policy_sha256=None,
+        recorded_complete=True, live_status="not_checked",
+    )
+    assert "oauth_credentials" not in dependencies.model_dump(mode="json")
+    dependencies.oauth_credentials = [oauth.provider_id]
+    assert dependencies.model_dump(mode="json")["oauth_credentials"] == [oauth.provider_id]
 
 
 @pytest.mark.parametrize("details,top_level,expected", (

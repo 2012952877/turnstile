@@ -15,6 +15,7 @@ from ..domain.control_plane import (
     GatewayPublication,
     GatewayReleaseDependencies,
 )
+from ..domain.runtime_models import OAuthClientCredentialsConfig
 
 
 class PolicyCompilationError(ValueError):
@@ -94,6 +95,12 @@ class NamedValueResource:
 
 
 @dataclass(frozen=True)
+class OAuthCredentialResource:
+    config: OAuthClientCredentialsConfig
+    client_secret: str | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True)
 class OperationResource:
     id: str
     display_name: str
@@ -114,6 +121,7 @@ class CompiledGatewayRelease:
     named_values: tuple[NamedValueResource, ...]
     images_generations_policy: str | None = None
     operations: tuple[OperationResource, ...] = ()
+    oauth_credentials: tuple[OAuthCredentialResource, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -139,6 +147,8 @@ class ApimPublisherClient(Protocol):
     def ensure_backend(self, backend: BackendResource) -> None: ...
 
     def ensure_named_value(self, named_value: NamedValueResource) -> None: ...
+
+    def ensure_oauth_credential(self, credential: OAuthCredentialResource) -> None: ...
 
     def ensure_revision(self, revision: str, description: str) -> None: ...
 

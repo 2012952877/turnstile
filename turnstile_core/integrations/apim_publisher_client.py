@@ -47,6 +47,7 @@ from .apim_control_plane_contract import (
     ImageProbeJournal,
     InfrastructureUpgradeRequiredError,
     NamedValueResource,
+    OAuthCredentialResource,
     OperationResource,
     PolicyCompilationError,
     ReleaseGcPlanEvidence,
@@ -374,6 +375,130 @@ class AzureApimPublisherClient:
             )
         return {"rules": sorted(normalized, key=lambda item: str(item.get("name")))}
 
+    @staticmethod
+    def _oauth_provider_properties(credential: OAuthCredentialResource) -> dict[str, Any]:
+        config = credential.config
+        return {
+            "displayName": f"Turnstile {config.provider_id}",
+            "identityProvider": "oauth2",
+            "oauth2": {"grantTypes": {"clientCredentials": {
+                "tokenUrl": str(config.token_url), "scopes": config.scopes,
+            }}},
+        }
+
+    @classmethod
+    def _oauth_provider_matches(
+        cls, credential: OAuthCredentialResource, properties: Mapping[str, Any],
+    ) -> bool:
+        expected = cls._oauth_provider_properties(credential)
+        oauth = properties.get("oauth2") or {}
+        grants = oauth.get("grantTypes") or {}
+        settings = grants.get("clientCredentials") or {}
+        return (
+            properties.get("displayName") == expected["displayName"]
+            and properties.get("identityProvider") == "oauth2"
+            and not grants.get("authorizationCode")
+            and settings.get("tokenUrl") == str(credential.config.token_url)
+            and settings.get("scopes") == credential.config.scopes
+        )
+
+    def _oauth_identity(self) -> dict[str, str]:
+        identity = self._request("GET", "").json().get("identity") or {}
+        principal_id, tenant_id = identity.get("principalId"), identity.get("tenantId")
+        if (
+            not principal_id or not tenant_id
+            or self._settings.apim_principal_id and principal_id != self._settings.apim_principal_id
+        ):
+            raise PolicyCompilationError("Credential Manager requires the configured APIM system identity")
+        return {"objectId": str(UUID(principal_id)), "tenantId": str(UUID(tenant_id))}
+
+    def oauth_credential_issues(self, credential: OAuthCredentialResource) -> list[str]:
+        config = credential.config
+        provider_path = f"/authorizationProviders/{config.provider_id}"
+        authorization_path = provider_path + f"/authorizations/{config.authorization_id}"
+        issues = []
+        provider = self._request("GET", provider_path, allow_not_found=True)
+        if provider.status_code == 404:
+            return [f"missing_oauth_provider:{config.provider_id}"]
+        if not self._oauth_provider_matches(credential, provider.json().get("properties") or {}):
+            issues.append(f"mismatched_oauth_provider:{config.provider_id}")
+        authorization = self._request("GET", authorization_path, allow_not_found=True)
+        if authorization.status_code == 404:
+            issues.append(f"missing_oauth_connection:{config.provider_id}")
+        else:
+            properties = authorization.json().get("properties") or {}
+            if (
+                properties.get("authorizationType") != "OAuth2"
+                or properties.get("oauth2grantType") != "ClientCredentials"
+                or (properties.get("parameters") or {}).get("clientId") != str(config.client_id)
+                or properties.get("status") != "Connected"
+            ):
+                issues.append(f"mismatched_oauth_connection:{config.provider_id}")
+        identity = self._oauth_identity()
+        access = self._request(
+            "GET", authorization_path + f"/accessPolicies/{identity['objectId']}",
+            allow_not_found=True,
+        )
+        if access.status_code == 404:
+            issues.append(f"missing_oauth_access_policy:{config.provider_id}")
+        else:
+            properties = access.json().get("properties") or {}
+            if any(properties.get(key) != value for key, value in identity.items()) or properties.get("appIds"):
+                issues.append(f"mismatched_oauth_access_policy:{config.provider_id}")
+        policies = self._list_all(authorization_path + "/accessPolicies")
+        if len(policies) != 1 or any(
+            any((policy.get("properties") or {}).get(key) != value for key, value in identity.items())
+            or (policy.get("properties") or {}).get("appIds")
+            for policy in policies
+        ):
+            issues.append(f"mismatched_oauth_access_policy_set:{config.provider_id}")
+        return issues
+
+    def ensure_oauth_credential(self, credential: OAuthCredentialResource) -> None:
+        if not self._settings.databricks_oauth_enabled:
+            raise PolicyCompilationError("Databricks OAuth M2M is not enabled on the Publisher")
+        config = credential.config
+        identity = self._oauth_identity()
+        provider_path = f"/authorizationProviders/{config.provider_id}"
+        authorization_path = provider_path + f"/authorizations/{config.authorization_id}"
+        provider = self._request("GET", provider_path, allow_not_found=True)
+        if provider.status_code == 404:
+            if credential.client_secret is None:
+                raise PolicyCompilationError("OAuth credential has no secret source")
+            self._request("PUT", provider_path, json_body={
+                "properties": self._oauth_provider_properties(credential),
+            }, extra_headers={"If-None-Match": "*"})
+        elif not self._oauth_provider_matches(credential, provider.json().get("properties") or {}):
+            raise PolicyCompilationError("OAuth provider belongs to a different connection")
+        authorization = self._request("GET", authorization_path, allow_not_found=True)
+        properties = authorization.json().get("properties") or {}
+        if authorization.status_code != 404 and (
+            properties.get("authorizationType") != "OAuth2"
+            or properties.get("oauth2grantType") != "ClientCredentials"
+            or (properties.get("parameters") or {}).get("clientId") != str(config.client_id)
+        ):
+            raise PolicyCompilationError("OAuth authorization belongs to a different client")
+        if authorization.status_code == 404 or properties.get("status") != "Connected":
+            if credential.client_secret is None:
+                raise PolicyCompilationError("OAuth credential requires a new client secret")
+            self._request("PUT", authorization_path, json_body={"properties": {
+                "authorizationType": "OAuth2", "oauth2grantType": "ClientCredentials",
+                "parameters": {"clientId": str(config.client_id), "clientSecret": credential.client_secret},
+            }}, extra_headers=(
+                {"If-None-Match": "*"} if authorization.status_code == 404
+                else {"If-Match": authorization.headers.get("etag", "*")}
+            ))
+        access_path = authorization_path + f"/accessPolicies/{identity['objectId']}"
+        access = self._request("GET", access_path, allow_not_found=True)
+        if access.status_code == 404:
+            self._request(
+                "PUT", access_path, json_body={"properties": identity},
+                extra_headers={"If-None-Match": "*"},
+            )
+        issues = self.oauth_credential_issues(credential)
+        if issues:
+            raise PolicyCompilationError("OAuth credential readback failed: " + ", ".join(issues))
+
     def ensure_named_value(self, named_value: NamedValueResource) -> None:
         path = f"/namedValues/{quote(named_value.id, safe='')}"
         observed = self._request("GET", path, allow_not_found=True)
@@ -672,7 +797,9 @@ class AzureApimPublisherClient:
                     retry_assignment_denial=binding is target_binding,
                     baseline_base=baseline_path if binding is not target_binding else None,
                     authorization_required=(
-                        binding.auth_strategy is AuthStrategy.MANAGED_IDENTITY
+                        binding.auth_strategy in {
+                            AuthStrategy.MANAGED_IDENTITY, AuthStrategy.OAUTH_CLIENT_CREDENTIALS,
+                        }
                         and isinstance(
                             binding.runtime_config.get("authorization"), dict
                         )
@@ -1326,6 +1453,7 @@ class AzureApimPublisherClient:
         manifest = publication.resource_manifest
         raw_backends = manifest.get("backends")
         raw_named_values = manifest.get("named_values")
+        raw_oauth = manifest.get("oauth_credentials")
         backend_ids = (
             sorted(str(value) for value in raw_backends)
             if isinstance(raw_backends, list)
@@ -1351,6 +1479,12 @@ class AzureApimPublisherClient:
         backends = sorted(value for value in backend_ids if value not in pools)
         expected_backends = {backend.id: backend for backend in compiled.backends}
         expected_named_values = {value.id: value for value in compiled.named_values}
+        expected_oauth = {value.config.provider_id: value for value in compiled.oauth_credentials}
+        oauth_ids = sorted(str(value) for value in raw_oauth) if isinstance(raw_oauth, list) else []
+        if set(oauth_ids) != set(expected_oauth):
+            issues.append("missing_recorded_oauth_dependencies")
+        for credential in compiled.oauth_credentials:
+            issues.extend(self.oauth_credential_issues(credential))
         revision = publication.apim_revision
         if not revision:
             issues.append("missing_recorded_apim_revision")
@@ -1501,6 +1635,8 @@ class AzureApimPublisherClient:
                 raw_named_values if isinstance(raw_named_values, list) else None,
             )
         )
+        if expected_oauth and set(oauth_ids) != set(expected_oauth):
+            recorded_complete = False
         if not recorded_complete:
             issues.append("recorded_dependencies_incomplete")
         live_status: Literal["healthy", "missing", "mismatched"] = (
@@ -1525,6 +1661,7 @@ class AzureApimPublisherClient:
             backends=backends,
             backend_pools=pools,
             named_values=named_value_ids,
+            oauth_credentials=oauth_ids,
             recorded_complete=recorded_complete,
             live_status=live_status,
             issues=issues,

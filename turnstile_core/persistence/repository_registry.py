@@ -9,6 +9,7 @@ from uuid import UUID
 from psycopg.types.json import Jsonb
 
 from ..domain.models import ModelIdentity
+from ..domain.runtime_models import apply_databricks_adoption
 
 
 class PostgreSqlRegistryRepositoryMixin:
@@ -35,14 +36,35 @@ class PostgreSqlRegistryRepositoryMixin:
             runtimes = connection.execute(
                 """SELECT runtime.*, provider.name AS provider_name,
                                     gateway.name AS gateway_name,
-                                    COALESCE(metadata.brand_key, 'generic') AS brand_key
+                                    COALESCE(metadata.brand_key, 'generic') AS brand_key,
+                                    adopted.value->'runtime_config' AS adopted_config
                      FROM model_runtime runtime
                      JOIN model_provider provider ON provider.id = runtime.provider_id
                      LEFT JOIN gateway_profile gateway ON gateway.id = runtime.gateway_profile_id
                      LEFT JOIN model_runtime_metadata metadata
                          ON metadata.runtime_id = runtime.id
+                     LEFT JOIN effective_gateway_release effective
+                         ON effective.gateway_profile_id = runtime.gateway_profile_id
+                     LEFT JOIN gateway_publication publication
+                         ON publication.id = effective.publication_id
+                     LEFT JOIN LATERAL (
+                         SELECT value FROM jsonb_array_elements(
+                             COALESCE(publication.desired_spec->'bindings', '[]'::jsonb)
+                         ) binding
+                         WHERE value->>'runtime_id' = runtime.id::text
+                           AND value->>'provider_id' = provider.id::text
+                           AND value->>'routing_managed' = 'true'
+                           AND (
+                               value->'runtime_config'->>'databricks_connection_adoption' = 'true'
+                               OR value->>'auth_strategy' = 'oauth_client_credentials'
+                           )
+                         LIMIT 1
+                     ) adopted ON TRUE
                      ORDER BY runtime.is_default DESC, runtime.name"""
             ).fetchall()
+            runtimes = [
+                apply_databricks_adoption(row, row.pop("adopted_config", None)) for row in runtimes
+            ]
             models = connection.execute(
                 """SELECT model.*, provider.name AS provider_name,
                                     runtime.name AS runtime_name,
@@ -194,6 +216,24 @@ class PostgreSqlRegistryRepositoryMixin:
         runtime_config = dict(runtime_parameters["config"])
         runtime_parameters["config"] = Jsonb(runtime_config)
         with self._connection() as connection, connection.transaction():
+            if runtime_config.get("workspace_url"):
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (f"gateway-publication:{runtime_values['gateway_profile_id']}",),
+                )
+                in_flight = connection.execute(
+                    """SELECT id FROM gateway_publication
+                       WHERE gateway_profile_id = %s
+                         AND status IN (
+                             'queued', 'validating', 'provisioning', 'building_revision',
+                             'verifying', 'awaiting_authorization', 'promoting', 'rolling_back'
+                         ) LIMIT 1""",
+                    (runtime_values["gateway_profile_id"],),
+                ).fetchone()
+                if in_flight is not None:
+                    raise ValueError(
+                        "Wait for the gateway publication before creating a connection"
+                    )
             project_endpoint = str(runtime_config.get("project_endpoint") or "").rstrip("/")
             if project_endpoint:
                 connection.execute(
@@ -212,6 +252,41 @@ class PostgreSqlRegistryRepositoryMixin:
                          AND lower(rtrim(config->>'project_endpoint', '/')) = lower(%s)
                        LIMIT 1""",
                     (runtime_values["gateway_profile_id"], project_endpoint),
+                ).fetchone()
+                if duplicate is not None:
+                    raise ValueError("This connection already exists")
+            workspace_url = str(runtime_config.get("workspace_url") or "").rstrip("/")
+            if workspace_url:
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                    (
+                        f"model-connection:{runtime_values['gateway_profile_id']}:"
+                        f"{workspace_url.casefold()}",
+                    ),
+                )
+                duplicate = connection.execute(
+                    """SELECT runtime.id
+                       FROM model_runtime runtime
+                       WHERE runtime.gateway_profile_id = %s
+                         AND (
+                             lower(rtrim(runtime.config->>'workspace_url', '/')) = lower(%s)
+                             OR EXISTS (
+                                 SELECT 1 FROM effective_gateway_release effective
+                                 JOIN gateway_publication publication
+                                     ON publication.id = effective.publication_id
+                                 CROSS JOIN LATERAL jsonb_array_elements(
+                                     COALESCE(publication.desired_spec->'bindings', '[]'::jsonb)
+                                 ) binding
+                                 WHERE effective.gateway_profile_id = runtime.gateway_profile_id
+                                   AND binding->>'runtime_id' = runtime.id::text
+                                   AND binding->'runtime_config'
+                                       ->>'databricks_connection_adoption' = 'true'
+                                   AND lower(rtrim(
+                                       binding->'runtime_config'->>'workspace_url', '/'
+                                   )) = lower(%s)
+                             )
+                         ) LIMIT 1""",
+                    (runtime_values["gateway_profile_id"], workspace_url, workspace_url),
                 ).fetchone()
                 if duplicate is not None:
                     raise ValueError("This connection already exists")

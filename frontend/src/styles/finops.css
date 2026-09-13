@@ -256,6 +256,7 @@
 .foundry-auth-mode b, .foundry-auth-mode small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .foundry-auth-mode b { color: currentColor; font-size: 12px; line-height: 16px; font-weight: 600; }
 .foundry-auth-mode small { color: var(--muted-foreground); font-size: 10px; line-height: 14px; font-weight: 400; }
+.connection-form .registry-editor-footer > .connection-adopt-action { margin-right: auto; background: transparent; border-color: var(--border); color: var(--foreground); }
 .connection-dialog { width: min(560px, calc(100vw - 32px)); }
 .connection-form { width: 100%; max-height: min(700px, calc(100vh - 32px)); display: flex; flex-direction: column; overflow: hidden; }
 .connection-dialog-body { gap: 12px; }
@@ -297,7 +298,8 @@
 	.connection-dialog { width: calc(100vw - 20px); max-height: calc(100vh - 20px); }
 	.connection-form { max-height: calc(100vh - 20px); }
 	.connection-dialog-body { padding-inline: 12px; }
-	.connection-form .registry-editor-footer { padding-inline: 12px; }
+	.connection-form .registry-editor-footer { padding-inline: 12px; flex-wrap: wrap; }
+	.connection-form .registry-editor-footer > .connection-adopt-action { flex-basis: 100%; margin-right: 0; }
 	.simple-model-form .registry-editor-footer { padding-inline: 12px; }
 }
 .finops-filter-menu-trigger { appearance: none; width: auto; height: 30px; display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--border); border-radius: 7px; padding: 0 12px; outline: none; background: var(--background); background-clip: padding-box; color: var(--muted-foreground); font-size: 13px; line-height: 20px; font-weight: 500; white-space: nowrap; cursor: pointer; user-select: none; transition: color 100ms ease, background-color 100ms ease, border-color 100ms ease, box-shadow 100ms ease; }

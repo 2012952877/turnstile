@@ -94,8 +94,8 @@ def test_openapi_root_is_a_small_domain_index() -> None:
     schemas = cast(dict[str, dict[str, str]], components["schemas"])
 
     assert len(CONTRACT.read_text(encoding="utf-8").splitlines()) < 800
-    assert len(paths) == 77
-    assert len(schemas) == 169
+    assert len(paths) == 78
+    assert len(schemas) == 172
     assert all(set(value) == {"$ref"} for value in paths.values())
     assert all(set(value) == {"$ref"} for value in schemas.values())
     assert {path.name for path in (CONTRACT.parent / "openapi" / "paths").glob("*.yaml")} == {
@@ -107,6 +107,33 @@ def test_openapi_root_is_a_small_domain_index() -> None:
         "model-platform.yaml",
         "observability.yaml",
     }
+
+
+def test_databricks_contract_describes_workspace_authentication_and_owned_adoption() -> None:
+    schemas = _documented_schemas()
+    connection = schemas["ModelConnectionCreate"]
+    properties = cast(dict[str, dict[str, object]], connection["properties"])
+    assert properties["databricks_workspace_url"]["format"] == "uri"
+    assert properties["oauth_client_id"]["format"] == "uuid"
+    assert "oauth_m2m" in cast(list[str], properties["auth_mode"]["enum"])
+    assert len(cast(list[object], connection["oneOf"])) == 4
+    for schema_name in (
+        "GatewayRuntimeTarget", "GatewayPublicationRetry", "GatewayCredentialRotation",
+    ):
+        fields = cast(dict[str, dict[str, object]], schemas[schema_name]["properties"])
+        assert fields["oauth_client_secret"]["writeOnly"] is True
+        assert fields["oauth_client_secret"]["maxLength"] == 4096
+    registry = cast(dict[str, dict[str, object]], schemas["ModelRegistry"]["properties"])
+    assert registry["databricks_connections_supported"]["default"] is False
+    assert registry["databricks_oauth_supported"]["default"] is False
+    path = "/api/v1/model-management/connections/{runtime_id}/adopt"
+    operation = cast(dict[str, object], _documented_paths()[path]["post"])
+    assert operation["security"] == [{"sessionCookie": []}]
+    assert (path, "post") in _operations(app.openapi()["paths"])
+    mi = cast(
+        dict[str, dict[str, object]], schemas["DatabricksAuthorizationRequirement"]["properties"],
+    )
+    assert mi["kind"]["const"] == "databricks_workspace" and mi["role_name"]["const"] == "CAN_QUERY"
 
 
 def test_application_provisioning_defaults_are_nullable_positive_limits() -> None:

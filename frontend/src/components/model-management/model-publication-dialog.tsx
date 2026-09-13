@@ -205,6 +205,7 @@ export function ModelPublicationDialog({
   const selectedRuntime = apimRuntimes.find((runtime) => runtime.id === runtimeId)
   const selectedProvider = registry.providers.find((provider) => provider.id === selectedRuntime?.provider_id)
   const foundry = selectedRuntime?.brand_key === "microsoft_foundry"
+  const selectedRuntimeUsesOAuth = selectedRuntime?.config.auth_strategy === "oauth_client_credentials"
   const openaiCompatible = selectedProvider?.provider_kind === "openai_compatible"
   const selectedVendor = selectedRuntime && openaiCompatible
     ? modelVendorFromMetadata(selectedRuntime.config, selectedRuntime.name)
@@ -216,6 +217,7 @@ export function ModelPublicationDialog({
   const connectionAuthLabel = {
     managed_identity: "托管身份",
     api_key: "API Key",
+    oauth_m2m: "OAuth M2M",
     connection: "由连接管理",
   }[selectedRuntime ? publicationConnectionAuth(selectedRuntime, selectedProvider) : "connection"]
 
@@ -249,6 +251,10 @@ export function ModelPublicationDialog({
     : <ProviderBrandLogo brand={providerBrandFromMetadata(runtime.brand_key, runtime.provider_name)} size={15} />
 
   const publication = useQuery(finopsQueries.gatewayPublication(publicationId))
+  const oauthCredential = publication.data
+    ? publication.data.credential_kind === "oauth_m2m" : selectedRuntimeUsesOAuth
+  const credentialLabel = oauthCredential ? "OAuth Client Secret" : "Provider API Key"
+  const authorization = publication.data?.authorization
 
   useEffect(() => {
     if (publication.data?.status !== "active" || activationNotified.current) return
@@ -290,7 +296,8 @@ export function ModelPublicationDialog({
   const validate = () => {
     if (!selectedGateway) return "没有可用的 Azure API Management 网关。"
     if (!selectedRuntime || !selectedProvider) return "请选择当前网关下的可用连接。"
-    if (requiredCredentialMissing) return "请输入该连接首次发布所需的一次性 API Key。"
+    if (requiredCredentialMissing) return selectedRuntimeUsesOAuth
+      ? "请输入该连接首次发布所需的 OAuth Secret。" : "请输入该连接首次发布所需的一次性 API Key。"
     if (foundry) {
       if (!foundryDeployment.trim()) return "请输入已有的 Foundry Deployment Name。"
       if (imageGeneration && registry.image_generation_supported !== true) return "后端尚未启用图像生成"
@@ -372,6 +379,7 @@ export function ModelPublicationDialog({
         publicationId,
         retryRequiresCredential ? providerApiKey.trim() : undefined,
         publication.data?.retry_can_authorize_image_probes === true && imageProbeAuthorization === publicationId,
+        oauthCredential ? "oauth_m2m" : "api_key",
       )
       setProviderApiKey("")
       setKeyRevealed(false)
@@ -409,9 +417,11 @@ export function ModelPublicationDialog({
     if (!authorization) return
     try {
       await navigator.clipboard.writeText([
-        `Principal ID: ${authorization.principal_id}`,
-        `Role: ${authorization.role_name} (${authorization.role_id})`,
-        `Project Endpoint: ${authorization.resource_endpoint}`,
+        authorization.kind === "databricks_oauth"
+          ? `Databricks Client ID: ${authorization.client_id}`
+          : `APIM Object ID: ${authorization.principal_id}`,
+        `Role: ${authorization.role_name}${authorization.kind === "azure_rbac" ? ` (${authorization.role_id})` : ""}`,
+        `Resource: ${authorization.resource_endpoint}`,
       ].join("\n"))
     } catch (error) {
       setPublishError(String(error))
@@ -444,18 +454,18 @@ export function ModelPublicationDialog({
             {!superseded && <div className={`publication-safety-note ${failed || rolledBack ? "failed" : awaitingAuthorization ? "warning" : active ? "active" : "running"}`}>
               {failed || rolledBack ? <TriangleAlert size={15} /> : awaitingAuthorization ? <ShieldCheck size={15} /> : active ? <Check size={15} /> : <ShieldCheck size={15} />}
               <div>
-                <span className="publication-safety-title"><b>{failed || rolledBack ? "当前模型继续正常服务" : awaitingAuthorization ? "当前模型继续正常服务" : active ? publication.data.publication_kind === "model_remove" ? "模型已从 Turnstile 移除" : "发布完成" : "现有模型继续使用当前 Revision"}</b>{!failed && <FieldHelp>{rolledBack ? "当前模型继续正常服务" : awaitingAuthorization ? "发布时使用 APIM Managed Identity。若尚未授权，发布会停在等待授权，不会切换当前 Revision。" : active ? publication.data.publication_kind === "model_remove" ? "历史用量与上游模型保留。" : "模型已发布，分配人员后即可使用" : "发布过程不会改变当前 Revision，验证通过后才切换。"}</FieldHelp>}</span>
+                <span className="publication-safety-title"><b>{failed || rolledBack ? "当前模型继续正常服务" : awaitingAuthorization ? "当前模型继续正常服务" : active ? publication.data.publication_kind === "model_remove" ? "模型已从 Turnstile 移除" : "发布完成" : "现有模型继续使用当前 Revision"}</b>{!failed && <FieldHelp>{rolledBack ? "当前模型继续正常服务" : awaitingAuthorization ? "目标提供方授权就绪后继续验证，未通过前不会切换当前 Revision。" : active ? publication.data.publication_kind === "model_remove" ? "历史用量与上游模型保留。" : "模型已发布，分配人员后即可使用" : "发布过程不会改变当前 Revision，验证通过后才切换。"}</FieldHelp>}</span>
                 {failed && <span className="publication-safety-error">{publication.data.error_message ?? "发布未完成，请使用发布 ID 查看服务日志。"}</span>}
               </div>
             </div>}
           </>}
 
-          {awaitingAuthorization && publication.data?.authorization && <div className="simple-model-section simple-connection-section">
-            <div className="simple-section-title"><b>授权 APIM 访问 Foundry 资源</b><FieldHelp>请在该 Foundry 资源的 Access control (IAM) 中，将以下 APIM Managed Identity 添加为 Cognitive Services User。Turnstile 不需要 Foundry API Key。</FieldHelp></div>
+          {awaitingAuthorization && authorization && <div className="simple-model-section simple-connection-section">
+            <div className="simple-section-title"><b>{authorization.kind === "azure_rbac" ? "授权 APIM 访问 Foundry 资源" : "授权 Databricks 模型访问"}</b><FieldHelp>{authorization.kind === "azure_rbac" ? "请在该 Foundry 资源的 Access control (IAM) 中，将以下 APIM Managed Identity 添加为 Cognitive Services User。Turnstile 不需要 Foundry API Key。" : authorization.kind === "databricks_oauth" ? "目标 Databricks 服务主体需要 Workspace 访问和模型查询权限。此处不是 Azure RBAC 授权。" : "在同租户 Databricks Workspace 中添加 APIM 的 Entra 服务主体并授予模型查询权限。下列 Object ID 用于查找 APIM 身份，不是 Databricks 所需的 Application (Client) ID。"}</FieldHelp></div>
             <dl className="simple-authorization-list">
-              <div><dt>Principal ID</dt><dd>{publication.data.authorization.principal_id}</dd></div>
-              <div><dt>Role</dt><dd>{publication.data.authorization.role_name} · {publication.data.authorization.role_id}</dd></div>
-              <div><dt>Foundry 资源</dt><dd>{publication.data.authorization.resource_endpoint}</dd></div>
+              <div><dt>{authorization.kind === "databricks_oauth" ? "Databricks Client ID" : "APIM Object ID"}</dt><dd>{authorization.kind === "databricks_oauth" ? authorization.client_id : authorization.principal_id}</dd></div>
+              <div><dt>Role</dt><dd>{authorization.role_name}{authorization.kind === "azure_rbac" ? ` · ${authorization.role_id}` : ""}</dd></div>
+              <div><dt>{authorization.kind === "azure_rbac" ? "Foundry 资源" : "Workspace"}</dt><dd>{authorization.resource_endpoint}</dd></div>
             </dl>
             <Button type="button" variant="outline" onClick={() => void copyAuthorization()}><Copy size={14} />复制授权信息</Button>
           </div>}
@@ -470,7 +480,7 @@ export function ModelPublicationDialog({
           </div>}
           {failed && publication.data?.retry_requires_credential && <div className="simple-model-section simple-connection-section">
             <div className="simple-section-title"><b>重新发布</b></div>
-            <div className="registry-field"><span className="registry-field-label-row"><label className="registry-field-label" htmlFor="retry-api-key">Provider API Key</label><FieldHelp>请输入新的 API Key 后重新发布同一模型。</FieldHelp></span><div className="login-password"><Input id="retry-api-key" type={keyRevealed ? "text" : "password"} autoComplete="off" value={providerApiKey} onChange={(event) => setProviderApiKey(event.target.value)} disabled={publishing} /><button type="button" className="login-reveal" onClick={() => setKeyRevealed((value) => !value)} aria-label={keyRevealed ? "隐藏 API Key" : "显示 API Key"} aria-pressed={keyRevealed} disabled={publishing}>{keyRevealed ? <EyeOff size={15} /> : <Eye size={15} />}</button></div></div>
+            <div className="registry-field"><span className="registry-field-label-row"><label className="registry-field-label" htmlFor="retry-api-key">{credentialLabel}</label><FieldHelp>{oauthCredential ? "请输入新的 Databricks OAuth Secret。" : "请输入新的 API Key 后重新发布同一模型。"}</FieldHelp></span><div className="login-password"><Input id="retry-api-key" type={keyRevealed ? "text" : "password"} autoComplete="off" value={providerApiKey} onChange={(event) => setProviderApiKey(event.target.value)} disabled={publishing} /><button type="button" className="login-reveal" onClick={() => setKeyRevealed((value) => !value)} aria-label={keyRevealed ? "隐藏凭据" : "显示凭据"} aria-pressed={keyRevealed} disabled={publishing}>{keyRevealed ? <EyeOff size={15} /> : <Eye size={15} />}</button></div></div>
           </div>}
 
           {!publicationId && <>
@@ -580,11 +590,11 @@ export function ModelPublicationDialog({
             </details>
             {selectedRuntimeNeedsCredential && <section className="simple-model-section simple-connection-section" aria-labelledby="publication-credential-heading">
               <div className="simple-section-title"><b id="publication-credential-heading">首次发布凭据</b></div>
-              <p className="publication-form-note">仅补充已有连接首次发布所需的 API Key，不会创建新连接。</p>
+              <p className="publication-form-note">{selectedRuntimeUsesOAuth ? "仅补充已有连接首次发布所需的 Databricks OAuth Secret。" : "仅补充已有连接首次发布所需的 API Key，不会创建新连接。"}</p>
               <div className="registry-field">
                 <span className="registry-field-label-row">
-                  <label className="registry-field-label" htmlFor="existing-provider-api-key">一次性 API Key</label>
-                  <FieldHelp>仅首次发布需要。Key 写入 APIM Secret Named Value 后即从 Turnstile 临时记录中清除；后续模型无需重复提供。</FieldHelp>
+                  <label className="registry-field-label" htmlFor="existing-provider-api-key">{selectedRuntimeUsesOAuth ? credentialLabel : "一次性 API Key"}</label>
+                  <FieldHelp>{selectedRuntimeUsesOAuth ? "仅首次发布需要。Secret 写入 APIM Credential Manager 并验证后即从临时记录中清除；不是 PAT 或 Entra 应用密钥。" : "仅首次发布需要。Key 写入 APIM Secret Named Value 后即从 Turnstile 临时记录中清除；后续模型无需重复提供。"}</FieldHelp>
                 </span>
                 <div className="login-password">
                   <Input id="existing-provider-api-key" type={keyRevealed ? "text" : "password"} autoComplete="off" value={providerApiKey} onChange={(event) => setProviderApiKey(event.target.value)} disabled={publishing} />

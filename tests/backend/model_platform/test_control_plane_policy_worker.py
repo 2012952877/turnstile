@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from uuid import UUID
 from xml.etree import ElementTree
 
 import httpx
@@ -20,12 +21,13 @@ from tests.backend.model_platform.control_plane_support import (
     transition_publication,
 )
 from turnstile_core.domain.control_plane import (
+    GatewayModelBinding,
     GatewayPublicationCreate,
     GatewayPublicationRetry,
     ModelCreateTarget,
     RuntimeTarget,
 )
-from turnstile_core.domain.runtime_models import ProviderTarget
+from turnstile_core.domain.runtime_models import ProviderTarget, databricks_connection_config
 from turnstile_core.integrations.apim_control_plane import (
     ApimPolicyCompiler,
     AuthorizationRequiredError,
@@ -80,6 +82,52 @@ def test_compiler_sets_trusted_metadata_before_parent_admission() -> None:
     assert len(compiled.backends) == 1
     assert compiled.backends[0].url == "https://bedrock-runtime.ap-southeast-2.amazonaws.com"
     assert 'name="x-hive-runtime" exists-action="override"' in before_parent
+
+@pytest.mark.parametrize("oauth", (False, True))
+def test_databricks_compiler_preserves_native_messages_and_scoped_authentication(
+    oauth: bool,
+) -> None:
+    publication = GatewayControlPlaneService(InMemoryRepository()).publish(
+        bedrock_publication(), "owner@example.com",
+    )
+    workspace = "https://adb-unit.1.azuredatabricks.net"
+    config = databricks_connection_config(workspace, str(UUID(int=7)))
+    if oauth:
+        config.update(
+            auth_strategy="oauth_client_credentials", managed_identity_resource=None,
+            oauth={
+                "provider_id": f"turnstile-oauth-{UUID(int=8).hex}",
+                "client_id": str(UUID(int=9)), "token_url": f"{workspace}/oidc/v1/token",
+            },
+        )
+    binding = GatewayModelBinding.model_validate({
+        **publication.desired_spec.bindings[-1].model_dump(),
+        "provider_brand_key": "azure_databricks", "runtime_brand_key": "azure_databricks",
+        "runtime_name": "Unit Databricks", "backend_url": workspace,
+        "backend_path": config["backend_path"], "auth_strategy": config["auth_strategy"],
+        "managed_identity_resource": config["managed_identity_resource"],
+        "named_value_name": None, "streaming_mode": "native", "runtime_config": config,
+    })
+    publication.desired_spec = publication.desired_spec.model_copy(update={"bindings": [binding]})
+    compiled = ApimPolicyCompiler().compile(publication)
+    policy = compiled.messages_policy
+    ElementTree.fromstring(policy)
+    assert "/serving-endpoints/anthropic/v1/messages" in policy
+    assert 'name="anthropic-version"' in policy
+    assert 'body[&quot;model&quot;]' in policy
+    assert 'body.Remove(&quot;stream&quot;)' not in policy
+    assert 'body.Remove(&quot;model&quot;)' not in policy
+    unavailable = ElementTree.fromstring(compiled.count_tokens_policy).find("./inbound/choose/when")
+    assert unavailable is not None
+    assert binding.model.model_key in str(unavailable.get("condition"))
+    if oauth:
+        assert "get-authorization-context" in policy
+        assert len(compiled.oauth_credentials) == 1 and not compiled.named_values
+        assert compiled.oauth_credentials[0].client_secret is None
+    else:
+        assert 'resource="2ff814a6-3304-4ab8-85cb-cd0e6f879c1d"' in policy
+        assert not compiled.oauth_credentials and not compiled.named_values
+
 
 def test_parent_policy_hooks_are_idempotent_and_preserve_inference_invariants() -> None:
     compiler = ApimPolicyCompiler()

@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  isDatabricksWorkspaceUrl,
   preferredPublicationConnection,
   publicationConnectionAuth,
   publicationConnectionEndpoint,
@@ -28,6 +29,7 @@ function connection(id, gatewayId, overrides = {}) {
 
 function registry(overrides = {}) {
   return {
+    databricks_connections_supported: true,
     gateways: [gateway("gateway-a"), gateway("gateway-b"), gateway("empty")],
     providers: [provider("provider-a"), provider("provider-b")],
     runtimes: [
@@ -117,7 +119,10 @@ test("registered zero-model Foundry connections require a managed nonempty Proje
 test("existing Bedrock, Databricks and Anthropic runtimes use the same selection path", () => {
   const data = registry({ runtimes: [
     connection("bedrock", "gateway-a", { brand_key: "amazon_bedrock", config: {} }),
-    connection("databricks", "gateway-a", { brand_key: "azure_databricks", config: {} }),
+    connection("databricks", "gateway-a", { brand_key: "azure_databricks", config: {
+      control_plane_managed: true, api_format: "anthropic_messages",
+      workspace_url: "https://adb-unit.1.azuredatabricks.net",
+    } }),
     connection("messages", "gateway-a", { config: { api_format: "anthropic_messages" } }),
   ] })
   assert.deepEqual(publicationConnections(data, "gateway-a").map((item) => item.id),
@@ -132,6 +137,41 @@ test("runtime authentication overrides provider defaults without exposing config
     config: { auth_strategy: "managed_identity" },
   }), provider("provider-a", { auth_type: "api_key" })), "managed_identity")
   assert.equal(publicationConnectionAuth(connection("legacy", "gateway-a")), "connection")
+})
+
+test("Databricks publication requires managed Workspace and declared backend capabilities", () => {
+  const config = {
+    control_plane_managed: true, api_format: "anthropic_messages",
+    workspace_url: "https://adb-unit.1.azuredatabricks.net",
+    auth_strategy: "managed_identity",
+  }
+  const data = registry({ runtimes: [
+    connection("managed", "gateway-a", { brand_key: "azure_databricks", config }),
+    connection("legacy", "gateway-a", { brand_key: "azure_databricks", config: {} }),
+  ] })
+  assert.deepEqual(publicationConnections(data, "gateway-a").map(item => item.id), ["managed"])
+  assert.deepEqual(publicationConnections({ ...data, databricks_connections_supported: false }, "gateway-a"), [])
+  for (const url of ["http://adb-unit.1.azuredatabricks.net", "https://example.test", `${config.workspace_url}/path`, `${config.workspace_url}?token=unit`]) {
+    assert.equal(isDatabricksWorkspaceUrl(url), false)
+  }
+})
+
+test("OAuth connection credentials use their own field and remain capability gated", () => {
+  const data = registry({ databricks_oauth_supported: true, runtimes: [
+    connection("oauth", "gateway-a", { brand_key: "azure_databricks", config: {
+      control_plane_managed: true, api_format: "anthropic_messages",
+      workspace_url: "https://adb-unit.1.azuredatabricks.net",
+      auth_strategy: "oauth_client_credentials", credential_provisioned: false,
+    } }),
+  ] })
+  assert.equal(publicationConnectionAuth(data.runtimes[0]), "oauth_m2m")
+  assert.deepEqual(publicationConnections({ ...data, databricks_oauth_supported: false }, "gateway-a"), [])
+  assert.throws(() => publicationConnectionTarget(data, "gateway-a", "oauth"), /credential_required/)
+  assert.deepEqual(publicationConnectionTarget(data, "gateway-a", "oauth", " unit-secret ").runtime,
+    { existing_id: "oauth", oauth_client_secret: "unit-secret" })
+  data.runtimes[0].config.credential_provisioned = true
+  assert.deepEqual(publicationConnectionTarget(data, "gateway-a", "oauth", "unused").runtime,
+    { existing_id: "oauth" })
 })
 
 test("endpoint summaries omit userinfo, query and fragment and require HTTPS", () => {

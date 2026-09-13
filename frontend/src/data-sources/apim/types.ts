@@ -522,6 +522,8 @@ export type ManagedModel = {
 
 export type ModelRegistry = {
   backend_pool_session_affinity_supported?: boolean
+  databricks_connections_supported?: boolean
+  databricks_oauth_supported?: boolean
   image_generation_supported?: boolean
   image_configuration_defaults?: ImageGenerationLimits | null
   image_configuration_schema_version?: number
@@ -535,13 +537,15 @@ export type ModelConnectionCreate = {
   gateway_profile_id: string
   provider: {
     existing_id?: string
-    template?: "amazon_bedrock" | "microsoft_foundry" | "openai_compatible"
+    template?: "amazon_bedrock" | "microsoft_foundry" | "openai_compatible" | "azure_databricks"
   }
-  auth_mode?: "managed_identity" | "api_key"
+  auth_mode?: "managed_identity" | "api_key" | "oauth_m2m"
   foundry_project_endpoint?: string
   foundry_inference_endpoint?: string
   bedrock_runtime_url?: string
   openai_base_url?: string
+  databricks_workspace_url?: string
+  oauth_client_id?: string
   model_vendor?: ModelVendorKey
 }
 
@@ -557,7 +561,7 @@ export type GatewayPublicationCreate = {
   gateway_profile_id: string
   provider: {
     existing_id?: string
-    template?: "amazon_bedrock" | "microsoft_foundry" | "openai_compatible"
+    template?: "amazon_bedrock" | "microsoft_foundry" | "openai_compatible" | "azure_databricks"
   }
   runtime: {
     existing_id?: string
@@ -567,6 +571,7 @@ export type GatewayPublicationCreate = {
     openai_base_url?: string
     model_vendor?: ModelVendorKey
     api_key?: string
+    oauth_client_secret?: string
   }
   model: {
     operation?: "chat" | "image_generation"
@@ -599,8 +604,19 @@ export type GatewayPublication = {
     resource_endpoint: string
     role_id: string
     role_name: string
+  } | {
+    kind: "databricks_workspace"
+    principal_id: string
+    resource_endpoint: string
+    role_name: "CAN_QUERY"
+  } | {
+    kind: "databricks_oauth"
+    client_id: string
+    resource_endpoint: string
+    role_name: "CAN_QUERY"
   } | null
   retry_requires_credential: boolean
+  credential_kind?: "api_key" | "oauth_m2m" | null
   retry_can_authorize_image_probes?: boolean
   attempt_count: number
   created_by: string
@@ -682,6 +698,7 @@ export type GatewayReleaseDependencies = {
   backends: string[]
   backend_pools: string[]
   named_values: string[]
+  oauth_credentials?: string[]
   recorded_complete: boolean
   live_status: GatewayReleaseIntegrityStatus
   live_checked_at: string | null

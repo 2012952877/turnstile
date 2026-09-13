@@ -55,11 +55,11 @@ export function ImageGenerationResult({ result, pending, available }: {
     anchor.click()
   }
   const header = <PanelTitle title="调用结果" action={<>
-    <Button variant="ghost" size="icon-sm" title="查看原图" aria-label="查看原图"
+    <Button variant="ghost" size="icon-sm" className="rounded-full" title="查看原图" aria-label="查看原图"
       disabled={actionsUnavailable} onClick={() => {
         if (source && !actionsUnavailable) window.open(source, "_blank", "noopener,noreferrer")
       }}><Maximize2 size={14} /></Button>
-    <Button variant="ghost" size="icon-sm" title="下载图片" aria-label="下载图片"
+    <Button variant="ghost" size="icon-sm" className="rounded-full" title="下载图片" aria-label="下载图片"
       disabled={actionsUnavailable} onClick={download}><Download size={14} /></Button>
   </>} />
 
@@ -81,7 +81,7 @@ export function ImageGenerationResult({ result, pending, available }: {
       <div className="invoke-image-identity"><dt>模型</dt><dd title={result.model}>{result.model}</dd></div>
       <div className="invoke-image-identity"><dt>运行时</dt><dd title={result.runtime}>{result.runtime}</dd></div>
       <div><dt>图像尺寸</dt><dd>{result.size}</dd></div>
-      <div><dt>图像质量</dt><dd>{result.quality ?? "-"}</dd></div>
+      <div><dt>图像质量</dt><dd>{result.quality ?? "\u2014"}</dd></div>
       <div><dt>文件格式</dt><dd>{result.output_format.toUpperCase()}</dd></div>
       <div><dt>延迟</dt><dd>{formatLatency(result.latency_ms)}</dd></div>
       <div><dt>文字输入 Token</dt><dd>{result.usage ? compact.format(result.usage.input_tokens + result.usage.cached_tokens) : "未测量"}</dd></div>

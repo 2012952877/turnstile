@@ -1,5 +1,9 @@
 import assert from "node:assert/strict"
+import { readFileSync } from "node:fs"
+import { createRequire } from "node:module"
 import test from "node:test"
+import { fileURLToPath } from "node:url"
+import { runInNewContext } from "node:vm"
 
 import {
   createModelEditDraft,
@@ -11,6 +15,47 @@ import {
   toggleModelRole,
   validateModelEdit,
 } from "../../../frontend/src/components/model-management/model-edit-form.ts"
+import * as modelEditForm from "../../../frontend/src/components/model-management/model-edit-form.ts"
+import * as modelVendor from "../../../frontend/src/components/model-management/openai-compatible.ts"
+
+const frontendRequire = createRequire(new URL("../../../frontend/package.json", import.meta.url))
+const { rolldown } = await import(frontendRequire.resolve("rolldown"))
+const entry = fileURLToPath(new URL("../../../frontend/src/components/model-management/model-edit-dialog.tsx", import.meta.url))
+const bundle = await rolldown({ input: entry, external: path => path !== entry, transform: { jsx: { runtime: "automatic" } }, treeshake: false })
+let component
+try { component = (await bundle.generate({ format: "cjs" })).output[0].code }
+finally { await bundle.close() }
+
+function editorHarness(model, providerKind = "microsoft_foundry") {
+  const slots = []
+  let cursor = 0
+  const imports = {
+    react: { useId: () => "unit-editor", useState(initial) {
+      const index = cursor++
+      if (!(index in slots)) slots[index] = typeof initial === "function" ? initial() : initial
+      return [slots[index], value => { slots[index] = typeof value === "function" ? value(slots[index]) : value }]
+    } },
+    "react/jsx-runtime": frontendRequire("react/jsx-runtime"),
+    "./model-edit-form": modelEditForm,
+    "./openai-compatible": modelVendor,
+    "../brand-logos": { GatewayBrandLogo: "GatewayBrandLogo", ProviderBrandLogo: "ProviderBrandLogo", gatewayBrandFromIdentity: value => value, providerBrandFromMetadata: value => value },
+  }
+  const exports = {}
+  runInNewContext(component, { exports, require: name => imports[name] ?? new Proxy({}, { get: (_target, key) => key }) })
+  const saved = []
+  const props = {
+    model, busy: false, error: null, onClose() {}, onSave: value => saved.push(value),
+    registry: {
+      gateways: [{ id: "gateway", name: "Unit gateway", implementation: "apim" }],
+      providers: [{ id: model.provider_id, provider_kind: providerKind }],
+      runtimes: [{ id: model.runtime_id, gateway_profile_id: "gateway", brand_key: providerKind, name: "Unit connection", config: { model_vendor: "deepseek" } }],
+    },
+  }
+  const nodes = value => Array.isArray(value) ? value.flatMap(nodes)
+    : value && typeof value === "object" ? [value, ...nodes(typeof value.type === "function" ? value.type(value.props) : value.props?.children)] : []
+  const render = () => { cursor = 0; return exports.ModelEditDialog(props) }
+  return { props, saved, nodes, find: predicate => nodes(render()).find(predicate), all: () => nodes(render()) }
+}
 
 function savedModel(overrides = {}) {
   return {
@@ -153,3 +198,80 @@ test("default and enabled controls cannot produce a disabled default", () => {
   assert.equal(initial.enabled, true)
   assert.equal(initial.isDefault, false)
 })
+
+test("model editor restores identity, help and units without changing saved routing", () => {
+  const model = savedModel({ provider_name: "Unit provider" })
+  const view = editorHarness(model)
+  assert.equal(view.find(node => node.type === "DialogContent").props.finalFocus, false)
+  assert.equal(view.find(node => node.type === "DialogDescription").props.children, "更新模型名称、价格和访问配置。连接与模型标识保持不变。")
+  const identity = view.find(node => node.props?.className === "model-editor-identity")
+  assert.deepEqual(view.nodes(identity).filter(node => node.type === "dt").map(node => node.props.children), ["目标网关", "接入类型", "连接", "模型别名", "Deployment Name"])
+  assert.ok(view.find(node => node.type === "FieldHelp" && node.props.children.startsWith("连接和模型标识决定")))
+  assert.ok(view.find(node => node.type === "FieldHelp" && node.props.children.startsWith("设为整个模型目录")))
+  assert.ok(view.find(node => node.props?.className === "model-editor-unit" && node.props.children === "Tokens"))
+  const advanced = view.find(node => node.props?.className === "model-editor-advanced-body")
+  assert.ok(view.nodes(advanced).some(node => node.type === "p" && node.props.children.startsWith("角色限制不替代")))
+  assert.ok(view.nodes(advanced).some(node => node.type === "p" && node.props.children.startsWith("当前应用登录角色")))
+  view.find(node => node.type === "Input" && node.props.maxLength === 255).props.onChange({ target: { value: "Renamed" } })
+  view.find(node => node.type === "form").props.onSubmit({ preventDefault() {} })
+  assert.equal(view.saved.length, 1)
+  assert.equal(view.saved[0].display_name, "Renamed")
+  for (const key of ["provider_id", "runtime_id", "model_key", "upstream_model_id", "capabilities", "allowed_roles"]) assert.deepEqual(view.saved[0][key], model[key])
+})
+
+test("model editor explains image default restrictions and preserves validation", () => {
+  const view = editorHarness(savedModel({ capabilities: ["image_generation"], context_window: null, cached_cost_per_million: null }))
+  assert.ok(view.find(node => node.type === "FieldHelp" && node.props.children === "图片模型不能设为聊天默认"))
+  const defaultLabel = view.find(node => node.type === "label" && view.nodes(node).some(child => child.type === "span" && child.props.children === "设为默认"))
+  assert.equal(view.nodes(defaultLabel).find(node => node.type === "Checkbox").props.disabled, true)
+  assert.equal(view.find(node => node.props?.id === "unit-editor-context"), undefined)
+  view.find(node => node.type === "Input" && node.props.maxLength === 255).props.onChange({ target: { value: "Image renamed" } })
+  view.find(node => node.type === "form").props.onSubmit({ preventDefault() {} })
+  assert.equal(view.saved.length, 0)
+  assert.equal(view.find(node => node.props?.role === "alert").props.children, "请填写文字输入、缓存文字和图像输出单价。")
+  view.props.busy = true
+  assert.ok(view.all().filter(node => node.type === "Input" || node.type === "Checkbox").every(node => node.props.disabled))
+})
+
+test("model editor retains source validation wording and one vendor identity row", () => {
+  const view = editorHarness(savedModel(), "openai_compatible")
+  const identity = view.find(node => node.props?.className === "model-editor-identity")
+  const labels = view.nodes(identity).filter(node => node.type === "dt").map(node => node.props.children)
+  assert.deepEqual(labels, ["目标网关", "API 服务商", "连接", "模型别名", "上游模型 ID"])
+  view.find(node => node.type === "Input" && node.props.id === "unit-editor-context").props.onChange({ target: { value: "-1" } })
+  view.find(node => node.type === "form").props.onSubmit({ preventDefault() {} })
+  assert.equal(view.saved.length, 0)
+  assert.equal(view.find(node => node.props?.role === "alert").props.children, "上下文窗口须为正整数，或留空。")
+})
+
+test("model editor density and responsive rules retain the source composition", () => {
+  const stylesheet = frontendRequire("postcss").parse(readFileSync(new URL("../../../frontend/src/styles/model-platform.css", import.meta.url), "utf8"))
+  const declarations = (selector, media = null) => {
+    const matches = []
+    stylesheet.walkRules(rule => {
+      if (rule.selector === selector && (rule.parent.type === "atrule" ? rule.parent.params : null) === media) matches.push(rule)
+    })
+    assert.equal(matches.length, 1, selector)
+    return Object.fromEntries(matches[0].nodes.filter(node => node.type === "decl").map(node => [node.prop, node.value]))
+  }
+  const identity = declarations(".model-editor-identity")
+  assert.equal(identity.background, "var(--muted)")
+  assert.equal(identity.padding, "10px 12px")
+  assert.equal(identity.gap, "8px 14px")
+  assert.equal(identity["border-radius"], "8px")
+  assert.equal(declarations(".model-editor-advanced-body").padding, "6px 0 2px")
+  assert.equal(declarations(".model-editor-checkbox")["min-height"], "26px")
+  assert.equal(declarations(".model-editor-checkbox-grid")["grid-template-columns"], "repeat(3, minmax(0, 1fr))")
+  assert.equal(declarations(".model-editor-identity", "(max-width: 640px)")["grid-template-columns"], "1fr")
+  assert.equal(declarations(".model-editor-checkbox-grid", "(max-width: 640px)")["grid-template-columns"], "repeat(2, minmax(0, 1fr))")
+})
+
+for (const [locale, exportName] of [["en", "ENGLISH_CORE_PHRASES"], ["ja", "JAPANESE_CORE_PHRASES"], ["ko", "KOREAN_CORE_PHRASES"]]) {
+  test(`model editor source help and validation are localized in ${locale}`, async () => {
+    const phrases = (await import(new URL(`../../../frontend/src/locales/${locale}/phrases-core.ts`, import.meta.url)))[exportName]
+    for (const phrase of ["更新模型名称、价格和访问配置。连接与模型标识保持不变。", "显示名称须为 1–255 个字符。", "上下文窗口须为正整数，或留空。", "单价须为非负有限数字，或留空。", "连接和模型标识决定已发布路由，仅供查看；更换连接请走模型接入与发布流程。", "设为整个模型目录的默认模型，并将其连接设为默认；不改变网关路由优先级。", "图片模型不能设为聊天默认", "角色限制不替代人员模型分配，仍需满足连接和人员的访问策略。", "当前应用登录角色为 Owner 和 Member；其他已有角色值按兼容配置保留。"]) {
+      assert.ok(phrases[phrase], phrase)
+      assert.notEqual(phrases[phrase], phrase)
+    }
+  })
+}

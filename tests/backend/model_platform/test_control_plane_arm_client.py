@@ -723,6 +723,93 @@ def test_foundry_removal_probe_requires_survivor_and_removed_alias_rejection() -
     assert probe_headers["x-hive-user"] == "Turnstile Publisher"
     assert probe_headers["x-hive-workflow"] == "gateway-publication-probe"
 
+@pytest.mark.parametrize("api_format", [ApiFormat.OPENAI_CHAT, ApiFormat.ANTHROPIC_MESSAGES])
+@pytest.mark.parametrize("json_body", [False, True], ids=["plain-text", "json"])
+@pytest.mark.parametrize("response_marker", ["NOT PUBLISHED", "DOES NOT SUPPORT"])
+def test_text_removal_probe_preserves_legacy_response_contract(
+    api_format: ApiFormat, json_body: bool, response_marker: str,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "POST"
+        assert json.loads(request.content)["model"] == "removed-text"
+        message = (
+            f"The gateway {response_marker} the requested Responses model"
+            if "/responses" in request.url.path
+            else "The requested model is NOT PUBLISHED by this gateway revision"
+        )
+        if json_body:
+            return httpx.Response(400, json={"error": {"message": message}})
+        return httpx.Response(400, text=message)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as transport_client:
+        client = AzureApimPublisherClient(publisher_settings(), client=transport_client)
+        client._probe_removed_model(
+            "https://gateway.example/llm;rev=candidate", {}, "removed-text", api_format,
+        )
+    expected_paths = (
+        ["/chat/completions", "/responses", "/responses/compact"]
+        if api_format is ApiFormat.OPENAI_CHAT else ["/v1/messages"]
+    )
+    assert [request.url.path for request in requests] == [
+        f"/llm;rev=candidate{path}" for path in expected_paths
+    ]
+
+
+@pytest.mark.parametrize("api_format", [ApiFormat.OPENAI_CHAT, ApiFormat.ANTHROPIC_MESSAGES])
+@pytest.mark.parametrize(("status_code", "error_type"), [
+    (200, RuntimeError), (400, RuntimeError), (401, RuntimeError), (403, RuntimeError),
+    (429, RetryablePublicationError), (500, RetryablePublicationError),
+    (503, RetryablePublicationError),
+])
+def test_text_removal_probe_does_not_accept_image_error_code(
+    api_format: ApiFormat, status_code: int, error_type: type[Exception],
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(status_code, json={"error": "image_model_not_published"})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as transport_client:
+        client = AzureApimPublisherClient(publisher_settings(), client=transport_client)
+        with pytest.raises(error_type, match=f"HTTP {status_code}") as error:
+            client._probe_removed_model(
+                "https://gateway.example/llm", {}, "removed-text", api_format,
+            )
+    assert type(error.value) is error_type
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize("failed_path", ["/responses", "/responses/compact"])
+@pytest.mark.parametrize(("status_code", "error_type"), [
+    (200, RuntimeError), (400, RuntimeError), (401, RuntimeError), (403, RuntimeError),
+    (429, RetryablePublicationError), (500, RetryablePublicationError),
+])
+def test_text_removal_probe_requires_all_responses_rejections(
+    failed_path: str, status_code: int, error_type: type[Exception],
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == f"/llm{failed_path}":
+            return httpx.Response(status_code, json={"error": "image_model_not_published"})
+        return httpx.Response(400, text="The requested model is not published")
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as transport_client:
+        client = AzureApimPublisherClient(publisher_settings(), client=transport_client)
+        with pytest.raises(error_type, match=f"HTTP {status_code}") as error:
+            client._probe_removed_model(
+                "https://gateway.example/llm", {}, "removed-text", ApiFormat.OPENAI_CHAT,
+            )
+    assert type(error.value) is error_type
+    assert len(requests) == (2 if failed_path == "/responses" else 3)
+    assert requests[-1].url.path == f"/llm{failed_path}"
+
+
 def test_only_new_model_assignment_denial_is_retryable() -> None:
     responses = iter(
         [

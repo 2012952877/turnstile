@@ -22,6 +22,8 @@ export const IMAGE_GENERATION_PHRASES: Record<string, string> = {
   "文本": "Text",
   "调用模式": "Invocation mode",
   "选择图像模型": "Select an image model",
+  "选择图片模型": "Select an image model",
+  "生成图片": "Generate image",
   "图像尺寸": "Image size",
   "图像质量": "Image quality",
   "文件格式": "File format",

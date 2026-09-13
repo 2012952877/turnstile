@@ -122,6 +122,29 @@ test("source dialog composition retains connection help, deployment help and cre
   assert.ok(nodes(grid).some(node => node.props?.["aria-label"] === "模型用途"))
 })
 
+test("connection type uses a neutral OpenAI-compatible icon and retains provider branding", () => {
+  for (const openaiCompatible of [false, true]) {
+    const data = registry()
+    if (openaiCompatible) {
+      data.providers[0] = { ...data.providers[0], provider_kind: "openai_compatible", brand_key: "generic", name: "Unit provider" }
+      data.runtimes[0] = { ...data.runtimes[0], brand_key: "generic", name: "Unit connection", provider_name: "Unit provider", config: { control_plane_managed: true, api_format: "openai_chat", base_url: "https://unit.example/v1", auth_strategy: "named_value_bearer", credential_provisioned: true, model_vendor: "deepseek" } }
+    }
+    const view = harness(data)
+    const summary = view.find(node => node.props?.["aria-label"] === "连接信息")
+    assert.ok(summary)
+    const typeRow = nodes(summary).find(node => node.type === "div" && node.props.children?.[0]?.type === "dt" && text(node.props.children[0]) === "接入类型")
+    assert.ok(typeRow)
+    assert.equal(nodes(typeRow).some(node => node.type === "Plug"), openaiCompatible)
+    assert.equal(nodes(typeRow).some(node => node.type === "ProviderBrandLogo"), !openaiCompatible)
+    if (openaiCompatible) {
+      assert.ok(text(typeRow).includes("OpenAI-compatible API"))
+      assert.equal(nodes(typeRow).find(node => node.type === "Plug").props["aria-hidden"], "true")
+      assert.ok(nodes(summary).some(node => node.type === "ModelVendorLogo" && node.props.value === "deepseek"))
+    }
+    assert.equal(view.writes.length, 0)
+  }
+})
+
 test("image price states accept explicit zero and submit all three rates without chat fields", async () => {
   const view = harness()
   view.select("chat", "image_generation")

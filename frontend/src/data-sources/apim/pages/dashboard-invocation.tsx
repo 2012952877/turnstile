@@ -159,9 +159,6 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
         },
         messages: [{ role: "user", content: prompt }],
         max_output_tokens: INVOCATION_MAX_OUTPUT_TOKENS,
-        ...(runtime?.config.api_format !== "anthropic_messages"
-          ? { temperature: 0 }
-          : {}),
         stream: true,
       };
       if (imageMode) {
@@ -217,9 +214,9 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
         <PanelTitle title="调用参数" meta="在线模型" />
         <div className="invoke-modebar"><ButtonGroup className="usage-metric-segment" aria-label="调用模式">
           <button type="button" aria-pressed={!imageMode} className={!imageMode ? "active" : ""}
-            disabled={isInvoking} onClick={() => selectMode(false)}><MessageSquare size={14} />文本</button>
+            disabled={isInvoking} onClick={() => selectMode(false)}><MessageSquare size={14} />对话</button>
           <button type="button" aria-pressed={imageMode} className={imageMode ? "active" : ""}
-            disabled={isInvoking} onClick={() => selectMode(true)}><ImageIcon size={14} />图像</button>
+            disabled={isInvoking} onClick={() => selectMode(true)}><ImageIcon size={14} />文生图</button>
         </ButtonGroup></div>
         <div className="invoke-form">
           <FilterSelect
@@ -260,15 +257,15 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
                 setInvokeError(null);
               }}
             >
-              <SelectTrigger aria-label="调用目标" title={selectedModel?.display_name ?? (imageMode ? "选择图像模型" : "默认可用模型")}>
+              <SelectTrigger aria-label="调用目标" title={selectedModel?.display_name ?? (imageMode ? "选择图片模型" : "默认可用模型")}>
                 <SelectValue>
-                  {selectedModel?.display_name ?? (imageMode ? "选择图像模型" : "默认可用模型")}
+                  {selectedModel?.display_name ?? (imageMode ? "选择图片模型" : "默认可用模型")}
                 </SelectValue>
               </SelectTrigger>
               <SelectContent align="start" alignItemWithTrigger={false}>
-                {!imageMode && <SelectItem value={DEFAULT_MODEL_OPTION}>
-                  默认可用模型
-                </SelectItem>}
+                <SelectItem value={DEFAULT_MODEL_OPTION}>
+                  {imageMode ? "选择图片模型" : "默认可用模型"}
+                </SelectItem>
                 {models.map((model) => (
                   <SelectItem key={model.id} value={`${MODEL_TARGET_PREFIX}${model.id}`}>
                     {model.display_name}
@@ -278,12 +275,14 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
             </Select>
           </div>
           {imageMode && imageProfile && <ImageOptions value={imageOptions} onChange={setImageOptions} disabled={isInvoking} />}
+          {imageMode && registry.data?.image_configuration_schema_version !== 4 && <div className="invoke-error" role="alert">后端尚未支持图像参数透传</div>}
           <div className="invoke-prompt">
             <span>Prompt</span>
             <div className="invoke-composer">
               <textarea
                 aria-label="Prompt"
                 value={prompt}
+                disabled={isInvoking}
                 onChange={(event) => setPrompt(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey) || event.nativeEvent.isComposing) return
@@ -307,7 +306,7 @@ export function AgentInvocation({ entities }: { entities: EnterpriseEntityCatalo
             onClick={() => void invoke()}
           >
             {isInvoking ? <RefreshCw className="spin" size={15} /> : <Send size={15} />}
-            {isInvoking ? "调用中..." : "发起调用"}
+            {isInvoking ? "调用中..." : imageMode ? "生成图片" : "发起调用"}
           </button>
         </div>
       </section>

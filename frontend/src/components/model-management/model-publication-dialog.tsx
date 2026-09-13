@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { Check, Circle, Copy, Eye, EyeOff, LoaderCircle, Rocket, ShieldCheck, TriangleAlert, X } from "lucide-react"
+import { Check, Circle, Copy, Eye, EyeOff, LoaderCircle, Plug, Rocket, ShieldCheck, TriangleAlert, X } from "lucide-react"
 
 import { dataSource } from "../../data-sources/apim/api"
 import { finopsKeys, finopsQueries } from "../../data-sources/apim/queries"
@@ -517,7 +517,7 @@ export function ModelPublicationDialog({
                 {!selectedRuntime && <div className="registry-error" role="alert">所选连接已不可用，请重新选择。</div>}
             </div> : <p className="publication-form-note" role="status">此网关没有可用连接。请先到连接管理添加并启用连接。</p>}
             {selectedRuntime && selectedProvider && <dl className="publication-connection-summary" aria-label="连接信息">
-              <div><dt>接入类型</dt><dd className="registry-option"><ProviderBrandLogo brand={providerBrandFromMetadata(selectedProvider.brand_key, selectedProvider.name)} size={15} /><span data-no-localize>{openaiCompatible ? "OpenAI-compatible API" : selectedProvider.name}</span></dd></div>
+              <div><dt>接入类型</dt><dd className="registry-option">{openaiCompatible ? <Plug size={15} aria-hidden="true" /> : <ProviderBrandLogo brand={providerBrandFromMetadata(selectedRuntime.brand_key, selectedProvider.name)} size={15} />}<span data-no-localize>{openaiCompatible ? "OpenAI-compatible API" : selectedProvider.name}</span></dd></div>
               <div><dt>认证方式</dt><dd>{connectionAuthLabel}</dd></div>
               {selectedVendor && <div><dt>API 服务商</dt><dd className="registry-option"><ModelVendorLogo value={selectedVendor} size={15} /><span>{modelVendorLabel(selectedVendor)}</span></dd></div>}
               {connectionEndpoint && <div className="publication-connection-endpoint"><dt>Endpoint</dt><dd data-no-localize>{connectionEndpoint}</dd></div>}

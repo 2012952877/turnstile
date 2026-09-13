@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from collections.abc import Iterator
+from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID
 from xml.etree import ElementTree
@@ -204,17 +206,35 @@ def test_application_subscription_is_suspended_until_owned_activation_with_etag(
         initial_monthly_token_limit=1000,
         initial_tokens_per_minute=100,
     )
+    settings = publisher_settings()
     stored: dict[str, Any] = {}
     writes: list[httpx.Request] = []
     membership: list[str] = []
+    authentication: list[str | None] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host != "management.azure.com":
+            key = request.headers.get("Ocp-Apim-Subscription-Key")
+            authentication.append(key)
+            assert request.method == "GET" and request.url.path.endswith("/v1/models")
+            return httpx.Response(200 if key == "unit-primary" else 401, json={"data": []})
         if request.url.path.endswith("/policies/policy"):
             return httpx.Response(
                 200,
                 headers={"content-type": "application/xml"},
-                text=_admission_policy(UUID(int=1)),
+                text=(
+                    "<policies><inbound><base /><return-response /></inbound></policies>"
+                    if "/operations/" in request.url.path else _admission_policy(UUID(int=1))
+                ),
             )
+        if request.method == "GET" and request.url.path.endswith(f"/apis/{settings.apim_api_id}"):
+            return httpx.Response(200, json={"properties": {
+                "path": httpx.URL(str(settings.apim_gateway_url)).path.strip("/"),
+            }})
+        if request.url.path.endswith(f"/operations/{settings.apim_models_operation_id}"):
+            return httpx.Response(200, json={"properties": {
+                "method": "GET", "urlTemplate": "/v1/models",
+            }})
         if "/products/" in request.url.path:
             if "/apis/" in request.url.path:
                 membership.append(request.method)
@@ -241,7 +261,7 @@ def test_application_subscription_is_suspended_until_owned_activation_with_etag(
         )
 
     client = AzureApimPublisherClient(
-        publisher_settings(),
+        settings,
         StubTokenProvider(),  # type: ignore[arg-type]
         httpx.Client(transport=httpx.MockTransport(handler)),
     )
@@ -258,6 +278,135 @@ def test_application_subscription_is_suspended_until_owned_activation_with_etag(
     client.activate_application_subscription(spec, "unit-primary", "unit-secondary")
     assert len(writes) == 2
     assert membership == ["HEAD", "HEAD"]
+    assert authentication == ["unit-primary", None, "unit-primary", None]
+
+
+class ApplicationSubscriptionTransport(httpx.MockTransport):
+    def __init__(
+        self,
+        spec: GatewayApplicationSubscriptionProvisionSpec,
+        primary_key: str,
+        secondary_key: str,
+        initial_state: str = "active",
+    ) -> None:
+        self.spec = spec
+        self.primary_key = primary_key
+        self.secondary_key = secondary_key
+        self.settings = publisher_settings()
+        self.requests: list[httpx.Request] = []
+        self.data_plane_result: int | type[httpx.TransportError] = 200
+        self.anonymous_status = 401
+        self.response_headers: dict[str, str] = {}
+        self.api_path = httpx.URL(str(self.settings.apim_gateway_url)).path.strip("/")
+        self.gateway_host = httpx.URL(str(self.settings.apim_gateway_url)).host
+        self.catalog_operation = {"method": "GET", "urlTemplate": "/v1/models"}
+        self.catalog_policy = (
+            "<policies><inbound><base /><return-response /></inbound></policies>"
+        )
+        self.root = (
+            f"/subscriptions/{self.settings.azure_subscription_id}"
+            f"/resourceGroups/{self.settings.apim_resource_group}"
+            f"/providers/Microsoft.ApiManagement/service/{self.settings.apim_service_name}"
+        )
+        self.current: dict[str, Any] | None = None if initial_state == "missing" else {
+            "scope": f"{self.root}/products/{spec.scope_id}",
+            "displayName": (
+                spec.display_name if initial_state == "active"
+                else AzureApimPublisherClient._application_pending_name(primary_key, secondary_key)
+            ),
+            "state": initial_state,
+        }
+        super().__init__(self._respond)
+
+    def _respond(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        if request.url.host == self.gateway_host:
+            assert request.method == "GET" and request.url.path == f"/{self.api_path}/v1/models"
+            assert not request.url.query and not request.content
+            assert "Authorization" not in request.headers and "Cookie" not in request.headers
+            key = request.headers.get("Ocp-Apim-Subscription-Key")
+            assert key in {None, self.primary_key}
+            assert request.extensions["timeout"] == dict.fromkeys(
+                ("connect", "read", "write", "pool"), 10.0,
+            )
+            if key and not isinstance(self.data_plane_result, int):
+                raise self.data_plane_result(
+                    f"unsafe transport detail {self.primary_key}", request=request,
+                )
+            response_status = self.data_plane_result if key else self.anonymous_status
+            assert isinstance(response_status, int)
+            return httpx.Response(
+                response_status, json={"data": [], "unsafe_body": self.primary_key},
+                headers=self.response_headers,
+            )
+        assert request.url.host == "management.azure.com"
+        operation_path = f"/operations/{self.settings.apim_models_operation_id}"
+        if request.url.path.endswith(f"{operation_path}/policies/policy"):
+            return httpx.Response(200, json={"properties": {"value": self.catalog_policy}})
+        if request.url.path.endswith(operation_path):
+            return httpx.Response(200, json={"properties": self.catalog_operation})
+        if request.url.path.endswith("/policies/policy"):
+            assert self.spec.gateway_profile_id is not None
+            return httpx.Response(200, json={"properties": {
+                "value": _admission_policy(self.spec.gateway_profile_id),
+            }})
+        if request.url.path == f"{self.root}/apis/{self.settings.apim_api_id}":
+            return httpx.Response(200, json={"properties": {"path": self.api_path}})
+        if request.method == "HEAD" and "/products/" in request.url.path:
+            return httpx.Response(204)
+        if request.url.path == f"{self.root}/products/{self.spec.scope_id}":
+            return httpx.Response(200, json={"properties": {
+                "state": "published", "subscriptionRequired": True,
+            }})
+        assert request.url.path == f"{self.root}/subscriptions/{self.spec.apim_subscription_id}"
+        if request.method == "PUT":
+            if self.current is None:
+                assert "If-Match" not in request.headers
+            else:
+                assert self.current["state"] == "suspended"
+                assert request.headers["If-Match"] == '"unit-etag"'
+            self.current = json.loads(request.content)["properties"]
+            assert self.current is not None
+            assert self.current["primaryKey"] == self.primary_key
+            assert self.current["secondaryKey"] == self.secondary_key
+        else:
+            assert request.method == "GET"
+        return httpx.Response(404) if self.current is None else httpx.Response(
+            200, headers={"ETag": '"unit-etag"'}, json={"properties": self.current},
+        )
+
+
+@pytest.mark.parametrize("initial_state", ("suspended", "active"))
+def test_application_activation_waits_for_data_plane_authentication(initial_state: str) -> None:
+    spec = _spec(
+        provisioning_version=2,
+        gateway_profile_id=UUID(int=1),
+        initial_monthly_token_limit=1000,
+        initial_tokens_per_minute=100,
+    )
+    transport = ApplicationSubscriptionTransport(
+        spec, "unit-primary", "unit-secondary", initial_state,
+    )
+    transport.data_plane_result = 401
+    client = AzureApimPublisherClient(
+        publisher_settings(),
+        StubTokenProvider(),  # type: ignore[arg-type]
+        httpx.Client(transport=transport),
+    )
+    with pytest.raises(RetryablePublicationError, match="data-plane authentication"):
+        client.activate_application_subscription(spec, "unit-primary", "unit-secondary")
+    assert transport.current is not None and transport.current["state"] == "active"
+    expected_writes = int(initial_state == "suspended")
+    assert sum(request.method == "PUT" for request in transport.requests) == expected_writes
+    transport.data_plane_result = 200
+    client.activate_application_subscription(spec, "unit-primary", "unit-secondary")
+    assert sum(request.method == "PUT" for request in transport.requests) == expected_writes
+    probes = [
+        request for request in transport.requests if request.url.host == transport.gateway_host
+    ]
+    assert [request.headers.get("Ocp-Apim-Subscription-Key") for request in probes] == [
+        "unit-primary", "unit-primary", None,
+    ]
 
 
 @pytest.mark.parametrize("rejection", ("gateway", "product", "membership"))
@@ -451,6 +600,289 @@ def test_ledger_retry_cannot_activate_or_change_frozen_budgets_and_keys() -> Non
         next(value for (partition, key), value in store.rows.items() if key == "Q")["Limit"]
         == 24_000
     )
+
+
+@pytest.mark.parametrize("recover", (False, True))
+@pytest.mark.parametrize(
+    "outcome", (401, httpx.ReadTimeout, httpx.ConnectTimeout, httpx.ConnectError),
+)
+def test_application_worker_waits_for_authentication_or_reports_retry_limit(
+    outcome: int | type[httpx.TransportError], recover: bool,
+) -> None:
+    repository, cipher, operation_id = _queued_creation()
+    operation = repository.get_gateway_release_operation(operation_id)
+    assert operation is not None
+    spec = GatewayApplicationSubscriptionProvisionSpec.model_validate(operation["semantic_preview"])
+    ciphertext = repository.gateway_release_operation_secret(operation_id)
+    plaintext = cipher.decrypt(ciphertext)
+    assert plaintext is not None
+    keys = json.loads(plaintext)
+    transport = ApplicationSubscriptionTransport(
+        spec, keys["primary_key"], keys["secondary_key"], "missing",
+    )
+    transport.data_plane_result = outcome
+    correlation_id = str(UUID(int=42))
+    transport.response_headers = {"apim-request-id": correlation_id}
+    ledger = AdmissionRows()
+    worker = GatewayReleaseOperationWorker(
+        repository,
+        AzureApimPublisherClient(
+            publisher_settings(), cast(Any, StubTokenProvider()), httpx.Client(transport=transport),
+        ),
+        cipher=cipher,
+        application_projector=lambda gateway, application: prepare_application_ledger(
+            repository, cast(TableStorageLedger, ledger), gateway, application,
+        ),
+    )
+    max_attempts = 6 if recover else 5
+    for expected in ("validating_dependencies", "promoting", "verifying_readback"):
+        pending = worker.run_once("unit-worker", max_attempts=max_attempts)
+        assert pending is not None and pending.status == expected
+    assert pending is not None
+    checkpoint = dict(pending.checkpoint)
+    budgets = deepcopy(repository.gateway_application_budgets)
+    for _ in range(2):
+        pending = worker.run_once("unit-worker", max_attempts=max_attempts)
+        assert pending is not None and pending.status == "verifying_readback"
+        assert not pending.checkpoint.get("subscription_active")
+        assert not pending.checkpoint.get("data_plane_authentication_ready")
+        assert all(pending.checkpoint[name] == value for name, value in checkpoint.items())
+        assert repository.gateway_release_operation_secret(operation_id) == ciphertext
+        assert pending.error_message is not None
+        diagnostic = json.loads(pending.error_message.partition(": ")[2])
+        assert diagnostic == {
+            "category": (
+                "subscription_not_ready" if isinstance(outcome, int) else
+                "timeout" if issubclass(outcome, httpx.TimeoutException) else "transport_error"
+            ),
+            "status_code": outcome if isinstance(outcome, int) else None,
+            "correlation_id": correlation_id if isinstance(outcome, int) else None,
+        }
+        serialized = pending.model_dump_json()
+        assert keys["primary_key"] not in serialized and keys["secondary_key"] not in serialized
+        assert "unsafe_body" not in serialized and "unsafe transport detail" not in serialized
+    if recover:
+        transport.data_plane_result = 200
+    completed = worker.run_once("replacement-worker", max_attempts=max_attempts)
+    assert completed is not None and completed.status == ("succeeded" if recover else "failed")
+    if recover:
+        assert completed.error_message is None
+        assert completed.checkpoint["data_plane_authentication_ready"] is True
+        assert completed.checkpoint["subscription_active"] is True
+    else:
+        assert completed.error_code == "max_attempts_exceeded"
+        assert completed.checkpoint["max_attempts_exceeded"] is True
+        assert not completed.checkpoint.get("subscription_active")
+    assert repository.gateway_release_operation_secret(operation_id) is None
+    assert repository.gateway_application_budgets == budgets
+    assert sum(request.method == "PUT" for request in transport.requests) == 2
+    probes = [
+        request for request in transport.requests if request.url.host == transport.gateway_host
+    ]
+    assert len(probes) == (4 if recover else 2)
+    assert all(request.method == "GET" for request in probes)
+    request_count = len(transport.requests)
+    assert worker.run_once("unit-worker", max_attempts=6) is None
+    assert len(transport.requests) == request_count
+
+
+def test_application_authentication_lost_lease_retains_recovery_keys() -> None:
+    repository, cipher, operation_id = _queued_creation()
+    operation = repository.get_gateway_release_operation(operation_id)
+    assert operation is not None
+    spec = GatewayApplicationSubscriptionProvisionSpec.model_validate(operation["semantic_preview"])
+    ciphertext = repository.gateway_release_operation_secret(operation_id)
+    plaintext = cipher.decrypt(ciphertext)
+    assert plaintext is not None
+    keys = json.loads(plaintext)
+    transport = ApplicationSubscriptionTransport(
+        spec, keys["primary_key"], keys["secondary_key"], "missing",
+    )
+    lose_lease = True
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        response = transport.handle_request(request)
+        if (
+            lose_lease and request.url.host == transport.gateway_host
+            and request.headers.get("Ocp-Apim-Subscription-Key")
+        ):
+            operation["lease_expires_at"] = datetime.now(UTC) - timedelta(seconds=1)
+        return response
+
+    ledger = AdmissionRows()
+    worker = GatewayReleaseOperationWorker(
+        repository,
+        AzureApimPublisherClient(
+            publisher_settings(), cast(Any, StubTokenProvider()),
+            httpx.Client(transport=httpx.MockTransport(handler)),
+        ),
+        cipher=cipher,
+        application_projector=lambda gateway, application: prepare_application_ledger(
+            repository, cast(TableStorageLedger, ledger), gateway, application,
+        ),
+    )
+    for _ in range(3):
+        assert worker.run_once("unit-worker") is not None
+    with pytest.raises(RuntimeError, match="changed while leased"):
+        worker.run_once("unit-worker")
+    assert operation["status"] == "verifying_readback"
+    assert not operation["checkpoint"].get("data_plane_authentication_ready")
+    assert repository.gateway_release_operation_secret(operation_id) == ciphertext
+    lose_lease = False
+    completed = worker.run_once("replacement-worker")
+    assert completed is not None and completed.status == "succeeded"
+    assert completed.checkpoint["data_plane_authentication_ready"] is True
+    assert repository.gateway_release_operation_secret(operation_id) is None
+    assert sum(request.method == "PUT" for request in transport.requests) == 2
+
+
+@pytest.mark.parametrize("problem", (
+    "api_path", "http", "query", "fragment", "userinfo", "post_operation",
+    "inference_path", "missing_base", "late_base", "invalid_xml",
+))
+def test_application_authentication_rejects_unsafe_catalog_target(problem: str) -> None:
+    spec = _spec(
+        provisioning_version=2, gateway_profile_id=APIM_ID,
+        initial_monthly_token_limit=1000, initial_tokens_per_minute=100,
+    )
+    transport = ApplicationSubscriptionTransport(spec, "unit-primary", "unit-secondary")
+    settings = publisher_settings()
+    base = str(settings.apim_gateway_url)
+    addresses = {
+        "api_path": f"{base}/wrong-api",
+        "http": base.replace("https://", "http://"),
+        "query": f"{base}?subscription-key=unit-wrong-key",
+        "fragment": f"{base}#fragment",
+        "userinfo": base.replace("https://", "https://unit-user:unit-password@"),
+    }
+    if problem in addresses:
+        settings = settings.model_copy(update={"apim_gateway_url": addresses[problem]})
+    elif problem == "post_operation":
+        transport.catalog_operation["method"] = "POST"
+    elif problem == "inference_path":
+        transport.catalog_operation["urlTemplate"] = "/v1/messages"
+    elif problem == "missing_base":
+        transport.catalog_policy = "<policies><inbound><return-response /></inbound></policies>"
+    elif problem == "late_base":
+        transport.catalog_policy = (
+            "<policies><inbound><return-response /><base /></inbound></policies>"
+        )
+    else:
+        transport.catalog_policy = "not xml"
+    client = AzureApimPublisherClient(
+        settings, cast(Any, StubTokenProvider()), httpx.Client(transport=transport),
+    )
+    with pytest.raises(PolicyCompilationError):
+        client.activate_application_subscription(spec, "unit-primary", "unit-secondary")
+    assert all(
+        request.method == "GET" and request.url.host == "management.azure.com"
+        for request in transport.requests
+    )
+
+
+@pytest.mark.parametrize("anonymous_status", (200, 302, 401, 403, 429, 503))
+def test_application_authentication_isolates_credentials_and_checks_anonymous_control(
+    anonymous_status: int,
+) -> None:
+    spec = _spec(
+        provisioning_version=2, gateway_profile_id=APIM_ID,
+        initial_monthly_token_limit=1000, initial_tokens_per_minute=100,
+    )
+    transport = ApplicationSubscriptionTransport(spec, "unit-primary", "unit-secondary")
+    transport.anonymous_status = anonymous_status
+    transport.response_headers = {
+        "Set-Cookie": "session=untrusted", "Location": "https://untrusted.example/",
+    }
+    token_provider = cast(Any, StubTokenProvider())
+    client = AzureApimPublisherClient(publisher_settings(), token_provider, httpx.Client(
+        transport=transport, timeout=None, follow_redirects=True,
+        auth=("unit-user", "unit-password"),
+        headers={
+            "Authorization": "Bearer unit-token", "Ocp-Apim-Subscription-Key": "other-unit-key",
+        },
+        cookies={"session": "unit-cookie"}, params={"subscription-key": "other-unit-key"},
+    ))
+    if anonymous_status in {401, 403}:
+        client.activate_application_subscription(spec, "unit-primary", "unit-secondary")
+    else:
+        expected = PolicyCompilationError if anonymous_status == 200 else RetryablePublicationError
+        with pytest.raises(expected) as caught:
+            client.activate_application_subscription(spec, "unit-primary", "unit-secondary")
+        assert "unit-primary" not in str(caught.value) and "unsafe_body" not in str(caught.value)
+    probes = [
+        request for request in transport.requests if request.url.host == transport.gateway_host
+    ]
+    assert [request.headers.get("Ocp-Apim-Subscription-Key") for request in probes] == [
+        "unit-primary", None,
+    ]
+    assert all(request.method == "GET" for request in transport.requests)
+
+
+@pytest.mark.parametrize(("response_status", "header", "value", "correlation"), (
+    (401, "apim-request-id", str(UUID(int=41)), str(UUID(int=41))),
+    (403, "x-request-id", str(UUID(int=42)), str(UUID(int=42))),
+    (404, "x-correlation-id", str(UUID(int=43)), str(UUID(int=43))),
+    (408, "x-request-id", "", None),
+    (429, "x-request-id", "unit-primary", None),
+    (503, "apim-request-id", "untrusted raw diagnostic", None),
+    (302, "Location", "https://untrusted.example/", None),
+))
+def test_application_authentication_preserves_only_safe_diagnostics(
+    response_status: int, header: str, value: str, correlation: str | None,
+) -> None:
+    spec = _spec(
+        provisioning_version=2, gateway_profile_id=APIM_ID,
+        initial_monthly_token_limit=1000, initial_tokens_per_minute=100,
+    )
+    transport = ApplicationSubscriptionTransport(spec, "unit-primary", "unit-secondary")
+    transport.data_plane_result = response_status
+    transport.response_headers = {header: value}
+    client = AzureApimPublisherClient(
+        publisher_settings(), cast(Any, StubTokenProvider()), httpx.Client(transport=transport),
+    )
+    with pytest.raises(RetryablePublicationError) as caught:
+        client.activate_application_subscription(spec, "unit-primary", "unit-secondary")
+    assert json.loads(str(caught.value).partition(": ")[2]) == {
+        "category": "subscription_not_ready", "status_code": response_status,
+        "correlation_id": correlation,
+    }
+    assert "unit-primary" not in str(caught.value) and "unsafe_body" not in str(caught.value)
+
+
+@pytest.mark.parametrize("response_status", (200, 401))
+def test_application_authentication_closes_response_without_reading_body(
+    response_status: int,
+) -> None:
+    spec = _spec(
+        provisioning_version=2, gateway_profile_id=APIM_ID,
+        initial_monthly_token_limit=1000, initial_tokens_per_minute=100,
+    )
+    transport = ApplicationSubscriptionTransport(spec, "unit-primary", "unit-secondary")
+    transport.data_plane_result = response_status
+    responses: list[httpx.Response] = []
+
+    class UnreadBody(httpx.SyncByteStream):
+        def __iter__(self) -> Iterator[bytes]:
+            raise AssertionError("Authentication probes must not read arbitrary response bodies")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        response = transport.handle_request(request)
+        if request.url.host == transport.gateway_host:
+            response = httpx.Response(response.status_code, stream=UnreadBody())
+            responses.append(response)
+        return response
+
+    client = AzureApimPublisherClient(
+        publisher_settings(), cast(Any, StubTokenProvider()),
+        httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    if response_status == 200:
+        client.activate_application_subscription(spec, "unit-primary", "unit-secondary")
+    else:
+        with pytest.raises(RetryablePublicationError):
+            client.activate_application_subscription(spec, "unit-primary", "unit-secondary")
+    assert len(responses) == (2 if response_status == 200 else 1)
+    assert all(response.is_closed and not response.is_stream_consumed for response in responses)
 
 
 @pytest.mark.parametrize("historical", (False, True))

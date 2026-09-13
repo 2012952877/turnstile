@@ -234,7 +234,8 @@ class GatewayReleaseOperationWorker:
                 spec, keys["primary_key"], keys["secondary_key"]
             )
             self._transition(row, "succeeded", {"checkpoint": self._checkpoint(
-                row, admission_ready=True, subscription_active=True, key_stored=False,
+                row, admission_ready=True, subscription_active=True,
+                data_plane_authentication_ready=True, key_stored=False,
             )}, worker_id)
             return
         if status != "promoting":

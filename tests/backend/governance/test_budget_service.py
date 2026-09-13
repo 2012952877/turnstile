@@ -1,12 +1,18 @@
+from copy import deepcopy
 from datetime import UTC, date, datetime
+from typing import Any
 
-from backend.services.budget_service import TokenBudgetService
+import pytest
+
+from backend.services.budget_service import BudgetConflictError, TokenBudgetService
 from turnstile_core.domain.models import (
     BudgetScopeType,
+    TokenBudgetBulkWrite,
     TokenBudgetWrite,
     TokenUsageRecord,
 )
 from turnstile_core.persistence.in_memory import InMemoryRepository
+from turnstile_core.persistence.repository import BudgetConstraintViolation
 
 
 def _write_usage(
@@ -204,3 +210,103 @@ def test_apim_budget_surfaces_exclude_copilot_cli_usage() -> None:
     assert user_scope["used_tokens"] == 100
     assert ledger[0]["confirmed_tokens"] == 100
     assert state is not None and state["used_tokens"] == 100
+
+
+def test_model_access_save_projects_latest_full_policy_without_changing_budgets() -> None:
+    repository = InMemoryRepository()
+    user_id = "test.user01@contoso.com"
+    other_user_id = "test.user02@contoso.com"
+    models = [model for model in repository.models if model["enabled"]][:2]
+    assert len(models) == 2
+    for sequence, person in enumerate((user_id, other_user_id)):
+        _write_usage(repository, person, sequence)
+        repository.upsert_token_budget(
+            date(2026, 7, 1), "user", person, "department-platform", 5_000, 80, "owner"
+        )
+    repository.bulk_upsert_user_budgets(
+        date(2026, 7, 1), "department-platform", [], 80, "owner",
+        selected_user_ids=[other_user_id], model_ids=[models[0]["id"]],
+    )
+    budgets = deepcopy(repository.list_token_budgets(date(2026, 7, 1)))
+    other_policy = deepcopy(repository.list_user_model_policies([other_user_id]))
+    projected: list[list[dict[str, Any]]] = []
+
+    def project(user_ids: Any) -> None:
+        assert user_ids == [user_id]
+        projected.append(list(repository.model_access_ledger_snapshot(user_ids)))
+
+    service = TokenBudgetService(repository, project)
+    for selection in ([models[0]], models, [models[1]], []):
+        result = service.bulk_save_people(
+            "2026-07",
+            TokenBudgetBulkWrite(
+                department_id="department-platform", selection="ids", user_ids=[user_id],
+                allocation_mode="preserve", model_ids=[model["id"] for model in selection],
+            ),
+            "owner",
+        )
+        assert result.model_policy_updated_count == 1
+        assert len(projected[-1]) == 1
+        policy = projected[-1][0]
+        assert policy["user_id"] == user_id
+        assert set(map(str, policy["model_uuids"])) == {
+            str(model["id"]) for model in selection
+        }
+        assert set(policy["model_keys"]) == {model["model_key"] for model in selection}
+        assert repository.list_token_budgets(date(2026, 7, 1)) == budgets
+        assert repository.list_user_model_policies([other_user_id]) == other_policy
+    assert len(projected) == 4
+
+
+@pytest.mark.parametrize("commit_failure", [False, True])
+def test_model_access_failed_transaction_does_not_project(
+    monkeypatch: pytest.MonkeyPatch, commit_failure: bool,
+) -> None:
+    repository = InMemoryRepository()
+    user_id = "test.user01@contoso.com"
+    _write_usage(repository, user_id, 1)
+    projected: list[Any] = []
+
+    def reject_write(*args: Any, **kwargs: Any) -> None:
+        if commit_failure:
+            raise RuntimeError("commit failed")
+        raise BudgetConstraintViolation("transaction rejected")
+
+    monkeypatch.setattr(repository, "bulk_upsert_user_budgets", reject_write)
+    service = TokenBudgetService(repository, projected.append)
+    with pytest.raises(RuntimeError if commit_failure else BudgetConflictError):
+        service.bulk_save_people(
+            "2026-07",
+            TokenBudgetBulkWrite(
+                department_id="department-platform", selection="ids", user_ids=[user_id],
+                allocation_mode="preserve", model_ids=[],
+            ),
+            "owner",
+        )
+    assert projected == []
+    assert repository.list_user_model_policies([user_id]) == []
+
+
+def test_model_access_projection_failure_reports_saved_but_not_projected(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    repository = InMemoryRepository()
+    user_id = "test.user01@contoso.com"
+    _write_usage(repository, user_id, 1)
+
+    def unavailable(user_ids: Any) -> None:
+        assert user_ids == [user_id]
+        raise RuntimeError("ledger unavailable")
+
+    result = TokenBudgetService(repository, unavailable).bulk_save_people(
+        "2026-07",
+        TokenBudgetBulkWrite(
+            department_id="department-platform", selection="ids", user_ids=[user_id],
+            allocation_mode="preserve", model_ids=[],
+        ),
+        "owner",
+    )
+    assert result.model_policy_updated_count == 1
+    assert repository.list_user_model_policies([user_id])[0]["model_ids"] == []
+    assert "saved but not projected" in caplog.text
+    assert "next ledger sync will repair it" in caplog.text

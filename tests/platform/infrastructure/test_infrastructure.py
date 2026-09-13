@@ -392,6 +392,30 @@ def test_api_projects_model_access_using_its_exact_ledger_and_identity() -> None
     assert "scope: ledgerStorage" not in role
 
 
+def test_existing_api_model_access_upgrade_reuses_ledger_and_preserves_settings() -> None:
+    upgrade = (ROOT / "infra/model-access-upgrade.bicep").read_text(encoding="utf-8")
+    roles = (ROOT / "infra/modules/model-access-ledger-rbac.bicep").read_text(encoding="utf-8")
+    assert "targetScope = 'resourceGroup'" in upgrade
+    assert "param apiNames string[]" in upgrade
+    assert "for (apiName, index) in apiNames" in upgrade
+    assert "scope: resourceGroup(ledgerResourceGroupName)" in upgrade
+    assert "apiPrincipalId: apis[index].identity.principalId" in upgrade
+    assert "apiResourceId: apis[index].id" in upgrade
+    assert "union(list('${apis[index].id}/config/appsettings', '2024-11-01').properties" in upgrade
+    assert "LEDGER_SYNC_ENABLED: 'true'" in upgrade
+    assert "LEDGER_TABLE_ENDPOINT: ledgerStorage.properties.primaryEndpoints.table" in upgrade
+    assert "LEDGER_TABLE_NAME: ledgerTableName" in upgrade
+    assert "dependsOn: [\n    ledgerAccess[index]" in upgrade
+    assert roles.count(" existing = {") == 3
+    assert "guid(ledgerTable.id, apiResourceId, 'table-data-contributor')" in roles
+    assert "scope: ledgerTable" in roles and "scope: ledgerStorage" not in roles
+    assert "principalId: apiPrincipalId" in roles
+    assert "'0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3'" in roles
+    assert "Microsoft.Network/" not in upgrade + roles
+    assert "listKeys(" not in upgrade + roles
+    assert "output " not in upgrade + roles
+
+
 def test_databricks_oauth_is_opt_in_for_api_publisher_and_scoped_permissions() -> None:
     for template in (MAIN, DATA_PLANE, CONTROL_PLANE, CONTROL_PLANE_APIM_RBAC):
         assert "param databricksOAuthEnabled bool = false" in template

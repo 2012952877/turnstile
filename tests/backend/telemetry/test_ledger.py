@@ -1369,6 +1369,31 @@ def test_deny_all_projects_an_empty_membership_set_not_a_missing_row() -> None:
     assert row["Models"] == "||"
 
 
+def test_timer_replaces_model_access_and_repairs_an_unprojected_revocation() -> None:
+    repository = InMemoryRepository()
+    store = FakeLedgerStore()
+    service = LedgerSyncService(repository, store)
+    moment = datetime(2026, 7, 27, 12, 0, tzinfo=UTC)
+    models = [model for model in repository.models if model["enabled"]][:2]
+    assert len(models) == 2
+    other_partition = partition_key("unselected@example.com", "2026-07")
+    store.upsert(other_partition, "M", {"Configured": True, "Models": "|unchanged|"})
+    for selection in (models, [models[1]], []):
+        repository.bulk_upsert_user_budgets(
+            PERIOD_START.date(), "department-platform", [], 80, "owner",
+            selected_user_ids=[USER], model_ids=[model["id"] for model in selection],
+        )
+        service.run(moment)
+        row = store.entities[(partition_key(USER, "2026-07"), "M")]
+        identifiers = [
+            identifier for model in selection
+            for identifier in (str(model["id"]), model["model_key"])
+        ]
+        assert row == {"Configured": True, "Models": model_access_value(identifiers)}
+        assert store.entities[(other_partition, "M")]["Models"] == "|unchanged|"
+    assert row["Models"] == "||"
+
+
 def test_model_access_value_cannot_match_a_prefix_of_a_longer_identifier() -> None:
     value = model_access_value(["gpt-5.6-luna"])
     assert "|gpt-5.6-luna|" in value

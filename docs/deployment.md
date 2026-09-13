@@ -6,6 +6,150 @@ Turnstile infrastructure includes PostgreSQL, Event Hubs, Storage, Key Vault, Ap
 
 The API, telemetry and control-plane Functions, observer, and budget ledger require public service endpoints for package deployment or runtime traffic. They explicitly enable public network access and carry the resource-level `SecurityControl=Ignore` tag so an organization-level network Modify policy does not silently disable them. The exemption is not applied at resource-group scope; platform Storage and Key Vault resources designed for private-link access remain private.
 
+## Choose the v1.1 deployment path
+
+| Your installation | Use | Keep or create |
+| --- | --- | --- |
+| Turnstile v1.0 is already installed | [Upgrade an existing installation](#upgrade-v10-to-v11) | Keep the original parameter file, secret state, outputs, database, ledger, APIM, identities and history. |
+| No Turnstile installation exists | [Deploy from zero](#deploy-v11-from-zero) | Create a new prefix, resource group, state and platform. APIM reuse is an explicit alternative, not the default. |
+
+An application ZIP update alone does not install missing APIM operations or grant the API
+permission to update the ledger. Conversely, applying infrastructure alone does not update
+the API or Control-plane code. Complete both parts of the selected path.
+
+### Upgrade v1.0 to v1.1
+
+1. Record the deployed version, package hashes, running/stopped application states, migration
+  checksums, current APIM revision, model assignments and budget/usage totals. Retain the
+  original public parameters, private deployment state and matching outputs. Back up the
+  database through the installation's normal backup procedure. Do not regenerate encryption
+  keys, bootstrap another Owner, or point at another installation's outputs.
+2. Check out the reviewed v1.1 candidate and install its locked dependencies. Schedule a
+  maintenance window, drain publications, release operations and old telemetry consumers,
+  and exclude concurrent configuration changes. Follow the [APIM upgrade](#incremental-apim-infrastructure-upgrade)
+  plan/apply sequence if the fixed image operation or parent contract is missing. That
+  versioned upgrade preserves existing text routes and subscriptions; it is not APIM bootstrap.
+3. Apply [immediate model-access configuration](#immediate-model-access-upgrade) to every API
+  that saves People permissions. Reuse the exact ledger already read by APIM and written by
+  Telemetry. Do not create an empty replacement table: it would lose the current enforcement
+  state. The template changes only three API settings and Table-scoped identity access.
+4. Apply only pending numbered migrations and deploy the v1.1 API, Telemetry and Control-plane
+  packages using the existing deployment mechanism. The public `scripts.deploy plan` and
+  `deploy` commands accept the **original** `--parameters`, `--state`, and Owner input; their
+  saved outputs suppress APIM bootstrap. Review their complete what-if before using them:
+  they reconcile the platform, not just application code. For a package-only rollout, retain
+  the installation's existing package deployment process and apply the two explicit
+  infrastructure upgrades separately. Never replay the full platform solely to fix permissions.
+5. Restore the recorded application states and complete the [verification checklist](#verify).
+  Confirm prior migration checksums, subscriptions, model routes, budgets and historical usage
+  remain intact. Test an existing client as well as the newly installed features.
+
+Keep images disabled and the evidence-v2 cutoff unchanged during the ordinary upgrade.
+Enabling images or setting the one-time future cutoff requires the separate
+[image/evidence procedure](#image-and-evidence-upgrade-boundary). Do not move an existing cutoff.
+Databricks OAuth also remains disabled by default. Installing v1.1 does not grant the APIM
+identity access to a Databricks Workspace or any provider account.
+
+Application readiness is an API/Control-plane package change. A new Application must not be
+reported ready until its APIM subscription is usable on the data plane; an ARM `active` state
+alone is insufficient. Do not rotate existing Application keys as an upgrade workaround.
+
+### Deploy v1.1 from zero
+
+Follow [Prerequisites](#prerequisites), [Prepare public parameters](#prepare-public-parameters),
+[Preview](#preview) and [Deploy](#deploy) below with new state and a unique resource prefix.
+Do not reuse the v1.0 secret state or database for a clean installation. Verify regional
+availability and capacity for PostgreSQL 16, separate Flex Consumption Functions and the
+default StandardV2 APIM before provisioning. APIM creation can take substantially longer than
+deploying the application packages.
+
+The main template creates the ledger account/table and supplies `LEDGER_SYNC_ENABLED=true`,
+`LEDGER_TABLE_ENDPOINT` and `LEDGER_TABLE_NAME` to the API. It grants that API's managed
+identity Storage Table Data Contributor on the **new Table**, with dependencies on the new
+identity and table. No separate model-access upgrade template is required for this path.
+
+The initial database has no customer models, connections or usage. Sign in as the initial
+Owner, create a provider Connection, publish an existing upstream deployment, assign model
+access and then test invocation. An unconfigured policy and an explicit empty policy are
+different; empty means deny all. Configure real production budgets before admitting client
+traffic. A healthy homepage is not proof that publication, identity, permissions or billing work.
+
+For Databricks, use the HTTPS Workspace root, an existing supported serving endpoint and
+the managed identity of the **selected APIM**, not the Turnstile API identity. A Workspace
+administrator must register/authorize that identity and grant the required serving-endpoint
+access. Managed identity is the default; OAuth M2M requires its explicit deployment capability
+and scoped APIM Credential Manager permissions. Neither method creates upstream endpoints.
+The supported Databricks publication path is native Anthropic chat/streaming, not image
+generation or an assumption of every OpenAI-compatible operation.
+
+Foundry text, governed images and an OpenAI-compatible provider have separate model and
+credential prerequisites. Images require `IMAGE_GENERATION_ENABLED=true` on both API and
+Control-plane and explicit consent for paid probes. Publication probes also consume upstream
+requests; include them when choosing a validation budget. Never enable an upstream provider's
+local-key authentication or weaken networking merely to complete installation.
+
+### Immediate model-access upgrade
+
+Use [model-access-upgrade.bicep](../infra/model-access-upgrade.bicep) only for existing API
+Web Apps with system-assigned managed identities and an existing ledger. It supports multiple
+API names in one resource group and a ledger in another resource group in the same subscription.
+Repeat for any other API resource group. Verify the endpoint/table against **both** APIM's
+current policy and Telemetry's settings before applying; a successful grant on the wrong table
+does not synchronize permissions.
+
+Create a private parameter file at `.turnstile/model-access-upgrade.parameters.json`:
+
+```json
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+   "apiNames": { "value": ["<existing-api-name>"] },
+   "ledgerResourceGroupName": { "value": "<existing-ledger-resource-group>" },
+   "ledgerStorageAccountName": { "value": "<existing-ledger-account>" },
+   "ledgerTableName": { "value": "<existing-ledger-table>" }
+  }
+}
+```
+
+Use an identity allowed to update the selected API settings and create role assignments on
+the exact Table. If the groups differ, it also needs deployment permission in the ledger group.
+Review the resource IDs and reject Delete, storage creation or any unexpected write:
+
+```bash
+az deployment group what-if \
+  --subscription "$SUBSCRIPTION_ID" --resource-group "$API_RESOURCE_GROUP" \
+  --name model-access-v1-1 --template-file infra/model-access-upgrade.bicep \
+  --parameters @.turnstile/model-access-upgrade.parameters.json \
+  --result-format ResourceIdOnly
+
+az deployment group create \
+  --subscription "$SUBSCRIPTION_ID" --resource-group "$API_RESOURCE_GROUP" \
+  --name model-access-v1-1 --template-file infra/model-access-upgrade.bicep \
+  --parameters @.turnstile/model-access-upgrade.parameters.json \
+  --mode Incremental --output none
+```
+
+The template reads the current App Settings inside ARM and merges only the three ledger
+values. It does not export secrets, change other settings, create storage, or modify networks.
+Keep configuration writers excluded until readback completes. The Table role uses the same
+deterministic name as a new deployment, avoiding duplicate grants on rerun. Its scope is
+`.../storageAccounts/<account>/tableServices/default/tables/<table>`, never the storage
+account, resource group or subscription. Configuration waits for the role deployment, but
+Azure RBAC propagation must still be checked with the API identity before admitting traffic.
+
+After restoring service, save a model grant, replace the allowed set, then revoke all models
+for an authorized test person. Verify the affected ledger `M` row contains the latest full UUID
+and alias set immediately after each save; deny-all must retain `Configured=true` and
+`Models="||"`. Other users and budgets must remain unchanged. Check a direct APIM client:
+Invocation Test also reads PostgreSQL, so its success alone does not prove Desktop synchronization.
+
+PostgreSQL commits before immediate projection. A ledger write failure preserves the saved
+policy and emits `Model access saved but not projected`; the Telemetry timer retries from
+canonical state. Do not report that warning as synchronization success, disable the timer,
+or hide it with a frontend delay. A concurrent stale writer or an inaccessible Table still
+requires diagnosis; local tests are not proof of Azure propagation or live concurrency.
+
 ## Prerequisites
 
 - Azure CLI with an authenticated subscription context

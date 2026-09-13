@@ -32,6 +32,23 @@ Request-attempt validation must prove that two APIM attempts with the same `requ
 
 ### Ledger upgrade validation
 
+For v1.1 model-access projection, compile both `infra/main.bicep` (new ledger) and
+`infra/model-access-upgrade.bicep` (existing ledger). Run the focused local checks:
+
+```bash
+uv run --frozen pytest -q tests/backend/governance/test_budget_service.py \
+	tests/backend/telemetry/test_ledger.py tests/platform/infrastructure/test_infrastructure.py
+```
+
+These tests cover post-save full UUID/alias projection, replacement, explicit deny-all,
+budget/other-user preservation, failed transactions and timer repair. The infrastructure
+checks bind all three API settings and the API identity's exact Table role. They use unit
+fixtures; do not count them as deployed evidence. Validate an upgraded API/ledger and a newly
+created API/ledger independently, including settings readback, Table-scoped RBAC, immediate
+grant/replacement/revocation and a direct APIM client. Preserve both runs' pre-change snapshots
+and evidence; a platform Invocation Test alone reads PostgreSQL and cannot prove Desktop
+permissions have propagated. See the two [v1.1 deployment paths](deployment.md#choose-the-v11-deployment-path).
+
 Apply `003_budget_reservation_finalization` before deploying the updated API and Telemetry packages. Verify that the initial two migration checksums and historical request rows are unchanged. The new evidence is append-only and the Application ledger snapshot is updated atomically; older timer snapshots must not replace newer ones.
 
 In a separately authorized PostgreSQL/Table/Log Analytics environment, verify exact recovery, terminal-zero failures, silent reservations past the grace period, unavailable and partial log results, both Person and Application scopes, retired applications, and old-month partitions. Upper-bound finalization must leave the original `R.Reserved` amount unchanged. Project confirmed usage before deleting settled reservations, including usage that crossed a month boundary. A late unmeasured event must not erase recovered exact usage; later final usage must replace it without double counting. Re-run after interrupted Table marking and deletion to prove convergence.

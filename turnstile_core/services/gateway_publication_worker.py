@@ -207,6 +207,17 @@ class GatewayPublicationWorker:
                 if publication.publication_kind is not PublicationKind.MODEL_REMOVE
                 else None
             )
+            latest_oauth = (
+                publication.desired_spec.bindings[-1].oauth
+                if publication.desired_spec.bindings else None
+            )
+            for oauth in compiled.oauth_credentials:
+                materialized_oauth = (
+                    replace(oauth, client_secret=credential)
+                    if credential is not None and latest_oauth == oauth.config
+                    else oauth
+                )
+                self._client.ensure_oauth_credential(materialized_oauth)
             for named_value in compiled.named_values:
                 materialized = (
                     replace(named_value, value=credential)
@@ -222,6 +233,9 @@ class GatewayPublicationWorker:
                 **publication.resource_manifest,
                 "backends": [backend.id for backend in compiled.backends],
                 "named_values": [value.id for value in compiled.named_values],
+                **({"oauth_credentials": [
+                    item.config.provider_id for item in compiled.oauth_credentials
+                ]} if compiled.oauth_credentials else {}),
             }
         elif status == "provisioning":
             revision = f"turnstile-{publication.generation}-{publication.id.hex[:8]}"

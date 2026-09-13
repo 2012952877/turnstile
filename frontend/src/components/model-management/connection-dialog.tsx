@@ -33,11 +33,14 @@ import {
   SelectValue,
 } from "../ui/select"
 import {
+  DatabricksAuthModeSwitch,
   FoundryAuthModeSwitch,
+  type DatabricksAuthMode,
   type FoundryAuthMode,
 } from "./foundry-auth-mode-switch"
 import { FieldHelp } from "./field-help"
 import { ModelVendorSelect } from "./model-vendor-select"
+import { isDatabricksWorkspaceUrl } from "./model-publication-connections"
 import { isOpenAICompatibleBaseUrl, modelVendorFromMetadata } from "./openai-compatible"
 
 type ConnectionProviderOption = {
@@ -106,6 +109,7 @@ export function ConnectionDialog({
   onClose,
   onCreate,
   onUpdate,
+  onAdopt,
 }: {
   registry: ModelRegistry
   runtime?: ModelRuntime
@@ -114,8 +118,10 @@ export function ConnectionDialog({
   onClose: () => void
   onCreate: (value: ModelConnectionCreate) => void
   onUpdate: (value: ModelConnectionUpdate) => void
+  onAdopt?: (workspaceUrl: string) => void
 }) {
   const editing = Boolean(runtime)
+  const [adopting, setAdopting] = useState(false)
   const runtimeProvider = runtime
     ? registry.providers.find((provider) => provider.id === runtime.provider_id)
     : undefined
@@ -123,7 +129,7 @@ export function ConnectionDialog({
     ? [runtimeProvider]
     : registry.providers.filter(
         (provider) => provider.enabled
-          && (["microsoft_foundry", "amazon_bedrock"].includes(provider.brand_key)
+          && (["microsoft_foundry", "amazon_bedrock", "azure_databricks"].includes(provider.brand_key)
             || provider.provider_kind === "openai_compatible"),
       )
   const providerOptions: ConnectionProviderOption[] = [
@@ -134,11 +140,11 @@ export function ConnectionDialog({
       existingId: provider.id,
       openaiCompatible: provider.provider_kind === "openai_compatible",
     })),
-    ...(runtime ? [] : (["microsoft_foundry", "amazon_bedrock"] as const)
+    ...(runtime ? [] : (["microsoft_foundry", "amazon_bedrock", "azure_databricks"] as const)
       .filter((brandKey) => !providers.some((provider) => provider.brand_key === brandKey))
       .map((brandKey) => ({
         value: `template:${brandKey}`,
-        name: brandKey === "microsoft_foundry" ? "Microsoft Foundry" : "Amazon Bedrock",
+        name: brandKey === "microsoft_foundry" ? "Microsoft Foundry" : brandKey === "azure_databricks" ? "Azure Databricks" : "Amazon Bedrock",
         brandKey,
       }))),
     ...(runtime ? [] : [{
@@ -193,6 +199,17 @@ export function ConnectionDialog({
     modelVendorFromMetadata(runtime?.config ?? runtimeProvider?.config, runtime?.name ?? ""),
   )
   const [connectionName, setConnectionName] = useState(runtime?.name ?? "")
+  const [workspaceUrl, setWorkspaceUrl] = useState(
+    typeof runtime?.config.workspace_url === "string" ? runtime.config.workspace_url : "",
+  )
+  const [databricksAuthMode, setDatabricksAuthMode] = useState<DatabricksAuthMode>(
+    runtime?.config.auth_strategy === "oauth_client_credentials" ? "oauth_m2m" : "managed_identity",
+  )
+  const [oauthClientId, setOAuthClientId] = useState(() => {
+    const oauth = runtime?.config.oauth
+    return oauth && typeof oauth === "object" && "client_id" in oauth
+      && typeof oauth.client_id === "string" ? oauth.client_id : ""
+  })
   const [enabled, setEnabled] = useState(runtime?.enabled ?? true)
   const [isDefault, setIsDefault] = useState(runtime?.is_default ?? false)
   const [formError, setFormError] = useState<string | null>(null)
@@ -202,8 +219,12 @@ export function ConnectionDialog({
   const openaiCompatible = provider?.openaiCompatible === true
   const foundry = provider?.brandKey === "microsoft_foundry"
     || runtime?.runtime_kind === "foundry"
-  const bedrock = !openaiCompatible && (provider?.brandKey === "amazon_bedrock"
-    || runtime?.config.api_format === "anthropic_messages")
+  const bedrock = provider?.brandKey === "amazon_bedrock"
+  const databricks = provider?.brandKey === "azure_databricks"
+  const legacyDatabricks = databricks && runtime && runtime.config.control_plane_managed !== true
+  const databricksUnavailable = databricks && (!editing || adopting)
+    && (registry.databricks_connections_supported !== true
+      || databricksAuthMode === "oauth_m2m" && registry.databricks_oauth_supported !== true)
 
   const chooseFoundryAuthMode = (mode: FoundryAuthMode) => {
     setFoundryAuthMode(mode)
@@ -213,6 +234,13 @@ export function ConnectionDialog({
 
   const submit = () => {
     if (busy) return
+    if (adopting) {
+      if (!onAdopt || databricksUnavailable) return setFormError("后端尚未支持 Databricks 连接。")
+      if (!isDatabricksWorkspaceUrl(workspaceUrl)) return setFormError("请输入有效的 Databricks Workspace URL。")
+      setFormError(null)
+      onAdopt(workspaceUrl.trim())
+      return
+    }
     if (runtime) {
       if (!connectionName.trim()) return setFormError("请输入连接名称。")
       setFormError(null)
@@ -226,6 +254,7 @@ export function ConnectionDialog({
     if (!provider) return setFormError("请选择提供方。")
     const templateBrand = openaiCompatible ? "openai_compatible" : provider.brandKey === "microsoft_foundry"
       || provider.brandKey === "amazon_bedrock"
+      || provider.brandKey === "azure_databricks"
       ? provider.brandKey
       : null
     if (!templateBrand) {
@@ -248,13 +277,20 @@ export function ConnectionDialog({
     if (openaiCompatible && !isOpenAICompatibleBaseUrl(openaiBaseUrl)) {
       return setFormError("请输入不含凭据、查询参数或片段的 HTTPS Base URL。")
     }
+    if (databricks) {
+      if (databricksUnavailable) return setFormError("后端尚未支持所选 Databricks 认证方式。")
+      if (!isDatabricksWorkspaceUrl(workspaceUrl)) return setFormError("请输入有效的 Databricks Workspace URL。")
+      if (databricksAuthMode === "oauth_m2m" && !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(oauthClientId.trim())) {
+        return setFormError("请输入 Databricks 服务主体的 Client ID。")
+      }
+    }
     setFormError(null)
     onCreate({
       gateway_profile_id: gateway.id,
       provider: provider.existingId
         ? { existing_id: provider.existingId }
         : { template: templateBrand },
-      auth_mode: foundry ? foundryAuthMode : undefined,
+      auth_mode: databricks ? databricksAuthMode : foundry ? foundryAuthMode : undefined,
       foundry_project_endpoint: foundry ? projectEndpoint.trim() : undefined,
       foundry_inference_endpoint: foundry && foundryAuthMode === "api_key"
         ? inferenceEndpoint.trim()
@@ -262,6 +298,8 @@ export function ConnectionDialog({
       bedrock_runtime_url: bedrock ? bedrockRuntimeUrl.trim() : undefined,
       openai_base_url: openaiCompatible ? openaiBaseUrl.trim() : undefined,
       model_vendor: openaiCompatible ? modelVendor : undefined,
+      databricks_workspace_url: databricks ? workspaceUrl.trim() : undefined,
+      oauth_client_id: databricks && databricksAuthMode === "oauth_m2m" ? oauthClientId.trim() : undefined,
     })
   }
 
@@ -269,7 +307,7 @@ export function ConnectionDialog({
     <DialogContent className="registry-editor-dialog connection-dialog" finalFocus={false}>
       <div className="registry-editor connection-form">
         <DialogHeader className="registry-editor-header">
-          <DialogTitle>{editing ? "编辑连接" : "添加连接"}</DialogTitle>
+          <DialogTitle>{adopting ? "接管 Databricks 连接" : editing ? "编辑连接" : "添加连接"}</DialogTitle>
         </DialogHeader>
         <button type="button" className="registry-editor-close" onClick={onClose} disabled={busy} aria-label="关闭"><X size={16} /></button>
 
@@ -305,7 +343,18 @@ export function ConnectionDialog({
             </div>
           </div>
 
-          {editing && <label className="registry-field"><span className="registry-field-label">连接名称</span><Input value={connectionName} onChange={(event) => setConnectionName(event.target.value)} disabled={busy} /></label>}
+          {editing && !adopting && <label className="registry-field"><span className="registry-field-label">连接名称</span><Input value={connectionName} onChange={(event) => setConnectionName(event.target.value)} disabled={busy} /></label>}
+
+          {databricks && <>
+            <label className="registry-field"><span className="registry-field-label">Workspace URL</span><Input type="url" value={workspaceUrl} onChange={(event) => setWorkspaceUrl(event.target.value)} disabled={busy || editing && !adopting} placeholder={legacyDatabricks && !adopting ? "尚未接管" : "https://adb-example.1.azuredatabricks.net"} /></label>
+            <div className="registry-field">
+              <span className="registry-field-label-row"><span className="registry-field-label">认证方式</span><FieldHelp>{databricksAuthMode === "oauth_m2m" ? "使用目标 Databricks 账户的服务主体。首个模型发布时提供 OAuth Secret，不是 Entra 应用密钥或 PAT。" : "APIM 托管身份需要同租户的 Workspace 访问和目标模型查询权限。"}</FieldHelp></span>
+              <DatabricksAuthModeSwitch value={databricksAuthMode} disabled={busy || editing} oauthSupported={registry.databricks_oauth_supported === true} onChange={setDatabricksAuthMode} />
+            </div>
+            {databricksAuthMode === "oauth_m2m" && <label className="registry-field"><span className="registry-field-label">Databricks Client ID</span><Input value={oauthClientId} onChange={(event) => setOAuthClientId(event.target.value)} disabled={busy || editing} autoComplete="off" /></label>}
+            {databricksUnavailable && <p className="publication-form-note" role="status">后端尚未支持所选 Databricks 认证方式。</p>}
+            {adopting && <p className="publication-form-note">接管将验证现有模型并发布候选 Revision，会产生模型调用费用。模型身份、价格和访问分配保持不变。</p>}
+          </>}
 
           {foundry && <>
             <label className="registry-field"><span className="registry-field-label">Project Endpoint</span><Input type="url" value={projectEndpoint} onChange={(event) => setProjectEndpoint(event.target.value)} disabled={busy || editing} placeholder="https://contoso-ai.services.ai.azure.com/api/projects/finops" /></label>
@@ -333,14 +382,15 @@ export function ConnectionDialog({
             </div>
           </>}
 
-          {editing && <div className="form-switches"><div className="registry-checkbox-field"><Checkbox id="connection-enabled" checked={enabled} onCheckedChange={(checked) => { const next = checked === true; setEnabled(next); if (!next) setIsDefault(false) }} disabled={busy} /><label htmlFor="connection-enabled">启用</label></div><div className="registry-checkbox-field"><Checkbox id="connection-default" checked={isDefault} onCheckedChange={(checked) => { const next = checked === true; setIsDefault(next); if (next) setEnabled(true) }} disabled={busy} /><label htmlFor="connection-default">设为默认</label></div></div>}
+          {editing && !adopting && <div className="form-switches"><div className="registry-checkbox-field"><Checkbox id="connection-enabled" checked={enabled} onCheckedChange={(checked) => { const next = checked === true; setEnabled(next); if (!next) setIsDefault(false) }} disabled={busy} /><label htmlFor="connection-enabled">启用</label></div><div className="registry-checkbox-field"><Checkbox id="connection-default" checked={isDefault} onCheckedChange={(checked) => { const next = checked === true; setIsDefault(next); if (next) setEnabled(true) }} disabled={busy} /><label htmlFor="connection-default">设为默认</label></div></div>}
 
           {(formError || error) && <div className="registry-error" role="alert">{formError ?? error}</div>}
         </div>
 
         <DialogFooter className="registry-editor-footer">
+          {legacyDatabricks && !adopting && onAdopt && <Button type="button" variant="outline" className="connection-adopt-action" onClick={() => setAdopting(true)} disabled={busy || registry.databricks_connections_supported !== true}>接管连接</Button>}
           <Button type="button" variant="outline" onClick={onClose} disabled={busy}>取消</Button>
-          <Button type="button" onClick={submit} disabled={busy || !providerOptions.length || (!editing && !gateways.length)}>{editing && <Save size={14} />}{busy ? "正在保存" : editing ? "保存更改" : "添加连接"}</Button>
+          <Button type="button" onClick={submit} disabled={busy || databricksUnavailable || !providerOptions.length || (!editing && !gateways.length)}>{editing && !adopting && <Save size={14} />}{busy ? "正在保存" : adopting ? "验证并接管" : editing ? "保存更改" : "添加连接"}</Button>
         </DialogFooter>
       </div>
     </DialogContent>

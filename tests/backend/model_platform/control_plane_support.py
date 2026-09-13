@@ -33,6 +33,7 @@ from turnstile_core.integrations.apim_control_plane import (
 )
 from turnstile_core.integrations.apim_control_plane_contract import (
     ImageProbeJournal,
+    OAuthCredentialResource,
     OperationResource,
 )
 from turnstile_core.persistence.in_memory import InMemoryRepository
@@ -101,6 +102,7 @@ class GatewayControlPlaneService(BaseGatewayControlPlaneService):
         application_default_token_limit: int = 100_000,
         application_default_tokens_per_minute: int = 100_000,
         application_product_id: str = "finops-ai-consumers",
+        databricks_oauth_enabled: bool = False,
     ) -> None:
         super().__init__(
             repository,
@@ -112,6 +114,7 @@ class GatewayControlPlaneService(BaseGatewayControlPlaneService):
             application_default_token_limit=application_default_token_limit,
             application_default_tokens_per_minute=application_default_tokens_per_minute,
             application_product_id=application_product_id,
+            databricks_oauth_enabled=databricks_oauth_enabled,
         )
 
 class GatewayPublicationWorker(BaseGatewayPublicationWorker):
@@ -164,6 +167,7 @@ class FakeApimClient:
         self.policy = (ROOT / "infra/policies/foundry-finops-policy.xml").read_text()
         self.backends: dict[str, BackendResource] = {}
         self.named_values: list[NamedValueResource] = []
+        self.oauth_credentials: list[OAuthCredentialResource] = []
         self.api_policies: dict[str, str] = {}
         self.operation_policies: dict[str, str] = {}
         self.probe_counts: dict[str, int] = {}
@@ -177,6 +181,10 @@ class FakeApimClient:
     def ensure_named_value(self, named_value: NamedValueResource) -> None:
         self.named_values.append(named_value)
         self.calls.append(("named-value", named_value.id))
+
+    def ensure_oauth_credential(self, credential: OAuthCredentialResource) -> None:
+        self.oauth_credentials.append(credential)
+        self.calls.append(("oauth-credential", credential.config.provider_id))
 
     def ensure_revision(self, revision: str, description: str) -> None:
         del description

@@ -330,6 +330,10 @@ export const dataSource = {
     value,
     "PUT",
   ).then(normalizeRegistry),
+  adoptDatabricksConnection: (id: string, workspaceUrl: string) => writeJson<GatewayPublicationAccepted>(
+    `/api/v1/model-management/connections/${encodeURIComponent(id)}/adopt`,
+    { workspace_url: workspaceUrl },
+  ).then(normalizeGatewayPublicationAccepted),
   deleteConnection: (id: string) => request<ModelRegistry>(
     `/api/v1/model-management/connections/${encodeURIComponent(id)}`,
     { method: "DELETE" },
@@ -481,10 +485,10 @@ export const dataSource = {
       + `/keys/${keyKind}/rotate`,
     { confirmation },
   ),
-  retryGatewayPublication: (id: string, apiKey?: string, authorizeImageProbes = false) => writeJson<GatewayPublication>(
+  retryGatewayPublication: (id: string, credential?: string, authorizeImageProbes = false, kind: "api_key" | "oauth_m2m" = "api_key") => writeJson<GatewayPublication>(
     `/api/v1/model-management/publications/${encodeURIComponent(id)}/retry`,
     {
-      ...(apiKey ? { api_key: apiKey } : {}),
+      ...(credential ? kind === "oauth_m2m" ? { oauth_client_secret: credential } : { api_key: credential } : {}),
       ...(authorizeImageProbes === true ? { authorize_image_probes: true } : {}),
     },
   ).then(normalizeGatewayPublication),
@@ -492,10 +496,10 @@ export const dataSource = {
     `/api/v1/model-management/publications/${encodeURIComponent(id)}/authorization/resume`,
     {},
   ).then(normalizeGatewayPublication),
-  rotateGatewayCredential: (gatewayId: string, modelKey: string, apiKey: string) =>
+  rotateGatewayCredential: (gatewayId: string, modelKey: string, credential: string, kind: "api_key" | "oauth_m2m" = "api_key") =>
     writeJson<GatewayPublication>(
       `/api/v1/model-management/gateways/${encodeURIComponent(gatewayId)}/credentials/rotate`,
-      { model_key: modelKey, api_key: apiKey },
+      { model_key: modelKey, ...(kind === "oauth_m2m" ? { oauth_client_secret: credential } : { api_key: credential }) },
     ).then(normalizeGatewayPublication),
   checkRuntime: (id: string) => request<RuntimeHealth>(
     `/api/v1/model-management/runtimes/${id}/check`, { method: "POST" },

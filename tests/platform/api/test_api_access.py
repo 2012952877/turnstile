@@ -106,7 +106,15 @@ def test_every_business_api_route_requires_the_shared_session_dependency() -> No
         route for route in copilot_protected.routes if isinstance(route, APIRoute)
     ]
 
-    assert len(apim_routes) == 82
+    assert len(apim_routes) == 83
+    adoption = next(
+        route for route in apim_routes
+        if route.path == "/api/v1/model-management/connections/{runtime_id}/adopt"
+    )
+    assert adoption.methods == {"POST"}
+    assert any(
+        dependency.call is require_owner_session for dependency in adoption.dependant.dependencies
+    )
     assert any(route.path == "/api/v1/model-gateway/images/generations" for route in apim_routes)
     release_methods = {
         (route.path, method)

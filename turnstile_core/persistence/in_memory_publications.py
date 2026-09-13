@@ -224,6 +224,9 @@ class InMemoryPublicationRepositoryMixin:
         preserved_manifest: dict[str, Any] = (
             {"named_values": materialized} if credential_ciphertext is None and materialized else {}
         )
+        oauth_credentials = publication["resource_manifest"].get("oauth_credentials")
+        if credential_ciphertext is None and isinstance(oauth_credentials, list):
+            preserved_manifest["oauth_credentials"] = list(oauth_credentials)
         authorization = image_probe_authorization or publication["resource_manifest"].get(
             "image_probe_authorization"
         )
@@ -1050,7 +1053,11 @@ class InMemoryPublicationRepositoryMixin:
                 if item["publication_id"] == publication_id
             )["status"] = "completed"
             return publication
-        if publication["publication_kind"] == "route_reconcile":
+        if publication["publication_kind"] == "route_reconcile" or (
+            publication["publication_kind"] == "credential_rotation"
+            and publication["desired_spec"]["bindings"][-1]["auth_strategy"]
+            == "oauth_client_credentials"
+        ):
             previous_release_id = self.effective_gateway_releases.get(
                 publication["gateway_profile_id"]
             )

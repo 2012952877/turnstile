@@ -436,6 +436,16 @@ export function ModelManagementPage({ onToggleSidebar }: { onToggleSidebar: () =
       setNotice({ text: "连接已添加", detail: "添加首个模型后将通过候选 Revision 验证", ok: true })
     },
   })
+  const adoptConnection = useMutation({
+    mutationFn: ({ runtime, workspaceUrl }: { runtime: ModelRuntime; workspaceUrl: string }) => dataSource.adoptDatabricksConnection(runtime.id, workspaceUrl),
+    onSuccess: (accepted) => {
+      client.setQueryData(finopsKeys.gatewayPublication(accepted.publication.id), accepted.publication)
+      setConnectionOpen(false)
+      setEditingConnection(null)
+      trackPublication(accepted.publication.id)
+      void client.invalidateQueries({ queryKey: finopsKeys.gatewayPublications })
+    },
+  })
   const updateConnection = useMutation({
     mutationFn: ({ runtime, value }: { runtime: ModelRuntime; value: { name: string; enabled: boolean; is_default: boolean } }) => dataSource.updateConnection(runtime.id, value),
     onSuccess: (registry) => {
@@ -461,14 +471,20 @@ export function ModelManagementPage({ onToggleSidebar }: { onToggleSidebar: () =
       setNotice({ context: gateway.name, text: "网关记录已删除", ok: true })
     },
   })
+  const rotationCredential = useRef("")
   const rotateCredential = useMutation({
-    mutationFn: ({ model, apiKey }: { model: ManagedModel; apiKey: string }) => {
+    retry: false,
+    mutationFn: (model: ManagedModel) => {
+      const credential = rotationCredential.current
+      rotationCredential.current = ""
       const runtime = data?.runtimes.find((item) => item.id === model.runtime_id)
       if (!runtime?.gateway_profile_id) throw new Error("模型没有可发布的 APIM 网关")
+      if (!credential) throw new Error("请输入新的凭据。")
       return dataSource.rotateGatewayCredential(
         runtime.gateway_profile_id,
         model.model_key,
-        apiKey,
+        credential,
+        runtime.config.auth_strategy === "oauth_client_credentials" ? "oauth_m2m" : "api_key",
       )
     },
     onSuccess: (publication) => {
@@ -511,7 +527,13 @@ export function ModelManagementPage({ onToggleSidebar }: { onToggleSidebar: () =
   )
 
   const updateRuntime = (runtime: ModelRuntime, patch: Partial<ModelRuntime>) =>
-    save.mutate({ kind: "runtime", id: runtime.id, value: runtimePayload(runtime, patch) })
+    runtime.brand_key === "azure_databricks"
+      ? updateConnection.mutate({ runtime, value: {
+          name: patch.name ?? runtime.name,
+          enabled: patch.enabled ?? runtime.enabled,
+          is_default: patch.is_default ?? runtime.is_default,
+        } })
+      : save.mutate({ kind: "runtime", id: runtime.id, value: runtimePayload(runtime, patch) })
   const updateModel = (model: ManagedModel, patch: Partial<ManagedModel>) =>
     save.mutate({ kind: "model", id: model.id, value: modelPayload(model, patch) })
   const updateGateway = (gateway: GatewayProfile, patch: Partial<GatewayProfile>) =>
@@ -554,8 +576,8 @@ export function ModelManagementPage({ onToggleSidebar }: { onToggleSidebar: () =
       setRuntimeDetailId(null)
       changeTab("connections")
     }} onClose={closePublication} />}
-    {connectionOpen && <ConnectionDialog registry={data} runtime={editingConnection ?? undefined} busy={saveConnection.isPending || updateConnection.isPending} error={(editingConnection ? updateConnection.error : saveConnection.error) ? String(editingConnection ? updateConnection.error : saveConnection.error) : null} onClose={() => { if (!saveConnection.isPending && !updateConnection.isPending) { setConnectionOpen(false); setEditingConnection(null) } }} onCreate={(value) => saveConnection.mutate(value)} onUpdate={(value) => { if (editingConnection) updateConnection.mutate({ runtime: editingConnection, value }) }} />}
-    {credentialModel && <CredentialRotationDialog model={credentialModel} busy={rotateCredential.isPending} error={rotateCredential.error ? String(rotateCredential.error) : null} onClose={() => setCredentialModel(null)} onSave={(apiKey) => rotateCredential.mutate({ model: credentialModel, apiKey })} />}
+    {connectionOpen && <ConnectionDialog registry={data} runtime={editingConnection ?? undefined} busy={saveConnection.isPending || updateConnection.isPending || adoptConnection.isPending} error={adoptConnection.error ? String(adoptConnection.error) : (editingConnection ? updateConnection.error : saveConnection.error) ? String(editingConnection ? updateConnection.error : saveConnection.error) : null} onClose={() => { if (!saveConnection.isPending && !updateConnection.isPending && !adoptConnection.isPending) { setConnectionOpen(false); setEditingConnection(null); adoptConnection.reset() } }} onCreate={(value) => saveConnection.mutate(value)} onUpdate={(value) => { if (editingConnection) updateConnection.mutate({ runtime: editingConnection, value }) }} onAdopt={(workspaceUrl) => { if (editingConnection) adoptConnection.mutate({ runtime: editingConnection, workspaceUrl }) }} />}
+    {credentialModel && <CredentialRotationDialog model={credentialModel} oauth={data.runtimes.find((runtime) => runtime.id === credentialModel.runtime_id)?.config.auth_strategy === "oauth_client_credentials"} busy={rotateCredential.isPending} error={rotateCredential.error ? String(rotateCredential.error) : null} onClose={() => { rotationCredential.current = ""; setCredentialModel(null); rotateCredential.reset() }} onSave={(credential) => { rotationCredential.current = credential; rotateCredential.mutate(credentialModel) }} />}
     {deletingModel && <ModelDeleteDialog model={deletingModel} busy={deleteModel.isPending} error={deleteModel.error ? String(deleteModel.error) : null} onClose={() => { if (!deleteModel.isPending) setDeletingModel(null) }} onConfirm={() => deleteModel.mutate(deletingModel)} />}
     {deletingConnection && <ConnectionDeleteDialog runtime={deletingConnection} busy={deleteConnection.isPending} error={deleteConnection.error ? String(deleteConnection.error) : null} onClose={() => { if (!deleteConnection.isPending) setDeletingConnection(null) }} onConfirm={() => deleteConnection.mutate(deletingConnection)} />}
     {deletingGateway && <GatewayDeleteDialog gateway={deletingGateway} busy={deleteGateway.isPending} error={deleteGateway.error ? String(deleteGateway.error) : null} onClose={() => { if (!deleteGateway.isPending) setDeletingGateway(null) }} onConfirm={() => deleteGateway.mutate(deletingGateway)} />}
@@ -958,8 +980,9 @@ function GatewayDeleteDialog({ gateway, busy, error, onClose, onConfirm }: {
   </AlertDialog>
 }
 
-function CredentialRotationDialog({ model, busy, error, onClose, onSave }: {
+function CredentialRotationDialog({ model, oauth = false, busy, error, onClose, onSave }: {
   model: ManagedModel
+  oauth?: boolean
   busy: boolean
   error: string | null
   onClose: () => void
@@ -971,12 +994,12 @@ function CredentialRotationDialog({ model, busy, error, onClose, onSave }: {
     <DialogContent className="registry-editor-dialog simple-model-dialog" finalFocus={false}>
       <form className="registry-editor simple-model-form" onSubmit={(event) => { event.preventDefault(); if (apiKey.trim()) onSave(apiKey.trim()) }}>
         <DialogHeader className="registry-editor-header">
-          <DialogTitle>更新 API Key</DialogTitle>
+          <DialogTitle>{oauth ? "更新 OAuth Secret" : "更新 API Key"}</DialogTitle>
           <DialogDescription>{model.display_name}</DialogDescription>
         </DialogHeader>
         <DialogClose render={<Button type="button" variant="ghost" size="icon-sm" className="registry-editor-close" disabled={busy} />}><X size={16} /><span className="sr-only">关闭</span></DialogClose>
         <div className="registry-editor-body simple-model-body">
-          <div className="registry-field"><label className="registry-field-label" htmlFor="rotation-api-key">Provider API Key</label><div className="login-password"><Input id="rotation-api-key" type={revealed ? "text" : "password"} autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} autoFocus /><button type="button" className="login-reveal" onClick={() => setRevealed((value) => !value)} aria-label={revealed ? "隐藏 API Key" : "显示 API Key"} aria-pressed={revealed}>{revealed ? <EyeOff size={15} /> : <Eye size={15} />}</button></div><small>新凭据通过候选 APIM Revision 验证后才会切换。</small></div>
+          <div className="registry-field"><label className="registry-field-label" htmlFor="rotation-api-key">{oauth ? "OAuth Client Secret" : "Provider API Key"}</label><div className="login-password"><Input id="rotation-api-key" type={revealed ? "text" : "password"} autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} disabled={busy} autoFocus /><button type="button" className="login-reveal" onClick={() => setRevealed((value) => !value)} aria-label={revealed ? "隐藏凭据" : "显示凭据"} aria-pressed={revealed} disabled={busy}>{revealed ? <EyeOff size={15} /> : <Eye size={15} />}</button></div><small>新凭据通过候选 APIM Revision 验证后才会切换。</small></div>
           {error && <div className="registry-error">{error}</div>}
         </div>
         <DialogFooter className="registry-editor-footer"><DialogClose render={<Button type="button" variant="outline" disabled={busy} />}>取消</DialogClose><Button type="submit" disabled={busy || !apiKey.trim()}><KeyRound size={14} />更新凭据</Button></DialogFooter>
@@ -1159,7 +1182,9 @@ function ModelWorkspace({ registry, tab, notice, error, busy, checkingRuntimeId,
             : null
           const managedCredential = runtime?.config.auth_strategy === "named_value_bearer"
             || runtime?.config.auth_strategy === "named_value_api_key"
-          return <ModelRow key={model.id} model={model} busy={busy} removing={removingModelKey === model.model_key} publication={rowPublication} canRotateCredential={Boolean(model.publication_id && managedCredential)} deleteDisabledReason={deleteDisabledReason} onOpenPublication={onOpenPublication} onEdit={() => onEdit("model", model)} onToggle={() => onToggleModel(model)} onRotateCredential={() => onRotateCredential(model)} onDelete={() => onDeleteModel(model)} />
+            || runtime?.config.auth_strategy === "oauth_client_credentials"
+              && registry.databricks_oauth_supported === true
+          return <ModelRow key={model.id} model={model} oauthCredential={runtime?.config.auth_strategy === "oauth_client_credentials"} busy={busy} removing={removingModelKey === model.model_key} publication={rowPublication} canRotateCredential={Boolean(model.publication_id && managedCredential)} deleteDisabledReason={deleteDisabledReason} onOpenPublication={onOpenPublication} onEdit={() => onEdit("model", model)} onToggle={() => onToggleModel(model)} onRotateCredential={() => onRotateCredential(model)} onDelete={() => onDeleteModel(model)} />
         })}
         {activeTab === "models" && pendingModelPublications.map((publication) => <PublicationModelRow key={publication.id} publication={publication} onOpen={() => onOpenPublication(publication.id)} />)}
         {activeTab === "connections" && connectionGroups.map(({ provider, connections: providerConnections, connectionCount, modelCount }) => {
@@ -1249,14 +1274,14 @@ function PublicationModelRow({ publication, onOpen }: { publication: GatewayPubl
   </article>
 }
 
-function ModelRow({ model, busy, removing, publication, canRotateCredential, deleteDisabledReason, onOpenPublication, onEdit, onToggle, onRotateCredential, onDelete }: { model: ManagedModel; busy: boolean; removing: boolean; publication: GatewayPublication | null; canRotateCredential: boolean; deleteDisabledReason: string | null; onOpenPublication: (publicationId: string) => void; onEdit: () => void; onToggle: () => void; onRotateCredential: () => void; onDelete: () => void }) {
+function ModelRow({ model, oauthCredential, busy, removing, publication, canRotateCredential, deleteDisabledReason, onOpenPublication, onEdit, onToggle, onRotateCredential, onDelete }: { model: ManagedModel; oauthCredential: boolean; busy: boolean; removing: boolean; publication: GatewayPublication | null; canRotateCredential: boolean; deleteDisabledReason: string | null; onOpenPublication: (publicationId: string) => void; onEdit: () => void; onToggle: () => void; onRotateCredential: () => void; onDelete: () => void }) {
   const family = modelFamily(model)
   return <article className="model-list-row" role="row">
     <div className="model-primary-cell"><span className="model-list-icon" data-model-family={family} title={modelFamilyLabel(family)}><ModelFamilyLogo family={family} /></span><div><b>{model.display_name}</b><code>{model.model_key}</code></div>{model.is_default && <em>默认</em>}</div>
     <div className="model-runtime-cell"><b>{model.runtime_name}</b><span>{model.provider_name}</span></div>
     <div className="model-pricing-cell"><b>{model.context_window?.toLocaleString() ?? "—"}</b><span>输入 ${model.input_cost_per_million ?? "—"} · 缓存读 ${model.cached_cost_per_million ?? model.input_cost_per_million ?? "—"} · 缓存写 ${model.cache_write_cost_per_million ?? model.cached_cost_per_million ?? model.input_cost_per_million ?? "—"} · 输出 ${model.output_cost_per_million ?? "—"}</span></div>
     <div className="model-status-cell">{publication ? <ModelPublicationStatus publication={publication} onOpen={onOpenPublication} /> : removing ? <span className="model-removing-status"><RefreshCw className="spin" size={12} />正在删除</span> : <Health status={model.enabled ? "available" : "unavailable"} enabled={model.enabled} />}</div>
-  <div className="model-row-actions"><button className="model-edit-action" title="编辑" disabled={busy || removing || Boolean(publication && publication.status !== "failed" && publication.status !== "rolled_back")} onClick={onEdit}><Edit3 size={14} /></button><button className="model-delete-action" title={deleteDisabledReason ?? "删除模型"} disabled={busy || removing || Boolean(publication) || Boolean(deleteDisabledReason)} onClick={onDelete}><Trash2 size={14} /></button>{canRotateCredential && <button className="model-credential-action" title="更新 API Key" disabled={busy || removing || Boolean(publication)} onClick={onRotateCredential}><KeyRound size={14} /></button>}<Toggle checked={model.enabled} disabled={busy || removing || Boolean(publication)} onChange={onToggle} /></div>
+  <div className="model-row-actions"><button className="model-edit-action" title="编辑" disabled={busy || removing || Boolean(publication && publication.status !== "failed" && publication.status !== "rolled_back")} onClick={onEdit}><Edit3 size={14} /></button><button className="model-delete-action" title={deleteDisabledReason ?? "删除模型"} disabled={busy || removing || Boolean(publication) || Boolean(deleteDisabledReason)} onClick={onDelete}><Trash2 size={14} /></button>{canRotateCredential && <button className="model-credential-action" title={oauthCredential ? "更新 OAuth Secret" : "更新 API Key"} disabled={busy || removing || Boolean(publication)} onClick={onRotateCredential}><KeyRound size={14} /></button>}<Toggle checked={model.enabled} disabled={busy || removing || Boolean(publication)} onChange={onToggle} /></div>
   </article>
 }
 

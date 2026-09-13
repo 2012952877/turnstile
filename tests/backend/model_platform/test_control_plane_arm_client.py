@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import httpx
@@ -30,7 +30,7 @@ from turnstile_core.domain.control_plane import (
     ModelCreateTarget,
     RuntimeTarget,
 )
-from turnstile_core.domain.runtime_models import ProviderTarget
+from turnstile_core.domain.runtime_models import OAuthClientCredentialsConfig, ProviderTarget
 from turnstile_core.integrations.apim_control_plane import (
     ApimPolicyCompiler,
     AuthorizationRequiredError,
@@ -43,8 +43,71 @@ from turnstile_core.integrations.apim_control_plane import (
     PolicyCompilationError,
     RetryablePublicationError,
 )
-from turnstile_core.integrations.apim_control_plane_contract import OperationResource
+from turnstile_core.integrations.apim_control_plane_contract import (
+    OAuthCredentialResource,
+    OperationResource,
+)
 from turnstile_core.persistence.in_memory import InMemoryRepository
+
+
+def test_databricks_oauth_provisions_owned_resources_without_secret_readback() -> None:
+    resources: dict[str, dict[str, Any]] = {}
+    writes: list[str] = []
+    settings = publisher_settings().model_copy(update={"databricks_oauth_enabled": True})
+    identity = {"principalId": str(UUID(int=99)), "tenantId": str(UUID(int=97))}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith(f"/service/{settings.apim_service_name}"):
+            return httpx.Response(200, json={"identity": identity})
+        if path.endswith("/accessPolicies") and request.method == "GET":
+            return httpx.Response(200, json={"value": [
+                {"id": resource_path, **resource}
+                for resource_path, resource in resources.items()
+                if resource_path.startswith(path + "/")
+            ]})
+        if request.method == "PUT":
+            body = json.loads(request.content)
+            parameters = body["properties"].get("parameters")
+            if parameters:
+                assert parameters.pop("clientSecret") == "unit-oauth-secret"
+                body["properties"]["status"] = "Connected"
+            resources[path] = body
+            writes.append(path)
+            return httpx.Response(201, json=body)
+        assert request.method == "GET"
+        return httpx.Response(200, json=resources[path]) if path in resources else httpx.Response(
+            404, json={"error": {"code": "NotFound"}},
+        )
+
+    config = OAuthClientCredentialsConfig(
+        provider_id=f"turnstile-oauth-{UUID(int=8).hex}", client_id=UUID(int=98),
+        token_url=HttpUrl("https://adb-unit.1.azuredatabricks.net/oidc/v1/token"),
+    )
+    client = AzureApimPublisherClient(
+        settings, cast(Any, StubTokenProvider()),
+        httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    resource = OAuthCredentialResource(config, "unit-oauth-secret")
+    assert "unit-oauth-secret" not in repr(resource)
+    client.ensure_oauth_credential(resource)
+    assert len(writes) == 3
+    client.ensure_oauth_credential(OAuthCredentialResource(config))
+    assert len(writes) == 3 and client.oauth_credential_issues(resource) == []
+    assert all("unit-oauth-secret" not in json.dumps(value) for value in resources.values())
+    extra_policy = writes[2].rsplit("/", 1)[0] + "/other-identity"
+    resources[extra_policy] = {"properties": {
+        "objectId": str(UUID(int=96)), "tenantId": identity["tenantId"],
+    }}
+    assert f"mismatched_oauth_access_policy_set:{config.provider_id}" in (
+        client.oauth_credential_issues(resource)
+    )
+    resources.pop(extra_policy)
+    provider = resources[writes[0]]["properties"]
+    provider["oauth2"]["grantTypes"]["clientCredentials"]["tokenUrl"] = "https://other.example/token"
+    with pytest.raises(PolicyCompilationError, match="different connection"):
+        client.ensure_oauth_credential(resource)
+    assert len(writes) == 3
 
 
 @pytest.mark.parametrize("state", ["present", "missing", "conflicting"])

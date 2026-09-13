@@ -30,6 +30,7 @@ from .apim_control_plane_contract import (
         BackendResource,
         CompiledGatewayRelease,
         NamedValueResource,
+        OAuthCredentialResource,
         OperationResource,
         PolicyCompilationError,
 )
@@ -103,12 +104,21 @@ class ApimPolicyCompiler:
         target_backends: dict[tuple[str, str, str], str] = {}
         backends: list[BackendResource] = []
         named_values: dict[str, NamedValueResource] = {}
+        oauth_credentials: dict[str, OAuthCredentialResource] = {}
         for binding in bindings:
             if not binding.routing_managed:
                 continue
             if binding.backend_url is None:
                 raise PolicyCompilationError("A managed runtime is missing its backend URL")
             pool = binding.backend_pool
+            if binding.oauth is not None:
+                if pool is not None:
+                    raise PolicyCompilationError("OAuth connection pools are not supported")
+                resource = OAuthCredentialResource(binding.oauth)
+                existing = oauth_credentials.get(binding.oauth.provider_id)
+                if existing is not None and existing != resource:
+                    raise PolicyCompilationError("OAuth credential identity is inconsistent")
+                oauth_credentials[binding.oauth.provider_id] = resource
             if binding.api_format is ApiFormat.OPENAI_IMAGES and pool is not None:
                 raise PolicyCompilationError("Image generation pools are not supported")
             if pool is not None:
@@ -317,6 +327,7 @@ class ApimPolicyCompiler:
             policy_sha256=digest,
             backends=tuple(backends),
             named_values=tuple(named_values.values()),
+            oauth_credentials=tuple(oauth_credentials.values()),
             images_generations_policy=image_policy,
             operations=(
                 OperationResource(
@@ -1260,7 +1271,7 @@ class ApimPolicyCompiler:
         auth = self._auth_policy(binding)
         provider_headers = ""
         if (
-            binding.provider_brand_key.value == "microsoft_foundry"
+            binding.provider_brand_key.value in {"microsoft_foundry", "azure_databricks"}
             and binding.api_format is ApiFormat.ANTHROPIC_MESSAGES
         ):
             provider_headers = """
@@ -1279,7 +1290,7 @@ class ApimPolicyCompiler:
         }</set-body>"""
         elif (
             binding.api_format is ApiFormat.OPENAI_CHAT
-            or binding.provider_brand_key.value == "microsoft_foundry"
+            or binding.provider_brand_key.value in {"microsoft_foundry", "azure_databricks"}
         ):
                         stream_usage = ""
                         if binding.api_format is ApiFormat.OPENAI_CHAT and include_chat_stream_usage:
@@ -1439,6 +1450,18 @@ class ApimPolicyCompiler:
 
     @staticmethod
     def _auth_policy(binding: GatewayModelBinding) -> str:
+        oauth = binding.oauth
+        if oauth is not None:
+            return (
+                f'        <get-authorization-context provider-id="{escape(oauth.provider_id)}" '
+                f'authorization-id="{escape(oauth.authorization_id)}" '
+                'context-variable-name="turnstileProviderAuthorization" '
+                'identity-type="managed" ignore-error="false" />\n'
+                '        <set-header name="Authorization" exists-action="override">\n'
+                '          <value>@("Bearer " + ((Authorization)context.Variables['
+                '"turnstileProviderAuthorization"]).AccessToken)</value>\n'
+                '        </set-header>\n'
+            )
         if binding.auth_strategy is AuthStrategy.NAMED_VALUE_BEARER:
             # Bedrock API keys use this bearer shape. Named Values keep the actual key out
             # of PostgreSQL, generated policy, Function logs and browser responses.
@@ -1472,6 +1495,10 @@ class ApimPolicyCompiler:
             binding.model.model_key
             for binding in publication.desired_spec.bindings
             if binding.streaming_mode is StreamingMode.BUFFERED
+            or (
+                binding.routing_managed
+                and binding.provider_brand_key.value == "azure_databricks"
+            )
         ]
         known = [
             item.id

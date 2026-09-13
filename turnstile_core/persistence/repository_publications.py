@@ -214,6 +214,9 @@ class PostgreSqlPublicationRepositoryMixin:
         preserved_manifest: dict[str, Any] = (
             {"named_values": materialized} if credential_ciphertext is None and materialized else {}
         )
+        oauth_credentials = publication["resource_manifest"].get("oauth_credentials")
+        if credential_ciphertext is None and isinstance(oauth_credentials, list):
+            preserved_manifest["oauth_credentials"] = list(oauth_credentials)
         authorization = image_probe_authorization or publication["resource_manifest"].get(
             "image_probe_authorization"
         )
@@ -1135,7 +1138,11 @@ class PostgreSqlPublicationRepositoryMixin:
                 )
                 self._invalidate_identities()
                 return row
-            if publication["publication_kind"] == "route_reconcile":
+            if publication["publication_kind"] == "route_reconcile" or (
+                publication["publication_kind"] == "credential_rotation"
+                and publication["desired_spec"]["bindings"][-1]["auth_strategy"]
+                == "oauth_client_credentials"
+            ):
                 return self._complete_gateway_activation(
                     connection, publication, publication_id, actor
                 )

@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     apim_resource_group: str | None = None
     apim_service_name: str | None = None
     apim_principal_id: str | None = None
+    databricks_oauth_enabled: bool = False
     apim_api_id: str = "turnstile-llm"
     apim_product_id: str = Field(default="finops-ai-consumers", min_length=1, max_length=255)
     apim_chat_completions_operation_id: str = "chat-completions"

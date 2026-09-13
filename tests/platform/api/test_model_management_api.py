@@ -148,6 +148,71 @@ def foundry_provider_id(repository: InMemoryRepository) -> str:
     )
 
 
+def test_databricks_connection_api_creates_metadata_without_model_publication(
+    publication_api: InMemoryRepository,
+    management_runtime_service: ModelRuntimeService,
+) -> None:
+    model_count = len(publication_api.models)
+    response = client.post(
+        "/api/v1/model-management/connections",
+        headers={"Origin": "http://localhost:5173"},
+        json={
+            "gateway_profile_id": gateway_id(publication_api),
+            "provider": {"template": "azure_databricks"},
+            "databricks_workspace_url": "https://adb-unit.1.azuredatabricks.net",
+            "auth_mode": "managed_identity",
+        },
+    )
+    assert response.status_code == 200
+    registry = response.json()
+    assert registry["databricks_connections_supported"] is True
+    runtime = next(row for row in registry["runtimes"] if row["config"].get("workspace_url"))
+    assert runtime["config"]["authorization"]["role_name"] == "CAN_QUERY"
+    assert len(publication_api.models) == model_count
+    assert publication_api.gateway_publications == []
+
+
+@pytest.mark.parametrize(("origin", "workspace", "expected_status"), (
+    ("http://localhost:5173", "https://adb-unit.1.azuredatabricks.net", 404),
+    ("https://other.example", "https://adb-unit.1.azuredatabricks.net", 403),
+    ("http://localhost:5173", "https://adb-unit.1.azuredatabricks.net/path", 422),
+))
+def test_databricks_adoption_api_validates_target_and_origin(
+    publication_api: InMemoryRepository, origin: str, workspace: str, expected_status: int,
+) -> None:
+    response = client.post(
+        f"/api/v1/model-management/connections/{UUID(int=99)}/adopt",
+        headers={"Origin": origin}, json={"workspace_url": workspace},
+    )
+    assert response.status_code == expected_status
+    assert not publication_api.gateway_publications
+
+
+@pytest.mark.parametrize("case", ("mixed-credentials", "secret-type", "secret-length"))
+def test_oauth_validation_errors_never_return_credential_input(
+    publication_api: InMemoryRepository, case: str,
+) -> None:
+    secret = "unit-validation-oauth-secret"
+    payload = bedrock_publication(gateway_id(publication_api))
+    runtime: dict[str, object] = {
+        "existing_id": str(publication_api.runtimes[0]["id"]), "oauth_client_secret": secret,
+    }
+    if case == "mixed-credentials":
+        runtime["api_key"] = secret
+    elif case == "secret-type":
+        runtime["oauth_client_secret"] = {"credential": secret}
+    else:
+        runtime["oauth_client_secret"] = secret * 200
+    payload["runtime"] = runtime
+    response = client.post(
+        "/api/v1/model-management/publications",
+        headers={"Origin": "http://localhost:5173"}, json=payload,
+    )
+    assert response.status_code == 422
+    assert secret not in response.text
+    assert not publication_api.gateway_publications
+
+
 def test_gateway_release_reads_are_available_to_members(
     publication_api: InMemoryRepository,
 ) -> None:

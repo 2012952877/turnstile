@@ -17,6 +17,8 @@ ModelCapability = Literal[
 ]
 FOUNDRY_INFERENCE_RESOURCE = "https://ai.azure.com"
 FOUNDRY_INFERENCE_ROLE_ID = "a97b65f3-24c7-4388-baec-2e87135dc908"
+DATABRICKS_INFERENCE_RESOURCE = "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d"
+DATABRICKS_ANTHROPIC_PATH = "/serving-endpoints/anthropic/v1/messages"
 
 
 class ModelVendorKey(StrEnum):
@@ -71,6 +73,99 @@ def openai_compatible_endpoint_values(value: str) -> tuple[str, str, str]:
         path = path[:-len(suffix)].rstrip("/")
     origin = f"{endpoint.scheme}://{endpoint.netloc}"
     return f"{origin}{path}", origin, f"{path}{suffix}"
+
+
+def databricks_workspace_url(value: str) -> str:
+    endpoint = urlsplit(value.strip())
+    host = (endpoint.hostname or "").casefold()
+    if (
+        endpoint.scheme != "https"
+        or not host.endswith(".azuredatabricks.net")
+        or endpoint.username is not None
+        or endpoint.password is not None
+        or endpoint.port is not None
+        or endpoint.path not in {"", "/"}
+        or endpoint.query
+        or endpoint.fragment
+    ):
+        raise ValueError(
+            "Use the Azure Databricks HTTPS workspace URL without a path, port or credentials"
+        )
+    return f"https://{host}"
+
+
+def databricks_runtime_name(workspace_url: str) -> str:
+    identity = urlsplit(workspace_url).netloc
+    prefix, suffix = "Azure Databricks ", " via APIM"
+    maximum = 160 - len(prefix) - len(suffix)
+    if len(identity) > maximum:
+        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:8]
+        identity = f"{identity[: maximum - len(digest) - 1]}-{digest}"
+    return f"{prefix}{identity}{suffix}"
+
+
+def databricks_connection_config(workspace_url: str, principal_id: str) -> dict[str, Any]:
+    workspace = databricks_workspace_url(workspace_url)
+    return {
+        "workspace_url": workspace,
+        "path": "/v1/messages",
+        "api_format": "anthropic_messages",
+        "streaming_mode": "native",
+        "control_plane_managed": True,
+        "backend_url": workspace,
+        "backend_path": DATABRICKS_ANTHROPIC_PATH,
+        "auth_strategy": "managed_identity",
+        "managed_identity_resource": DATABRICKS_INFERENCE_RESOURCE,
+        "anthropic_version": "2023-06-01",
+        "authorization": {
+            "kind": "databricks_workspace",
+            "principal_id": principal_id,
+            "resource_endpoint": workspace,
+            "role_name": "CAN_QUERY",
+        },
+    }
+
+
+class OAuthClientCredentialsConfig(StrictModel):
+    provider_id: str = Field(pattern=r"^turnstile-oauth-[a-f0-9]{32}$")
+    authorization_id: Literal["connection"] = "connection"
+    client_id: UUID
+    token_url: HttpUrl
+    scopes: Literal["all-apis"] = "all-apis"
+
+    @model_validator(mode="after")
+    def require_databricks_token_endpoint(self) -> OAuthClientCredentialsConfig:
+        endpoint = urlsplit(str(self.token_url))
+        workspace = databricks_workspace_url(f"{endpoint.scheme}://{endpoint.netloc}")
+        if str(self.token_url) != f"{workspace}/oidc/v1/token":
+            raise ValueError("Databricks OAuth requires the Workspace token endpoint")
+        return self
+
+
+def apply_databricks_adoption(
+    runtime: dict[str, Any], binding_config: dict[str, Any] | None,
+) -> dict[str, Any]:
+    config = dict(runtime.get("config") or {})
+    if (
+        runtime.get("brand_key") == "azure_databricks" and binding_config
+        and config.get("auth_strategy") == "oauth_client_credentials"
+        and binding_config.get("auth_strategy") == "oauth_client_credentials"
+    ):
+        oauth = OAuthClientCredentialsConfig.model_validate(binding_config.get("oauth"))
+        return {**runtime, "config": {
+            **config, "oauth": oauth.model_dump(mode="json"), "credential_provisioned": True,
+        }}
+    if (
+        runtime.get("brand_key") != "azure_databricks"
+        or config.get("control_plane_managed")
+        or not binding_config
+        or binding_config.get("databricks_connection_adoption") is not True
+    ):
+        return runtime
+    adopted = databricks_connection_config(
+        binding_config["workspace_url"], binding_config["authorization"]["principal_id"],
+    )
+    return {**runtime, "config": {**config, **adopted}}
 
 
 def openai_compatible_runtime_name(
@@ -128,6 +223,7 @@ class RuntimeKind(StrEnum):
 class ConnectionAuthMode(StrEnum):
     MANAGED_IDENTITY = "managed_identity"
     API_KEY = "api_key"
+    OAUTH_M2M = "oauth_m2m"
 
 
 class AuthType(StrEnum):
@@ -197,7 +293,9 @@ class RuntimeWrite(StrictModel):
 
 class ProviderTarget(StrictModel):
     existing_id: UUID | None = None
-    template: Literal["amazon_bedrock", "microsoft_foundry", "openai_compatible"] | None = None
+    template: Literal[
+        "amazon_bedrock", "microsoft_foundry", "openai_compatible", "azure_databricks"
+    ] | None = None
 
     @model_validator(mode="after")
     def require_existing_or_new_provider(self) -> ProviderTarget:
@@ -214,6 +312,8 @@ class ModelConnectionCreate(StrictModel):
     foundry_inference_endpoint: HttpUrl | None = None
     bedrock_runtime_url: HttpUrl | None = None
     openai_base_url: HttpUrl | None = None
+    databricks_workspace_url: HttpUrl | None = None
+    oauth_client_id: UUID | None = None
     model_vendor: ModelVendorKey | None = None
 
     @model_validator(mode="after")
@@ -221,8 +321,30 @@ class ModelConnectionCreate(StrictModel):
         has_foundry = self.foundry_project_endpoint is not None
         has_bedrock = self.bedrock_runtime_url is not None
         has_openai = self.openai_base_url is not None
-        if sum((has_foundry, has_bedrock, has_openai)) != 1:
-            raise ValueError("select one Foundry, Bedrock, or OpenAI-compatible connection")
+        has_databricks = self.databricks_workspace_url is not None
+        if sum((has_foundry, has_bedrock, has_openai, has_databricks)) != 1:
+            raise ValueError(
+                "select one Foundry, Bedrock, OpenAI-compatible, or Databricks connection"
+            )
+        if self.provider.template == "azure_databricks" and not has_databricks:
+            raise ValueError("a Databricks connection requires its Workspace URL")
+        if has_databricks:
+            if self.provider.template not in {None, "azure_databricks"}:
+                raise ValueError("the Workspace URL requires a Databricks provider")
+            if self.auth_mode not in {
+                ConnectionAuthMode.MANAGED_IDENTITY, ConnectionAuthMode.OAUTH_M2M,
+            }:
+                raise ValueError("Databricks requires managed identity or OAuth M2M")
+            if (self.auth_mode is ConnectionAuthMode.OAUTH_M2M) != (
+                self.oauth_client_id is not None
+            ):
+                raise ValueError("Databricks OAuth M2M requires its service principal Client ID")
+            if self.foundry_inference_endpoint is not None or self.model_vendor is not None:
+                raise ValueError("a Databricks connection accepts only its workspace configuration")
+            databricks_workspace_url(str(self.databricks_workspace_url))
+            return self
+        if self.oauth_client_id is not None or self.auth_mode is ConnectionAuthMode.OAUTH_M2M:
+            raise ValueError("OAuth M2M belongs only to a Databricks connection")
         if has_bedrock:
             if (
                 self.auth_mode is not None
@@ -247,6 +369,15 @@ class ModelConnectionCreate(StrictModel):
             return self
         if self.foundry_inference_endpoint is None:
             raise ValueError("an API-key connection requires an inference endpoint")
+        return self
+
+
+class DatabricksConnectionAdopt(StrictModel):
+    workspace_url: HttpUrl
+
+    @model_validator(mode="after")
+    def require_workspace_origin(self) -> DatabricksConnectionAdopt:
+        databricks_workspace_url(str(self.workspace_url))
         return self
 
 
@@ -321,6 +452,8 @@ class RegistryResponse(StrictModel):
     runtimes: list[Runtime]
     models: list[ManagedModel]
     backend_pool_session_affinity_supported: bool = False
+    databricks_connections_supported: bool = False
+    databricks_oauth_supported: bool = False
     image_generation_supported: bool = False
     image_configuration_defaults: ImageGenerationLimits | None = None
     image_configuration_schema_version: Literal[4] = 4

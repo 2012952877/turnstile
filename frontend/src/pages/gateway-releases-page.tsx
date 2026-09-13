@@ -335,6 +335,7 @@ function ReleaseDetail({ release, loading, canManage, operationsEnabled, busy, o
                 <DependencyList icon={Box} title="Backends" values={release.dependencies.backends} />
                 <DependencyList icon={Layers3} title="Backend Pools" values={release.dependencies.backend_pools} />
                 <DependencyList icon={KeyRound} title="Named Values" values={release.dependencies.named_values} />
+                {Boolean(release.dependencies.oauth_credentials?.length) && <DependencyList icon={KeyRound} title="OAuth Credentials" values={release.dependencies.oauth_credentials ?? []} />}
               </div>
             </div>
           </details>

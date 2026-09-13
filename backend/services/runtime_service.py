@@ -34,6 +34,7 @@ from turnstile_core.domain.runtime_models import (
     ModelInvocationRequest,
     ModelInvocationResponse,
     ModelVendorKey,
+    OAuthClientCredentialsConfig,
     Provider,
     ProviderKind,
     ProviderWrite,
@@ -42,6 +43,9 @@ from turnstile_core.domain.runtime_models import (
     RuntimeHealth,
     RuntimeKind,
     RuntimeWrite,
+    databricks_connection_config,
+    databricks_runtime_name,
+    databricks_workspace_url,
     foundry_runtime_name,
     model_vendor_label,
     openai_compatible_endpoint_values,
@@ -120,6 +124,8 @@ class ModelRuntimeService:
         runtime_ids = {row["id"] for row in runtimes}
         return RegistryResponse(
             backend_pool_session_affinity_supported=True,
+            databricks_connections_supported=True,
+            databricks_oauth_supported=self._settings.databricks_oauth_enabled,
             image_generation_supported=self._settings.image_generation_enabled,
             image_configuration_defaults=self._settings.image_generation_defaults,
             gateways=[
@@ -213,6 +219,14 @@ class ModelRuntimeService:
 
     def save_runtime(self, write: RuntimeWrite, item_id: UUID | None = None) -> RegistryResponse:
         registry = self._repository.registry()
+        current = next((row for row in registry["runtimes"] if row["id"] == item_id), None)
+        if write.brand_key is BrandKey.AZURE_DATABRICKS or (
+            current is not None and current.get("brand_key") == BrandKey.AZURE_DATABRICKS
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Use Databricks connection metadata or publication workflows",
+            )
         github_provider_ids, copilot_runtime_ids = self._copilot_registry_ids(registry)
         if (
             write.runtime_kind is RuntimeKind.COPILOT_CLI
@@ -276,6 +290,7 @@ class ModelRuntimeService:
             brand = {
                 "amazon_bedrock": BrandKey.AMAZON_BEDROCK,
                 "microsoft_foundry": BrandKey.MICROSOFT_FOUNDRY,
+                "azure_databricks": BrandKey.AZURE_DATABRICKS,
                 "openai_compatible": {
                     ModelVendorKey.OPENAI: BrandKey.OPENAI,
                     ModelVendorKey.ANTHROPIC: BrandKey.ANTHROPIC,
@@ -285,6 +300,7 @@ class ModelRuntimeService:
                 "amazon_bedrock": ProviderKind.ANTHROPIC,
                 "microsoft_foundry": ProviderKind.MICROSOFT_FOUNDRY,
                 "openai_compatible": ProviderKind.OPENAI_COMPATIBLE,
+                "azure_databricks": ProviderKind.ANTHROPIC,
             }[template]
             provider_id = None
             provider_name = (
@@ -292,6 +308,8 @@ class ModelRuntimeService:
                 if template == "microsoft_foundry"
                 else "Amazon Bedrock"
                 if template == "amazon_bedrock"
+                else "Azure Databricks"
+                if template == "azure_databricks"
                 else model_vendor_label(openai_vendor)
             )
             provider_config: dict[str, Any] = {"hosting_platform": template}
@@ -312,6 +330,8 @@ class ModelRuntimeService:
             values = self._foundry_connection_values(write, registry["runtimes"])
         elif brand is BrandKey.AMAZON_BEDROCK:
             values = self._bedrock_connection_values(write, registry["runtimes"])
+        elif brand is BrandKey.AZURE_DATABRICKS:
+            values = self._databricks_connection_values(write, registry["runtimes"])
         elif provider_kind is ProviderKind.OPENAI_COMPATIBLE:
             values = self._openai_connection_values(write, registry["runtimes"], openai_vendor)
         else:
@@ -572,6 +592,54 @@ class ModelRuntimeService:
                 "key_vault_secret_id": None,
                 "managed_identity_resource": None,
             },
+        }
+
+    def _databricks_connection_values(
+        self,
+        write: ModelConnectionCreate,
+        runtimes: list[dict[str, Any]] | Any,
+    ) -> dict[str, Any]:
+        if write.databricks_workspace_url is None:
+            raise HTTPException(status_code=400, detail="Databricks Workspace URL is missing")
+        if not self._settings.apim_principal_id:
+            raise HTTPException(
+                status_code=409,
+                detail="APIM managed identity is not configured for Databricks onboarding",
+            )
+        workspace = databricks_workspace_url(str(write.databricks_workspace_url))
+        config = databricks_connection_config(workspace, self._settings.apim_principal_id)
+        if write.auth_mode is ConnectionAuthMode.OAUTH_M2M:
+            if not self._settings.databricks_oauth_enabled:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Databricks OAuth M2M is not enabled in this environment",
+                )
+            assert write.oauth_client_id is not None
+            oauth = OAuthClientCredentialsConfig.model_validate({
+                "provider_id": f"turnstile-oauth-{uuid4().hex}",
+                "client_id": write.oauth_client_id,
+                "token_url": f"{workspace}/oidc/v1/token",
+            })
+            config.update(
+                auth_strategy="oauth_client_credentials",
+                managed_identity_resource=None,
+                credential_kind="databricks_oauth_m2m",
+                credential_provisioned=False,
+                oauth=oauth.model_dump(mode="json"),
+                authorization={
+                    "kind": "databricks_oauth",
+                    "client_id": str(write.oauth_client_id),
+                    "resource_endpoint": workspace,
+                    "role_name": "CAN_QUERY",
+                },
+            )
+        self._ensure_unique_connection(
+            runtimes, write.gateway_profile_id, "workspace_url", workspace,
+        )
+        return {
+            "name": databricks_runtime_name(workspace),
+            "runtime_kind": "openai_compatible",
+            "config": config,
         }
 
     def _openai_connection_values(

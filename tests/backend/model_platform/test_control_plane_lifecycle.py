@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import UUID
 from xml.etree import ElementTree
 
@@ -10,6 +12,7 @@ import pytest
 from cryptography.fernet import Fernet
 from pydantic import HttpUrl, SecretStr
 
+from backend.services.runtime_service import ModelRuntimeService
 from tests.backend.model_platform.control_plane_support import (
     APIM_ID,
     FakeApimClient,
@@ -21,13 +24,14 @@ from tests.backend.model_platform.control_plane_support import (
     publisher_settings,
     transition_publication,
 )
+from turnstile_core.config import Settings
 from turnstile_core.domain.control_plane import (
     GatewayCredentialRotation,
     GatewayPublicationCreate,
     ModelCreateTarget,
     RuntimeTarget,
 )
-from turnstile_core.domain.runtime_models import ProviderTarget
+from turnstile_core.domain.runtime_models import ModelConnectionCreate, ProviderTarget
 from turnstile_core.integrations.apim_control_plane import (
     ApimPolicyCompiler,
     AzureApimPublisherClient,
@@ -83,6 +87,173 @@ def test_openai_publication_worker_activates_only_after_verification() -> None:
     assert runtime["config"]["named_value_name"] in named_values
     assert model["assignment_required"] is True
     assert [model["id"] for model in repository.models if model["is_default"]] == original_default
+
+
+@pytest.mark.parametrize("oauth", (False, True))
+def test_databricks_publication_activates_existing_connection_after_verification(
+    tmp_path: Path, oauth: bool,
+) -> None:
+    repository = InMemoryRepository()
+    cipher = CredentialCipher(Fernet.generate_key())
+    settings = Settings(
+        credential_key_file=tmp_path / "key", apim_principal_id=str(UUID(int=7)),
+        databricks_oauth_enabled=oauth,
+    )
+    registry = ModelRuntimeService(repository, settings).save_connection(
+        ModelConnectionCreate.model_validate({
+            "gateway_profile_id": APIM_ID, "provider": {"template": "azure_databricks"},
+            "databricks_workspace_url": "https://adb-unit.1.azuredatabricks.net",
+            "auth_mode": "oauth_m2m" if oauth else "managed_identity",
+            **({"oauth_client_id": UUID(int=8)} if oauth else {}),
+        })
+    )
+    runtime = next(row for row in registry.runtimes if row.config.get("workspace_url"))
+    service = GatewayControlPlaneService(
+        repository, cipher, apim_principal_id=settings.apim_principal_id,
+        databricks_oauth_enabled=oauth,
+    )
+    secret = "unit-oauth-onboarding-secret"
+    publication = service.publish(GatewayPublicationCreate(
+        gateway_profile_id=APIM_ID, provider=ProviderTarget(existing_id=runtime.provider_id),
+        runtime=RuntimeTarget(
+            existing_id=runtime.id, oauth_client_secret=SecretStr(secret) if oauth else None,
+        ),
+        model=ModelCreateTarget(
+            model_key="databricks-claude-unit", display_name="Unit Claude",
+            upstream_model_id="unit-claude-endpoint",
+        ),
+    ), "owner@example.com")
+    assert secret not in publication.model_dump_json()
+    binding = publication.desired_spec.bindings[-1]
+    assert binding.runtime_id == runtime.id and binding.model.family_key == "claude"
+    assert binding.model.capabilities == ["chat", "streaming"]
+    client = FakeApimClient()
+    worker = GatewayPublicationWorker(repository, client, client.policy, cipher=cipher)
+    for expected in (
+        "validating", "provisioning", "building_revision", "verifying", "promoting", "active",
+    ):
+        result = worker.run_once("databricks-worker")
+        assert result is not None and result.status.value == expected
+        if expected != "active":
+            assert not any(
+                row["model_key"] == "databricks-claude-unit" for row in repository.models
+            )
+        if expected != "validating":
+            assert repository.gateway_publication_credential(publication.id) is None
+    model = next(row for row in repository.models if row["model_key"] == "databricks-claude-unit")
+    assert model["runtime_id"] == runtime.id and model["assignment_required"] is True
+    if oauth:
+        assert client.oauth_credentials[-1].client_secret == secret
+        assert result is not None and result.resource_manifest["oauth_credentials"]
+        current = next(row for row in repository.registry()["runtimes"] if row["id"] == runtime.id)
+        assert current["config"]["credential_provisioned"] is True
+        prior_provider_id = current["config"]["oauth"]["provider_id"]
+        service.publish(GatewayPublicationCreate(
+            gateway_profile_id=APIM_ID, provider=ProviderTarget(existing_id=runtime.provider_id),
+            runtime=RuntimeTarget(existing_id=runtime.id),
+            model=ModelCreateTarget(
+                model_key="databricks-second-unit", display_name="Second Claude",
+                upstream_model_id="second-claude-endpoint",
+            ),
+        ), "owner@example.com")
+        for _ in range(6):
+            result = worker.run_once("second-model-worker")
+        assert result is not None and result.status == "active"
+        rotation = service.rotate_credential(APIM_ID, GatewayCredentialRotation(
+            model_key=model["model_key"], oauth_client_secret=SecretStr("unit-replacement-secret"),
+        ), "owner@example.com")
+        assert rotation.desired_spec.bindings[-1].oauth is not None
+        for _ in range(6):
+            result = worker.run_once("rotation-worker")
+        assert result is not None and result.status == "active"
+        current = next(row for row in repository.registry()["runtimes"] if row["id"] == runtime.id)
+        assert current["config"]["oauth"]["provider_id"] != prior_provider_id
+        assert len({
+            binding.oauth.provider_id for binding in result.desired_spec.bindings
+            if binding.runtime_id == runtime.id and binding.oauth is not None
+        }) == 1
+    else:
+        assert not client.oauth_credentials
+
+
+@pytest.mark.parametrize("override", (
+    {"backend_url": "https://models.example.test"},
+    {"backend_url": "https://adb-other.1.azuredatabricks.net"},
+    {"backend_path": "/v1/messages"}, {"managed_identity_resource": "https://ai.azure.com"},
+    {"auth_strategy": "none"}, {"api_format": "openai_chat"},
+    {"streaming_mode": "buffered"}, {"routing_managed": False}, {"config": {}},
+))
+def test_databricks_publication_revalidates_connection_configuration(
+    override: dict[str, object],
+) -> None:
+    workspace = "https://adb-unit.1.azuredatabricks.net"
+    runtime = {
+        "id": UUID(int=99), "routing_managed": True,
+        "config": {"workspace_url": workspace}, "backend_url": workspace,
+        "backend_path": "/serving-endpoints/anthropic/v1/messages",
+        "auth_strategy": "managed_identity",
+        "managed_identity_resource": "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d",
+        "api_format": "anthropic_messages", "streaming_mode": "native",
+    }
+    provider = {"brand_key": "azure_databricks", "provider_kind": "anthropic"}
+    GatewayControlPlaneService._validate_connection(provider, runtime)
+    with pytest.raises(ControlPlaneConflictError):
+        GatewayControlPlaneService._validate_connection(provider, {**runtime, **override})
+
+
+def test_databricks_adoption_is_release_bound_and_preserves_legacy_records() -> None:
+    repository = InMemoryRepository()
+    service = GatewayControlPlaneService(repository, apim_principal_id=str(UUID(int=99)))
+    baseline = service.publish(bedrock_publication(), "owner@example.com")
+    client = FakeApimClient()
+    worker = GatewayPublicationWorker(repository, client, client.policy)
+    for _ in range(6):
+        worker.run_once("unit-worker")
+    provider = repository.create_registry_item("provider", {
+        "name": "Unit Databricks", "provider_kind": "anthropic",
+        "brand_key": "azure_databricks", "enabled": True, "config": {},
+    })
+    runtime = repository.create_registry_item("runtime", {
+        "name": "Existing Databricks Claude", "provider_id": provider["id"],
+        "gateway_profile_id": APIM_ID, "runtime_kind": "openai_compatible",
+        "brand_key": "azure_databricks", "enabled": True, "is_default": False,
+        "config": {"api_format": "anthropic_messages", "path": "/v1/messages"},
+    })
+    model = repository.create_registry_item("model", {
+        **repository.models[0], "id": UUID(int=199),
+        "model_key": "existing-team-claude", "upstream_model_id": "unit-claude-endpoint",
+        "display_name": "Existing Claude", "provider_id": provider["id"],
+        "runtime_id": runtime["id"], "family_key": "claude",
+        "enabled": True, "is_default": False, "assignment_required": False,
+    })
+    original = deepcopy((runtime, model))
+    workspace = "https://adb-unit.1.azuredatabricks.net"
+    adopted = service.adopt_databricks_connection(runtime["id"], workspace, "owner@example.com")
+    assert adopted.publication_kind == "route_reconcile" and adopted.base_release_id == baseline.id
+    assert (runtime, model) == original
+    with pytest.raises(ValueError, match="Wait for the gateway publication"):
+        repository.create_connection(provider["id"], None, {
+            **runtime, "config": {"workspace_url": workspace},
+        })
+    for _ in range(5):
+        worker.run_once("unit-worker")
+        observed = next(
+            row for row in repository.registry()["runtimes"] if row["id"] == runtime["id"]
+        )
+        assert not observed["config"].get("control_plane_managed")
+    result = worker.run_once("unit-worker")
+    assert result is not None and result.status == "active"
+    observed = next(row for row in repository.registry()["runtimes"] if row["id"] == runtime["id"])
+    assert observed["config"]["workspace_url"] == workspace
+    assert observed["config"]["control_plane_managed"] is True
+    assert (runtime, model) == original
+    with pytest.raises(ValueError, match="already exists"):
+        repository.create_connection(provider["id"], None, {
+            **runtime, "config": {"workspace_url": workspace.upper() + "/"},
+        })
+    repository.effective_gateway_releases[APIM_ID] = baseline.id
+    observed = next(row for row in repository.registry()["runtimes"] if row["id"] == runtime["id"])
+    assert observed["config"] == original[0]["config"]
 
 
 def test_publication_is_a_draft_until_apim_promotion() -> None:

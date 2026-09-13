@@ -95,6 +95,7 @@ def test_incremental_apim_template_only_prepares_and_promotes_existing_api_revis
     root = (ROOT / "infra/apim-upgrade.bicep").read_text()
     module = (ROOT / "infra/modules/apim-upgrade.bicep").read_text()
     assert "targetScope = 'subscription'" in root
+    assert "name: 'apim-image-upgrade-${uniqueString(apimName, apiId, revision, stage)}'" in root
     assert "scope: resourceGroup(apimResourceGroupName)" in root
     assert "sourceApiId: '${api.id};rev=${sourceRevision}'" in module
     assert "stage == 'prepare' && initializeImagePolicy" in module

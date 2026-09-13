@@ -20,6 +20,7 @@ param parentPolicy string = ''
 param imageOperationProperties object = {}
 
 module upgrade 'modules/apim-upgrade.bicep' = {
+  name: 'apim-image-upgrade-${uniqueString(apimName, apiId, revision, stage)}'
   scope: resourceGroup(apimResourceGroupName)
   params: {
     apimName: apimName

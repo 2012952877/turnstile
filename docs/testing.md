@@ -42,6 +42,34 @@ For API and browser checks, distinguish a missing snapshot from zero pending usa
 
 ### Governed image generation and evidence v2
 
+The fixed APIM image operation has two installation paths. Fresh infrastructure must create
+`POST /images/generations` with a default deny policy. An older installation must use the
+versioned APIM upgrade without replaying bootstrap or granting operation-write permission
+to the Control-plane publisher. Missing infrastructure produces a safe, actionable publication
+error rather than a runtime operation PUT.
+
+Run the focused tests, then compile both `infra/main.bicep` and `infra/apim-upgrade.bicep`:
+
+```bash
+uv run pytest -q tests/platform/deployment/test_apim_upgrade.py \
+	tests/platform/deployment/test_deploy_script.py \
+	tests/platform/infrastructure/test_infrastructure.py
+```
+
+The upgrade tests cover
+pre-image parent conversion, already upgraded no-op behavior, customer text-policy retention,
+missing/partial image infrastructure, conflicting routes, exact what-if scope, maintenance
+requirements, private plans, concurrent local execution, interruption recovery, lost promotion
+responses, and rollback. The command integration test uses mocked ARM responses and does not
+establish Azure provisioning or deployed data-plane behavior.
+
+Before releasing the upgrade, use separately authorized real targets for both paths. In the
+upgrade target, retain pre-upgrade snapshots and test existing text traffic, operation/policy
+identity, subscriptions and historical usage before and after upgrading. Interrupt preparation
+and promotion, resume without duplication, rerun after success, and verify explicit rollback
+before introducing later model publications. Never make the current revision writable through
+a fabricated success response or relax the shared Publisher role to pass these checks.
+
 Image generation is off by default. The version-2 budget evidence cutoff is independently disabled (`budget_evidence_policy.effective_at IS NULL`). Applying migrations does not enable either feature or reassess historical requests. Enabling a future cutoff requires separate operational authorization; it cannot be cleared or moved after being set.
 
 Focused local checks include `tests/backend/model_platform/test_image_*.py`, `tests/backend/telemetry/test_billable_requests.py`, `tests/backend/telemetry/test_ledger.py`, and `tests/platform/frontend/test_image_generation.py`. These use unit fixtures and mocked transports, not live images or database evidence.

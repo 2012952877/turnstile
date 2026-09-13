@@ -45,6 +45,7 @@ from .apim_control_plane_contract import (
     BackendPoolResource,
     BackendResource,
     ImageProbeJournal,
+    InfrastructureUpgradeRequiredError,
     NamedValueResource,
     OperationResource,
     PolicyCompilationError,
@@ -479,19 +480,10 @@ class AzureApimPublisherClient:
         path = self._revision_path(revision) + "/operations/" + quote(operation.id, safe="")
         observed = self._request("GET", path, allow_not_found=True)
         if observed.status_code == 404:
-            self._request(
-                "PUT",
-                path,
-                json_body={
-                    "properties": {
-                        "displayName": operation.display_name,
-                        "method": operation.method,
-                        "urlTemplate": operation.path,
-                        "templateParameters": [],
-                    }
-                },
+            raise InfrastructureUpgradeRequiredError(
+                f"APIM infrastructure upgrade required: operation {operation.id} is missing. "
+                "Run scripts.deploy plan-upgrade and upgrade before publishing image models."
             )
-            observed = self._request("GET", path)
         properties = observed.json().get("properties") or {}
         if (
             properties.get("method") != operation.method

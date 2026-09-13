@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from xml.etree import ElementTree
 
 from tests.support.paths import REPOSITORY_ROOT
 
@@ -56,6 +57,54 @@ def test_apim_exposes_the_turnstile_gateway_path() -> None:
     assert "param apiPath string" in APIM_INTEGRATION
     assert "path: apiPath" in APIM_INTEGRATION
     assert "path: 'finops/llm'" not in APIM_INTEGRATION
+
+
+def test_fresh_apim_precreates_a_fail_closed_image_operation() -> None:
+    operation = APIM_INTEGRATION.split("resource imagesGenerationsOperation ", 1)[1].split(
+        "\nresource ", 1
+    )[0]
+    for declaration in (
+        "parent: api", "name: 'images-generations'", "method: 'POST'",
+        "urlTemplate: '/images/generations'", "templateParameters: []",
+    ):
+        assert declaration in operation
+    policy_resource = APIM_INTEGRATION.split(
+        "resource imagesGenerationsOperationPolicy ", 1
+    )[1].split("\nresource ", 1)[0]
+    assert "parent: imagesGenerationsOperation" in policy_resource
+    assert "loadTextContent('../policies/provider-neutral-images-policy.xml')" in policy_resource
+    policy = ElementTree.parse(ROOT / "infra/policies/provider-neutral-images-policy.xml")
+    assert policy.find("./inbound/base") is not None
+    selected_model = policy.find("./inbound/set-variable")
+    assert selected_model is not None
+    assert selected_model.attrib == {
+        "name": "selectedModelKnown", "value": "@(false)",
+    }
+    denial = policy.find("./inbound/return-response")
+    assert denial is not None
+    response_status = denial.find("set-status")
+    assert response_status is not None and response_status.get("code") == "400"
+    body = json.loads(denial.findtext("set-body", ""))
+    assert body["error"]["code"] == "image_model_not_published"
+    assert policy.find(".//send-request") is None
+    assert policy.find(".//forward-request") is None
+    assert "Microsoft.ApiManagement/service/apis/operations/write" not in CONTROL_PLANE_APIM_RBAC
+
+
+def test_incremental_apim_template_only_prepares_and_promotes_existing_api_revisions() -> None:
+    root = (ROOT / "infra/apim-upgrade.bicep").read_text()
+    module = (ROOT / "infra/modules/apim-upgrade.bicep").read_text()
+    assert "targetScope = 'subscription'" in root
+    assert "scope: resourceGroup(apimResourceGroupName)" in root
+    assert "sourceApiId: '${api.id};rev=${sourceRevision}'" in module
+    assert "stage == 'prepare' && initializeImagePolicy" in module
+    assert "stage == 'promote'" in module
+    assert "loadTextContent('../policies/provider-neutral-images-policy.xml')" in module
+    assert "apiId: '${api.id};rev=${revision}'" in module
+    for resource in ("Microsoft.Authorization", "resourceGroups@", "namedValues@", "products@"):
+        assert resource not in root + module
+    assert "Microsoft.ApiManagement/service@2024-05-01' existing" in module
+    assert "Microsoft.ApiManagement/service/apis@2024-05-01' existing" in module
 
 
 def test_shared_apim_resources_are_environment_isolated() -> None:

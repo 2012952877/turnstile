@@ -70,6 +70,12 @@ The command runs these phases in order:
 
 Generated packages and deployment state remain under `.turnstile/deployments`. The script prints and stores only non-secret Azure outputs.
 
+Fresh installations include the fixed `POST /images/generations` operation with a default
+deny policy. Creating the operation does not publish an image model, enable image generation
+or authorize a provider call. Model publications inherit the operation into their candidate
+revisions and replace only its model-specific policy. The Control-plane publisher does not
+need `Microsoft.ApiManagement/service/apis/operations/write`.
+
 ## Initial Owner
 
 The deployment command reads the password interactively and never sends plaintext to ARM. It deploys only the scrypt hash. API startup applies the schema and atomically creates the Owner only when `app_user` is empty; restarts and reruns do not reset the account. Enabled Owner accounts are immediately listed in People under the default AI Platform department so the bootstrap Owner can assign model access before generating gateway traffic. Member department placement still comes from attributed gateway usage.
@@ -92,9 +98,95 @@ Creating connections or models through direct API calls does not count as fronte
 
 Apply pending migrations `004_apim_usage_identity_guard`, `005_billable_request_lifecycle` and `006_versioned_budget_evidence` through the same authorized migration entry point before running the new packages. Do not edit or replay the earlier migrations. The upgrade adds guarded APIM attempt identity, a durable billable-request journal and versioned budget evidence without rewriting historical usage. Drain old consumers before introducing the new identity guard. PostgreSQL concurrency and upgrade safety require the database checks in [Testing](testing.md).
 
-The API and Control-plane packages both require the pinned Pillow dependency for full image validation. The Control-plane artifact includes the public canonical parent policy at `policies/foundry-finops-policy.xml`; publication and image rollback read it through `CONTROL_PLANE_PARENT_POLICY_PATH`. The publisher verifies the live policy and its readback, and refuses incompatible image policies instead of transforming an unknown live template. Deploy the reviewed public parent-policy change through the normal infrastructure what-if boundary before enabling image generation.
+The API and Control-plane packages both require the pinned Pillow dependency for full image validation. The Control-plane artifact includes the public canonical parent policy at `policies/foundry-finops-policy.xml`; publication and image rollback read it through `CONTROL_PLANE_PARENT_POLICY_PATH`. The publisher verifies the live policy and its readback, and refuses incompatible image policies instead of transforming an unknown live template. Use the APIM infrastructure upgrade below before enabling image generation; do not rerun the bootstrap template against customer routing.
 
 Keep `IMAGE_GENERATION_ENABLED=false` and the evidence-v2 cutoff unset during the code and migration rollout. Enabling images, authorizing paid publication probes and scheduling the future evidence cutoff are separate operational decisions. This upgrade does not provision a Foundry account or model, modify an upstream deployment, or grant new provider roles.
+
+### Incremental APIM infrastructure upgrade
+
+Existing installations skip APIM bootstrap when saved deployment outputs exist. Adding a
+new operation to the fresh-install template therefore does not upgrade those installations.
+The versioned `images-v2` infrastructure upgrade handles the fixed image route and the
+image-aware parent contract independently of package deployment and database migrations.
+
+Use the original public parameter file, secret state and matching `.outputs.json` on a
+POSIX deployment host (Linux or macOS). Do not generate replacement state or copy another
+installation's outputs. The exact APIM, API and maintenance applications are read from
+those outputs; a missing API is an error, not permission to initialize it.
+
+```bash
+uv run python -m scripts.deploy plan-upgrade \
+  --subscription <subscription-id> \
+  --parameters .turnstile/main.parameters.json \
+  --state .turnstile/deployments/<resource-group>.json
+```
+
+The preview snapshots the current revision, API configuration, every operation and every
+operation policy. It creates a private plan under `<state-name>.upgrades/images-v2/`, beside
+the original state. Plans can contain customer policy values; keep that directory private
+and outside Git. The plan binds the exact targets and upgrade template/code hashes.
+Preview performs ARM reads and what-if only, without changing platform secrets or resources.
+
+Supported pre-image public parent policies are transformed structurally, preserving their
+configured authentication, ledger, telemetry and text values. The transformed policy must
+match the current reviewed public contract. An already compatible parent is unchanged.
+An existing compatible image operation and its policy are preserved; a missing operation
+or missing policy is initialized fail-closed. Unknown/custom parent policies, ambiguous
+components and conflicting operation definitions stop automatic migration for explicit
+review. No wholesale replacement of a customer's live parent is attempted.
+
+Before applying, schedule a maintenance window and drain pending publications, rollback,
+retention and Application provisioning work. Stop the API and Control-plane applications
+so no new control-plane work can be submitted or processed. The upgrade verifies both
+applications are `Stopped`; draining queued work and excluding other administrators or
+deployment systems from this API remain operational prerequisites. Existing direct APIM
+text traffic can continue, but the Turnstile web/API application is unavailable while stopped.
+
+```bash
+uv run python -m scripts.deploy upgrade \
+  --subscription <subscription-id> \
+  --parameters .turnstile/main.parameters.json \
+  --state .turnstile/deployments/<resource-group>.json
+```
+
+The command confirms the saved plan, repeats a no-delete, exact-resource what-if, and uses
+the deployment identity, not the Control-plane identity:
+
+1. Clone the original API revision into a deterministic non-current upgrade revision.
+2. Add only missing image infrastructure and update the reviewed parent policy in that candidate.
+3. Read back the complete candidate; all original operation definitions and policies must remain unchanged.
+4. Recheck the current revision and maintenance state, preview the exact release resource,
+   and activate the verified candidate.
+5. Read back the current revision before recording completion. Keep the original revision
+   and all database publication/release history, models, credentials and subscriptions.
+
+The upgrade does not edit shared roles, create resource groups or APIM services, restart
+applications, enable images, run inference, set the evidence cutoff, or apply database
+migrations. Continue the separately reviewed package/migration rollout and restore service
+after the infrastructure upgrade. Ordinary `plan` and `deploy` reruns now reject a pending
+APIM infrastructure upgrade before changing secrets or packages.
+
+Retry the same `upgrade` command after a resolved interruption. The private journal and
+deterministic revision identify owned work. A complete candidate is not rebuilt; a lost
+promotion response is resolved by readback without another promotion. Nonterminal ARM
+operations, unrelated revisions, changed live configuration or an unexpected candidate
+policy stop recovery. Do not clear the journal or edit a plan to force acceptance.
+
+During the same maintenance window, explicit infrastructure rollback is available:
+
+```bash
+uv run python -m scripts.deploy rollback-upgrade \
+  --subscription <subscription-id> \
+  --parameters .turnstile/main.parameters.json \
+  --state .turnstile/deployments/<resource-group>.json
+```
+
+Rollback requires the recorded promotion and unchanged original/candidate snapshots. It
+selects the retained original revision without deleting either revision or changing data.
+After subsequent model publications or customer configuration changes, automatic rollback
+is refused; review that later state instead of discarding it. Restoring old infrastructure
+does not roll back application packages or migrations and is incompatible with enabling
+new image functionality. Never clear or reschedule an already effective evidence-v2 cutoff.
 
 ## Verify
 

@@ -20,11 +20,15 @@ from scripts.deploy import (
     DeploymentInputs,
     ExistingCore,
     _install_linux_dependencies,
+    _upgrade_lock,
+    _write_private_json,
     build_and_start_observer,
+    build_parser,
     deploy_packages,
     deploy_webapp_package,
     deployment_parameters,
     deterministic_zip,
+    execute,
     frontend_asset,
     linux_dependency_command,
     load_existing_core,
@@ -933,6 +937,76 @@ def test_runtime_release_recycles_updated_apps_without_stale_api_health(
         "api-turnstile-test",
         "func-turnstile-control-test",
     ]
+
+
+def test_upgrade_files_are_private_and_concurrent_execution_is_rejected(tmp_path: Path) -> None:
+    directory = tmp_path / "upgrade"
+    path = directory / "journal.json"
+    _write_private_json(path, {"status": "preparing"})
+    _write_private_json(path, {"status": "passed"})
+    assert json.loads(path.read_text()) == {"status": "passed"}
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+    with (
+        _upgrade_lock(directory), pytest.raises(DeploymentError, match="Another process"),
+        _upgrade_lock(directory),
+    ):
+        pass
+    with _upgrade_lock(directory):
+        pass
+
+
+@pytest.mark.parametrize("action", ["plan-upgrade", "upgrade", "rollback-upgrade"])
+def test_incremental_commands_do_not_recreate_secrets_or_deploy_packages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action: str,
+) -> None:
+    from scripts import deploy
+
+    arguments = build_parser().parse_args([
+        action, "--subscription", "subscription", "--parameters",
+        str(_parameters(tmp_path / "parameters.json")), "--state", str(tmp_path / "state.json"),
+    ])
+    outputs = {"resourceGroupName": "turnstile-test"}
+    monkeypatch.setattr(deploy, "require_prerequisites", lambda *_: None)
+    monkeypatch.setattr(deploy, "validate_source_snapshot", lambda *_: None)
+    monkeypatch.setattr(deploy, "load_saved_outputs", lambda *_: outputs)
+    calls: list[str] = []
+
+    def upgrade(*args: object, **kwargs: object) -> None:
+        assert args[2] is outputs
+        calls.append(str(args[3]))
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        pytest.fail("An upgrade must not touch platform secrets, packages or bootstrap")
+
+    monkeypatch.setattr(deploy, "gateway_upgrade", upgrade)
+    monkeypatch.setattr(deploy, "load_or_create_secret_material", forbidden)
+    monkeypatch.setattr(deploy, "build_packages", forbidden)
+    monkeypatch.setattr(deploy, "deploy_template", forbidden)
+    execute(arguments, CommandRunner())
+    assert calls == [action]
+
+
+def test_rerun_checks_apim_upgrade_before_secrets_or_packages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts import deploy
+
+    arguments = build_parser().parse_args([
+        "deploy", "--subscription", "subscription", "--parameters",
+        str(_parameters(tmp_path / "parameters.json")),
+    ])
+    monkeypatch.setattr(deploy, "require_prerequisites", lambda *_: None)
+    monkeypatch.setattr(deploy, "validate_source_snapshot", lambda *_: None)
+    monkeypatch.setattr(deploy, "load_saved_outputs", lambda *_: {"existing": True})
+
+    def blocked(*args: object, **kwargs: object) -> None:
+        assert args[3] == "check"
+        raise DeploymentError("APIM upgrade required")
+
+    monkeypatch.setattr(deploy, "gateway_upgrade", blocked)
+    with pytest.raises(DeploymentError, match="APIM upgrade required"):
+        execute(arguments, CommandRunner())
 
 
 def test_repository_parameter_example_and_generated_documents_match_bicep(

@@ -23,6 +23,10 @@ class PolicyCompilationError(ValueError):
         self.billable_outcome = billable_outcome
 
 
+class InfrastructureUpgradeRequiredError(PolicyCompilationError):
+    pass
+
+
 class RetryablePublicationError(RuntimeError):
     pass
 

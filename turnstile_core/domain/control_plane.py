@@ -619,6 +619,10 @@ class GatewayPublicationView(StrictModel):
             )
             and type(probe_limit) is int and 1 <= probe_limit < 32
         )
+        infrastructure_upgrade_required = (
+            publication.status is PublicationStatus.FAILED
+            and publication.error_code == "InfrastructureUpgradeRequiredError"
+        )
         return cls(
             id=publication.id,
             gateway_profile_id=publication.gateway_profile_id,
@@ -628,13 +632,19 @@ class GatewayPublicationView(StrictModel):
             display_name=display_name,
             status=publication.status,
             error_code=(
-                "publication_failed"
+                "apim_infrastructure_upgrade_required"
+                if infrastructure_upgrade_required
+                else "publication_failed"
                 if publication.status is PublicationStatus.FAILED
                 else "provider_authorization_required"
                 if publication.status is PublicationStatus.AWAITING_AUTHORIZATION
                 else None
             ),
-            error_message=None,
+            error_message=(
+                "The gateway infrastructure must be upgraded before publishing image models. "
+                "Ask the deployment administrator to run the APIM infrastructure upgrade."
+                if infrastructure_upgrade_required else None
+            ),
             authorization=authorization,
             retry_can_authorize_image_probes=can_authorize_probes,
             retry_requires_credential=publication_retry_requires_credential(publication),

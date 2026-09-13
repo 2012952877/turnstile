@@ -1,0 +1,74 @@
+targetScope = 'resourceGroup'
+
+param apimName string
+param apiId string
+param sourceRevision string
+param revision string
+@allowed([
+  'prepare'
+  'promote'
+])
+param stage string
+param createRevision bool
+param initializeImagePolicy bool
+@secure()
+param apiProperties object
+@secure()
+param parentPolicy string
+@secure()
+param imageOperationProperties object
+
+resource apim 'Microsoft.ApiManagement/service@2024-05-01' existing = {
+  name: apimName
+}
+
+resource api 'Microsoft.ApiManagement/service/apis@2024-05-01' existing = {
+  parent: apim
+  name: apiId
+}
+
+resource candidate 'Microsoft.ApiManagement/service/apis@2024-05-01' = if (stage == 'prepare') {
+  parent: apim
+  name: '${apiId};rev=${revision}'
+  properties: union(apiProperties, {
+    apiRevisionDescription: 'Turnstile infrastructure upgrade ${revision}'
+  }, createRevision ? {
+    sourceApiId: '${api.id};rev=${sourceRevision}'
+  } : {})
+}
+
+resource imageOperation 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' = if (stage == 'prepare' && initializeImagePolicy) {
+  parent: candidate
+  name: 'images-generations'
+  properties: imageOperationProperties
+}
+
+resource imagePolicy 'Microsoft.ApiManagement/service/apis/operations/policies@2024-05-01' = if (stage == 'prepare' && initializeImagePolicy) {
+  parent: imageOperation
+  name: 'policy'
+  properties: {
+    format: 'rawxml'
+    value: loadTextContent('../policies/provider-neutral-images-policy.xml')
+  }
+}
+
+resource parent 'Microsoft.ApiManagement/service/apis/policies@2024-05-01' = if (stage == 'prepare') {
+  parent: candidate
+  name: 'policy'
+  properties: {
+    format: 'rawxml'
+    value: parentPolicy
+  }
+  dependsOn: [
+    imagePolicy
+  ]
+}
+
+resource promotion 'Microsoft.ApiManagement/service/apis/releases@2024-05-01' = if (stage == 'promote') {
+  parent: api
+  name: 'infrastructure-${revision}'
+  properties: {
+    apiId: '${api.id};rev=${revision}'
+    notes: 'Turnstile verified infrastructure upgrade ${revision}'
+  }
+}

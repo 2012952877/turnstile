@@ -43,7 +43,43 @@ from turnstile_core.integrations.apim_control_plane import (
     PolicyCompilationError,
     RetryablePublicationError,
 )
+from turnstile_core.integrations.apim_control_plane_contract import OperationResource
 from turnstile_core.persistence.in_memory import InMemoryRepository
+
+
+@pytest.mark.parametrize("state", ["present", "missing", "conflicting"])
+def test_fixed_image_operation_is_read_only_and_requires_infrastructure_upgrade(state: str) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.method == "GET"
+        assert request.url.path.endswith(";rev=candidate/operations/images-generations")
+        return httpx.Response(
+            404 if state == "missing" else 200,
+            json={"properties": {
+                "method": "GET" if state == "conflicting" else "POST",
+                "urlTemplate": "/images/generations", "templateParameters": [],
+            }},
+        )
+
+    client = AzureApimPublisherClient(
+        publisher_settings(),
+        StubTokenProvider(),  # type: ignore[arg-type]
+        httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    operation = OperationResource(
+        "images-generations", "Image generations", "POST", "/images/generations"
+    )
+    if state == "present":
+        client.ensure_operation("candidate", operation)
+    else:
+        message = (
+            "infrastructure upgrade required" if state == "missing" else "route does not match"
+        )
+        with pytest.raises(PolicyCompilationError, match=message):
+            client.ensure_operation("candidate", operation)
+    assert len(requests) == 1
 
 
 def test_arm_client_accepts_redacted_existing_backend_headers() -> None:

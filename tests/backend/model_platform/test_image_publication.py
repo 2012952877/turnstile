@@ -79,6 +79,28 @@ def test_image_publication_uses_explicit_profile_and_isolated_protocol() -> None
     assert repository.usage_records == []
 
 
+def test_infrastructure_upgrade_failure_has_a_safe_actionable_public_message() -> None:
+    repository = InMemoryRepository()
+    service = GatewayControlPlaneService(
+        repository, apim_principal_id="unit-principal", image_generation_enabled=True,
+    )
+    publication = service.publish(image_publication(repository), "owner@example.com")
+    failed = publication.model_copy(update={
+        "status": PublicationStatus.FAILED,
+        "error_code": "InfrastructureUpgradeRequiredError",
+        "error_message": "private ARM details and credential text must never be returned",
+    })
+    view = GatewayPublicationView.from_publication(failed)
+    assert view.error_code == "apim_infrastructure_upgrade_required"
+    assert view.error_message is not None and "upgraded" in view.error_message
+    assert "private ARM" not in view.model_dump_json()
+    ordinary = GatewayPublicationView.from_publication(failed.model_copy(update={
+        "error_code": "PolicyCompilationError",
+    }))
+    assert ordinary.error_code == "publication_failed"
+    assert ordinary.error_message is None
+
+
 def test_disabled_images_cannot_queue_publications() -> None:
     repository = InMemoryRepository()
     with pytest.raises(ControlPlaneUnavailableError, match="not enabled"):

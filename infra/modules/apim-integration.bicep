@@ -318,6 +318,39 @@ resource proxyOperation 'Microsoft.ApiManagement/service/apis/operations@2024-05
   }
 }
 
+resource imagesGenerationsOperation 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' = {
+  parent: api
+  name: 'images-generations'
+  properties: {
+    displayName: 'Image generations'
+    method: 'POST'
+    urlTemplate: '/images/generations'
+    templateParameters: []
+    request: {
+      queryParameters: []
+      headers: []
+      representations: [
+        {
+          contentType: 'application/json'
+        }
+      ]
+    }
+    responses: []
+  }
+  dependsOn: [
+    apiPolicy
+  ]
+}
+
+resource imagesGenerationsOperationPolicy 'Microsoft.ApiManagement/service/apis/operations/policies@2024-05-01' = {
+  parent: imagesGenerationsOperation
+  name: 'policy'
+  properties: {
+    format: 'rawxml'
+    value: loadTextContent('../policies/provider-neutral-images-policy.xml')
+  }
+}
+
 resource responsesOperation 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' = {
   parent: api
   name: 'responses'

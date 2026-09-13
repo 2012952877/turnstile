@@ -25,9 +25,22 @@ from importlib.metadata import distributions
 from pathlib import Path
 from typing import Any
 
+import httpx
 from cryptography.fernet import Fernet
 
 from backend.services.auth_service import hash_password
+from scripts.apim_upgrade import (
+    UPGRADE_VERSION,
+    ApimUpgradeError,
+    AzureUpgradeBackend,
+    GatewaySnapshot,
+    ImageUpgradePlan,
+    document_digest,
+    execute_image_upgrade,
+    plan_image_upgrade,
+    upgrade_parameters,
+    validate_upgrade_what_if,
+)
 from scripts.stage_deployment import REPOSITORY_ROOT, stage_deployment, validate_source_snapshot
 
 JsonObject = dict[str, Any]
@@ -1362,6 +1375,194 @@ def _write_outputs(inputs: DeploymentInputs, outputs: Mapping[str, Any]) -> None
     print(f"Deployment outputs: {destination}")
 
 
+def _write_private_json(path: Path, value: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    descriptor, temporary = tempfile.mkstemp(prefix="upgrade-", dir=path.parent)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            json.dump(value, output, indent=2)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+@contextmanager
+def _upgrade_lock(directory: Path) -> Iterator[None]:
+    try:
+        import fcntl
+    except ImportError as error:
+        raise DeploymentError("APIM upgrades require a POSIX deployment host") from error
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (directory / ".lock").open("a+") as lock:
+        os.chmod(lock.name, 0o600)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise DeploymentError("Another process owns this APIM upgrade") from error
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def gateway_upgrade(
+    runner: CommandRunner,
+    inputs: DeploymentInputs,
+    outputs: Mapping[str, Any],
+    action: str,
+    *,
+    assume_yes: bool = False,
+) -> None:
+    if (
+        _output_string(outputs, "resourceGroupName").casefold()
+        != inputs.resource_group_name.casefold()
+    ):
+        raise DeploymentError("Saved deployment outputs belong to a different resource group")
+    core = ExistingCore.from_outputs(outputs)
+    api_id = _output_string(outputs, "apimApiId")
+    resource_id = (
+        f"/subscriptions/{inputs.subscription}/resourceGroups/{core.apim_resource_group_name}"
+        f"/providers/Microsoft.ApiManagement/service/{core.apim_name}/apis/{api_id}"
+    )
+    application_ids = tuple(
+        f"/subscriptions/{inputs.subscription}/resourceGroups/{inputs.resource_group_name}"
+        f"/providers/Microsoft.Web/sites/{_output_string(outputs, name)}"
+        for name in ("apiName", "controlPlaneFunctionName")
+    )
+    template = REPOSITORY_ROOT / "infra/apim-upgrade.bicep"
+    parent_path = REPOSITORY_ROOT / "infra/policies/foundry-finops-policy.xml"
+    denial_path = REPOSITORY_ROOT / "infra/policies/provider-neutral-images-policy.xml"
+    canonical = parent_path.read_text(encoding="utf-8")
+    denial = denial_path.read_text(encoding="utf-8")
+    bindings = {
+        "apiResourceId": resource_id,
+        "applications": list(application_ids),
+        "templates": {
+            str(path.relative_to(REPOSITORY_ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in (template, REPOSITORY_ROOT / "infra/modules/apim-upgrade.bicep",
+                         parent_path, denial_path, REPOSITORY_ROOT / "scripts/apim_upgrade.py",
+                         REPOSITORY_ROOT / "scripts/deploy.py")
+        },
+    }
+    directory = inputs.state_path.with_suffix(".upgrades") / UPGRADE_VERSION
+    credentials = runner.run_json([
+        "az", "account", "get-access-token", "--subscription", inputs.subscription,
+        "--resource", "https://management.azure.com/", "--output", "json",
+    ])
+    token = credentials.pop("accessToken")
+    with _upgrade_lock(directory), httpx.Client(
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+        timeout=60, trust_env=False,
+    ) as client:
+        token = ""
+
+        def preview(
+            plan: ImageUpgradePlan, stage: str, revision: str, create_revision: bool,
+        ) -> tuple[JsonObject, str]:
+            parameters = _arm_parameter_document(upgrade_parameters(
+                plan, stage, revision, create_revision=create_revision
+            ))
+            name = f"apim-{document_digest(plan.document())[:24]}-{stage}"
+            with temporary_parameter_file(parameters, directory) as parameter_file:
+                result = runner.run_json(_deployment_command(
+                    "what-if", inputs, template, parameter_file, name
+                ))
+            validate_upgrade_what_if(result, plan, stage, revision)
+            _what_if_counts(result)
+            _write_private_json(directory / f"what-if-{stage}.json", result)
+            return parameters, name
+
+        def deploy(
+            plan: ImageUpgradePlan, stage: str, revision: str, create_revision: bool,
+        ) -> None:
+            name = f"apim-{document_digest(plan.document())[:24]}-{stage}"
+            prior = client.get(
+                f"https://management.azure.com/subscriptions/{inputs.subscription}"
+                f"/providers/Microsoft.Resources/deployments/{name}",
+                params={"api-version": "2025-04-01"},
+            )
+            if prior.status_code == 200:
+                state = prior.json().get("properties", {}).get("provisioningState")
+                if state not in {"Succeeded", "Failed", "Canceled"}:
+                    raise ApimUpgradeError(
+                        "The previous ARM upgrade operation is not terminal; do not retry"
+                    )
+            elif prior.status_code != 404:
+                raise ApimUpgradeError("The previous ARM upgrade status could not be verified")
+            parameters, name = preview(plan, stage, revision, create_revision)
+            with temporary_parameter_file(parameters, directory) as parameter_file:
+                result = runner.run_json(_deployment_command(
+                    "create", inputs, template, parameter_file, name
+                ))
+            if result.get("properties", {}).get("provisioningState") != "Succeeded":
+                raise ApimUpgradeError("ARM upgrade has not completed successfully")
+
+        backend = AzureUpgradeBackend(
+            client, resource_id, (application_ids[0], application_ids[1]), deploy
+        )
+        current = backend.read()
+        if current is None:
+            raise DeploymentError("Saved API is absent; an upgrade cannot initialize a new API")
+        if action == "check":
+            if plan_image_upgrade(resource_id, current, canonical).required:
+                raise DeploymentError(
+                    "APIM infrastructure upgrade required before package deployment: "
+                    "run scripts.deploy plan-upgrade, then upgrade in a maintenance window"
+                )
+            return
+        plan_path, journal_path = directory / "plan.json", directory / "journal.json"
+        if plan_path.exists():
+            document = json.loads(plan_path.read_text(encoding="utf-8"))
+            if document.get("binding") != bindings:
+                raise DeploymentError(
+                    "The saved upgrade plan inputs changed; review the prior plan"
+                )
+            raw = document["plan"]
+            plan = ImageUpgradePlan(**{**raw, "source": GatewaySnapshot(**raw["source"])})
+            if plan.document() != plan_image_upgrade(
+                resource_id, plan.source, canonical
+            ).document():
+                raise DeploymentError("The saved upgrade plan failed validation")
+        else:
+            if action != "plan-upgrade":
+                raise DeploymentError("Run plan-upgrade before applying or rolling back an upgrade")
+            plan = plan_image_upgrade(resource_id, current, canonical)
+            _write_private_json(plan_path, {"binding": bindings, "plan": plan.document()})
+        if not plan.required:
+            if plan_image_upgrade(resource_id, current, canonical).required:
+                raise DeploymentError("The API no longer satisfies the recorded no-change plan")
+            print("APIM infrastructure is current; no resource writes are required")
+            return
+        journal = (
+            json.loads(journal_path.read_text(encoding="utf-8")) if journal_path.exists() else None
+        )
+        if (
+            action != "rollback-upgrade" and journal is not None
+            and journal.get("status") == "passed"
+            and current.revision != plan.revision
+            and not plan_image_upgrade(resource_id, current, canonical).required
+        ):
+            print("The current revision retains the completed upgrade; no resource writes required")
+            return
+        if action == "plan-upgrade":
+            candidate = backend.read(plan.revision)
+            preview(plan, "prepare", plan.revision, candidate is None)
+            print(f"APIM upgrade plan: {plan_path}")
+            print("Drain publication work and stop API/Control-plane before applying this plan")
+            return
+        _confirm_deployment(assume_yes)
+        result = execute_image_upgrade(
+            plan, backend, denial, journal,
+            lambda value: _write_private_json(journal_path, value),
+            rollback=action == "rollback-upgrade",
+        )
+        print(f"APIM infrastructure upgrade: {result['status']}")
+        print("API and Control-plane remain stopped; resume through the reviewed package rollout")
+
+
 def execute(args: argparse.Namespace, runner: CommandRunner) -> None:
     inputs = DeploymentInputs.load(
         args.subscription,
@@ -1372,6 +1573,13 @@ def execute(args: argparse.Namespace, runner: CommandRunner) -> None:
     if not args.allow_dirty:
         validate_source_snapshot(REPOSITORY_ROOT)
     saved_outputs = load_saved_outputs(inputs)
+    if args.action in {"plan-upgrade", "upgrade", "rollback-upgrade"}:
+        if saved_outputs is None:
+            raise DeploymentError("An incremental upgrade requires the original deployment outputs")
+        gateway_upgrade(runner, inputs, saved_outputs, args.action, assume_yes=args.yes)
+        return
+    if saved_outputs is not None:
+        gateway_upgrade(runner, inputs, saved_outputs, "check")
     if saved_outputs is None:
         validate_flex_consumption_capabilities(runner, inputs)
         validate_postgres_capabilities(runner, inputs)
@@ -1533,7 +1741,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Plan or deploy a complete self-hosted Turnstile environment."
     )
-    parser.add_argument("action", choices=("plan", "deploy"))
+    parser.add_argument(
+        "action", choices=("plan", "deploy", "plan-upgrade", "upgrade", "rollback-upgrade")
+    )
     parser.add_argument("--subscription", required=True)
     parser.add_argument("--parameters", type=Path, required=True)
     parser.add_argument("--state", type=Path)
@@ -1554,7 +1764,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         execute(build_parser().parse_args(argv), CommandRunner())
-    except (DeploymentError, subprocess.CalledProcessError) as error:
+    except (
+        DeploymentError, ApimUpgradeError, httpx.HTTPError, subprocess.CalledProcessError
+    ) as error:
         print(f"Deployment failed: {error}", file=sys.stderr)
         return 1
     return 0

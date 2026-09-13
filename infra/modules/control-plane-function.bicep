@@ -29,6 +29,7 @@ param subscriptionAgentMap object = {}
 param publicationWorkerEnabled bool = false
 param releaseWorkerEnabled bool = false
 param applicationProvisioningEnabled bool = false
+param databricksOAuthEnabled bool = false
 @minValue(1)
 param applicationDefaultMonthlyTokenLimit int = 100000
 @minValue(1)
@@ -155,6 +156,7 @@ resource functionApp 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'GATEWAY_PUBLICATION_WORKER_ENABLED', value: string(effectivePublicationWorkerEnabled) }
         { name: 'GATEWAY_RELEASE_WORKER_ENABLED', value: string(effectiveReleaseWorkerEnabled) }
         { name: 'GATEWAY_APPLICATION_PROVISIONING_ENABLED', value: string(applicationProvisioningEnabled) }
+        { name: 'DATABRICKS_OAUTH_ENABLED', value: string(databricksOAuthEnabled) }
         { name: 'GATEWAY_APPLICATION_DEFAULT_MONTHLY_TOKEN_LIMIT', value: string(applicationDefaultMonthlyTokenLimit) }
         { name: 'GATEWAY_APPLICATION_DEFAULT_TOKENS_PER_MINUTE', value: string(applicationDefaultTokensPerMinute) }
         { name: 'LEDGER_TABLE_ENDPOINT', value: ledgerTableEndpoint }

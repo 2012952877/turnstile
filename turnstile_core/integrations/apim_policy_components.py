@@ -13,6 +13,15 @@ from .apim_image_policy import IMAGE_OPERATION_ID, IMAGE_POLICY_VERSION
 
 IMAGE_CONDITION = '@((bool)context.Variables["isImagesOperation"])'
 TEXT_CONDITION = '@(!(bool)context.Variables["isImagesOperation"])'
+# The v1.1 parent contract grew two elements that have nothing to do with images.
+# An installed v1.0 policy lacks both, so the upgrade has to adopt them here as well;
+# otherwise validate_parent_policy rejects every real v1.0 gateway.
+POOL_MEMBER_HEADER = "x-turnstile-pool-member"
+POOL_RUNTIME_HEADER = "x-turnstile-pool-runtime"
+CACHE_READ_WITHOUT_FALLBACK = '?? (long?)usage?["cache_read_input_tokens"] ?? 0;'
+CACHE_READ_WITH_FALLBACK = (
+    '?? (long?)usage?["cache_read_input_tokens"]\n          ?? (long?)usage?["cached_tokens"] ?? 0;'
+)
 _TOKENS = re.compile(
     r'//[^\r\n]*|/\*.*?\*/|@"(?:""|[^"])*"|"(?:\\.|[^"\\])*"|'
     r"'(?:\\.|[^'\\])*'|[A-Za-z_][A-Za-z_0-9]*|[0-9]+|[^\s]",
@@ -171,6 +180,44 @@ def _image_usage() -> ET.Element:
     )
 
 
+def adopt_pool_runtime_scrub(inbound: ET.Element) -> None:
+    """Adopt the pool runtime scrub that pairs with the pool member scrub.
+
+    Cross-region routing pins a session to one region through this header, so a
+    caller must never supply it and the parent policy drops it on the way in. The
+    line arrived with that routing, not with images, and a v1.0 policy has neither.
+    """
+    if inbound.find(f"set-header[@name='{POOL_RUNTIME_HEADER}']") is not None:
+        return
+    member = inbound.find(f"set-header[@name='{POOL_MEMBER_HEADER}']")
+    if member is None:
+        raise PolicyCompilationError(
+            "The source parent policy does not scrub the pool member header"
+        )
+    inbound.insert(
+        list(inbound).index(member) + 1,
+        ET.Element("set-header", {"name": POOL_RUNTIME_HEADER, "exists-action": "delete"}),
+    )
+
+
+def adopt_cached_tokens_fallback(root: ET.Element) -> None:
+    """Adopt the top-level usage.cached_tokens fallback.
+
+    OpenAI-compatible upstreams report cached reads as usage.cached_tokens, neither
+    nested under prompt_tokens_details nor named cache_read_input_tokens. Without
+    this fallback their cached reads are recorded as zero.
+    """
+    for node in root.iter("set-variable"):
+        if node.get("name") != "usagePayload":
+            continue
+        value = node.get("value", "")
+        if CACHE_READ_WITHOUT_FALLBACK in value:
+            node.set(
+                "value",
+                value.replace(CACHE_READ_WITHOUT_FALLBACK, CACHE_READ_WITH_FALLBACK),
+            )
+
+
 def compose_image_parent_policy(source: str, profiles: Sequence[ImageGenerationProfile]) -> str:
     root = parse_policy(source)
     inbound = root.find("inbound")
@@ -253,6 +300,8 @@ def compose_image_parent_policy(source: str, profiles: Sequence[ImageGenerationP
                     },
                 )
             _replace(root, node, wrapper)
+    adopt_pool_runtime_scrub(inbound)
+    adopt_cached_tokens_fallback(root)
     ET.SubElement(
         inbound,
         "set-variable",

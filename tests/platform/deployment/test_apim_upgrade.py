@@ -26,7 +26,10 @@ from scripts.apim_upgrade import (
 )
 from tests.support.paths import REPOSITORY_ROOT
 from turnstile_core.integrations.apim_policy_components import (
+    CACHE_READ_WITH_FALLBACK,
+    CACHE_READ_WITHOUT_FALLBACK,
     IMAGE_CONDITION,
+    POOL_RUNTIME_HEADER,
     TEXT_CONDITION,
     parse_policy,
     serialize_policy,
@@ -53,6 +56,21 @@ def legacy_parent() -> str:
     inference = inbound.find("set-variable[@name='isInferenceOperation']")
     assert inference is not None
     inference.set("value", "@(" + inference.get("value", "").split(" || ", 1)[1])
+    # v1.1 added two parent-policy elements outside the image feature. A real v1.0
+    # gateway carries neither, so a fixture that keeps them is v1.1 wearing a v1.0
+    # label and the upgrade regression it guards never runs against the real shape.
+    pool_runtime = inbound.find(f"set-header[@name='{POOL_RUNTIME_HEADER}']")
+    assert pool_runtime is not None
+    inbound.remove(pool_runtime)
+    for node in root.iter("set-variable"):
+        if node.get("name") != "usagePayload":
+            continue
+        node.set(
+            "value",
+            node.get("value", "").replace(
+                CACHE_READ_WITH_FALLBACK, CACHE_READ_WITHOUT_FALLBACK
+            ),
+        )
     for parent in list(root.iter()):
         for index, child in reversed(list(enumerate(list(parent)))):
             branch = child.find("when") if child.tag == "choose" else None

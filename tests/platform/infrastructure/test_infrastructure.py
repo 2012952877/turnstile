@@ -418,6 +418,27 @@ def test_existing_api_model_access_upgrade_reuses_ledger_and_preserves_settings(
     assert "output " not in upgrade + roles
 
 
+def test_api_ledger_private_network_is_wired_for_new_and_existing_installations() -> None:
+    upgrade = (ROOT / "infra/model-access-network-upgrade.bicep").read_text(encoding="utf-8")
+    for template in (DATA_PLANE, upgrade):
+        subnet = template.split("resource apiSubnet ", 1)[1].split("\nresource ", 1)[0]
+        assert "parent: virtualNetwork" in subnet
+        assert "serviceName: 'Microsoft.Web/serverFarms'" in subnet
+        integration = template.split("resource apiVnetIntegration ", 1)[1].split(
+            "\nresource ", 1,
+        )[0]
+        assert "parent: api" in integration
+        assert "name: 'virtualNetwork'" in integration
+        assert "subnetResourceId: apiSubnet.id" in integration
+        assert "swiftSupported: true" in integration
+    assert "addressPrefix: '10.42.3.64/27'" in DATA_PLANE
+    assert "dependsOn: [\n    privateEndpointSubnet\n  ]" in DATA_PLANE
+    assert "Microsoft.Storage/" not in upgrade
+    assert "Microsoft.Authorization/" not in upgrade
+    assert "appsettings" not in upgrade
+    assert "param apiSubnetAddressPrefix string = '10.42.3.64/27'" in upgrade
+
+
 def test_databricks_oauth_is_opt_in_for_api_publisher_and_scoped_permissions() -> None:
     for template in (MAIN, DATA_PLANE, CONTROL_PLANE, CONTROL_PLANE_APIM_RBAC):
         assert "param databricksOAuthEnabled bool = false" in template

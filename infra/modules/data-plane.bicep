@@ -56,6 +56,7 @@ var virtualNetworkName = 'vnet-${resourcePrefix}-${suffix}'
 var telemetryFunctionSubnetName = 'snet-flex-telemetry'
 var controlFunctionSubnetName = 'snet-flex-control'
 var privateEndpointSubnetName = 'snet-private-endpoints'
+var apiSubnetName = 'snet-api'
 var telemetryDeploymentContainerName = 'deploy-telemetry'
 var blobPrivateDnsZoneName = 'privatelink.blob.${environment().suffixes.storage}'
 var queuePrivateDnsZoneName = 'privatelink.queue.${environment().suffixes.storage}'
@@ -363,6 +364,25 @@ resource privateEndpointSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-0
   ]
 }
 
+resource apiSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' = {
+  parent: virtualNetwork
+  name: apiSubnetName
+  properties: {
+    addressPrefix: '10.42.3.64/27'
+    delegations: [
+      {
+        name: 'app-service-delegation'
+        properties: {
+          serviceName: 'Microsoft.Web/serverFarms'
+        }
+      }
+    ]
+  }
+  dependsOn: [
+    privateEndpointSubnet
+  ]
+}
+
 resource blobPrivateDnsZone 'Microsoft.Network/privateDnsZones@2024-06-01' = {
   name: blobPrivateDnsZoneName
   location: 'global'
@@ -656,6 +676,15 @@ resource api 'Microsoft.Web/sites@2024-11-01' = {
         { name: 'MIGRATIONS_DIR', value: 'migrations' }
       ]
     }
+  }
+}
+
+resource apiVnetIntegration 'Microsoft.Web/sites/networkConfig@2024-11-01' = {
+  parent: api
+  name: 'virtualNetwork'
+  properties: {
+    subnetResourceId: apiSubnet.id
+    swiftSupported: true
   }
 }
 

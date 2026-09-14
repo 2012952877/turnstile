@@ -90,6 +90,19 @@ local-key authentication or weaken networking merely to complete installation.
 
 ### Immediate model-access upgrade
 
+The API also needs network reachability to the ledger. With the default private ledger,
+use [model-access-network-upgrade.bicep](../infra/model-access-network-upgrade.bicep) to add
+an unused `snet-api` subnet delegated to `Microsoft.Web/serverFarms` and integrate the API
+with the platform VNet. Review address-space overlap, private DNS links and the ledger private
+endpoint first. The default subnet is `10.42.3.64/27`. This does not open the Storage firewall.
+
+Regional VNet integration requires B1 or higher; F1 is not sufficient. The optional
+`restoreFreePlanName` parameter restores one explicitly selected existing Free plan to B1
+and incurs Basic-plan charges. Leave it empty to preserve a suitable existing plan. Verify
+all apps hosted by that plan and review its what-if before opting in. Apply the network
+template with the same explicit subscription and API resource group, before the settings
+upgrade below. New installations already include this API subnet and VNet integration.
+
 Use [model-access-upgrade.bicep](../infra/model-access-upgrade.bicep) only for existing API
 Web Apps with system-assigned managed identities and an existing ledger. It supports multiple
 API names in one resource group and a ledger in another resource group in the same subscription.

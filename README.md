@@ -23,6 +23,7 @@
 <p align="center">
    <a href="https://turn-stile.com">🌐 Website</a> ·
    <a href="https://turn-stile.com/docs">📚 Docs</a> ·
+   <a href="https://turn-stile.com/docs/changelog">Changelog</a> ·
    <a href="#local-setup">🛠️ Local setup</a> ·
    <a href="#deployment">🚀 Deployment</a> ·
    <a href="CONTRIBUTING.md">🤝 Contributing</a>
@@ -161,6 +162,13 @@ In-memory repositories are used only for isolated unit tests. Integration and en
 ## Deployment
 
 The Bicep templates create Turnstile platform resources such as PostgreSQL, Event Hubs, Storage, Key Vault, Application Insights, Web App, Functions, and APIM integration. The deployment does not create an Azure AI Foundry project or provider model deployment.
+
+For the **unreleased v1.1 candidate**, choose the matching deployment path:
+
+- **Already running v1.0:** follow the [upgrade guide](docs/deployment.md#upgrade-v10-to-v11). Keep the original state, database, ledger, APIM, identities and history; apply the required infrastructure changes as well as the application packages.
+- **Installing from zero:** follow the [fresh-install guide](docs/deployment.md#deploy-v11-from-zero). Use a unique prefix and new state; a new StandardV2 APIM is the default. Provider models and credentials must already be available separately.
+
+The quick start below is for a new installation. Do not replace an existing installation's state with a newly generated file.
 
 1. Copy the public parameter example into an ignored file and set the subscription-independent values, including resource names, regions, publisher email, and `bootstrapOwnerEmail`:
 

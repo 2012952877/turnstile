@@ -221,6 +221,20 @@ test("retry client sends paid image authorization only for explicit boolean cons
   assert.equal(writes.at(-1).path, "/api/v1/model-management/publications/publication/retry")
 })
 
+test("registry normalization preserves Databricks capabilities independently and fails closed", () => {
+  for (const connections of [true, undefined, null, false, "true", 1]) {
+    for (const oauth of [true, undefined, null, false, "true", 1]) {
+      const registry = normalizeRegistry({
+        ...emptyRegistry,
+        databricks_connections_supported: connections,
+        databricks_oauth_supported: oauth,
+      })
+      assert.equal(registry.databricks_connections_supported, connections === true)
+      assert.equal(registry.databricks_oauth_supported, oauth === true)
+    }
+  }
+})
+
 test("registry normalization preserves enabled image capability and v4 configuration", () => {
   const defaults = { output_token_reserve: 8192 }
   const registry = normalizeRegistry({

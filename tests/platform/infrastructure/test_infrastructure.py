@@ -401,7 +401,9 @@ def test_existing_api_model_access_upgrade_reuses_ledger_and_preserves_settings(
     assert "scope: resourceGroup(ledgerResourceGroupName)" in upgrade
     assert "apiPrincipalId: apis[index].identity.principalId" in upgrade
     assert "apiResourceId: apis[index].id" in upgrade
-    assert "union(list('${apis[index].id}/config/appsettings', '2024-11-01').properties" in upgrade
+    assert "@secure()\nparam currentApiSettings object" in upgrade
+    assert "union(currentApiSettings[apiName], {" in upgrade
+    assert "list(" not in upgrade
     assert "LEDGER_SYNC_ENABLED: 'true'" in upgrade
     assert "LEDGER_TABLE_ENDPOINT: ledgerStorage.properties.primaryEndpoints.table" in upgrade
     assert "LEDGER_TABLE_NAME: ledgerTableName" in upgrade

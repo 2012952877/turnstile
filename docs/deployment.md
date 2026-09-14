@@ -117,21 +117,57 @@ the exact Table. If the groups differ, it also needs deployment permission in th
 Review the resource IDs and reject Delete, storage creation or any unexpected write:
 
 ```bash
-az deployment group what-if \
-  --subscription "$SUBSCRIPTION_ID" --resource-group "$API_RESOURCE_GROUP" \
-  --name model-access-v1-1 --template-file infra/model-access-upgrade.bicep \
-  --parameters @.turnstile/model-access-upgrade.parameters.json \
-  --result-format ResourceIdOnly
+export SUBSCRIPTION_ID='<subscription-id>'
+export API_RESOURCE_GROUP='<existing-api-resource-group>'
+uv run python - <<'PY'
+import json
+import os
+import subprocess
+import tempfile
+from pathlib import Path
 
-az deployment group create \
-  --subscription "$SUBSCRIPTION_ID" --resource-group "$API_RESOURCE_GROUP" \
-  --name model-access-v1-1 --template-file infra/model-access-upgrade.bicep \
-  --parameters @.turnstile/model-access-upgrade.parameters.json \
-  --mode Incremental --output none
+subscription = os.environ["SUBSCRIPTION_ID"]
+group = os.environ["API_RESOURCE_GROUP"]
+document = json.loads(Path(".turnstile/model-access-upgrade.parameters.json").read_text())
+
+def read_settings(api_name):
+  resource = f"/subscriptions/{subscription}/resourceGroups/{group}/providers/Microsoft.Web/sites/{api_name}"
+  result = subprocess.run([
+    "az", "rest", "--subscription", subscription, "--method", "post",
+    "--url", f"https://management.azure.com{resource}/config/appsettings/list?api-version=2024-11-01",
+    "--headers", "Accept=application/json", "--output", "json",
+  ], check=True, capture_output=True)
+  return json.loads(result.stdout)["properties"]
+
+snapshots = {name: read_settings(name) for name in document["parameters"]["apiNames"]["value"]}
+document["parameters"]["currentApiSettings"] = {"value": snapshots}
+with tempfile.TemporaryDirectory(prefix="model-access-", dir=".turnstile") as directory:
+  parameter_file = Path(directory) / "parameters.json"
+  with os.fdopen(os.open(parameter_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as stream:
+    json.dump(document, stream)
+  arguments = [
+    "--subscription", subscription, "--resource-group", group,
+    "--name", "model-access-v1-1", "--template-file", "infra/model-access-upgrade.bicep",
+    "--parameters", "@" + str(parameter_file), "--mode", "Incremental",
+  ]
+  subprocess.run(["az", "deployment", "group", "what-if", *arguments,
+          "--result-format", "ResourceIdOnly"], check=True)
+  if input("After reviewing exact API/Table changes, type upgrade: ") != "upgrade":
+    raise SystemExit("Cancelled without deployment")
+  if any(read_settings(name) != settings for name, settings in snapshots.items()):
+    raise SystemExit("App Settings changed after preview; repeat from a fresh snapshot")
+  subprocess.run(["az", "deployment", "group", "create", *arguments,
+          "--output", "none"], check=True)
+PY
 ```
 
-The template reads the current App Settings inside ARM and merges only the three ledger
-values. It does not export secrets, change other settings, create storage, or modify networks.
+The caller reads current App Settings immediately before preview and supplies them through
+the `currentApiSettings` secure object, keyed by API name. The temporary parameter file has
+mode `0600`, is removed on exit, and must not be copied into Git or validation evidence.
+Do not pass settings as command-line values or handcraft an empty snapshot. Reading the same
+`appsettings` resource inside its own ARM write creates a circular dependency.
+The template merges only the three ledger values. It does not export secrets, change other
+settings, create storage, or modify networks.
 Keep configuration writers excluded until readback completes. The Table role uses the same
 deterministic name as a new deployment, avoiding duplicate grants on rerun. Its scope is
 `.../storageAccounts/<account>/tableServices/default/tables/<table>`, never the storage

@@ -165,7 +165,10 @@ with tempfile.TemporaryDirectory(prefix="model-access-", dir=".turnstile") as di
   ]
   subprocess.run(["az", "deployment", "group", "what-if", *arguments,
           "--result-format", "ResourceIdOnly"], check=True)
-  if input("After reviewing exact API/Table changes, type upgrade: ") != "upgrade":
+  with open("/dev/tty", encoding="utf-8") as terminal:
+    print("After reviewing exact API/Table changes, type upgrade: ", end="", flush=True)
+    confirmation = terminal.readline().strip()
+  if confirmation != "upgrade":
     raise SystemExit("Cancelled without deployment")
   if any(read_settings(name) != settings for name, settings in snapshots.items()):
     raise SystemExit("App Settings changed after preview; repeat from a fresh snapshot")
@@ -177,6 +180,9 @@ PY
 The caller reads current App Settings immediately before preview and supplies them through
 the `currentApiSettings` secure object, keyed by API name. The temporary parameter file has
 mode `0600`, is removed on exit, and must not be copied into Git or validation evidence.
+Run this example in an interactive macOS/Linux terminal; confirmation is read from `/dev/tty`
+because the here-document already supplies Python's standard input. Without a terminal, it
+stops before deployment.
 Do not pass settings as command-line values or handcraft an empty snapshot. Reading the same
 `appsettings` resource inside its own ARM write creates a circular dependency.
 The template merges only the three ledger values. It does not export secrets, change other

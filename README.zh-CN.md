@@ -23,6 +23,7 @@
 <p align="center">
    <a href="https://turn-stile.com">🌐 官网</a> ·
    <a href="https://turn-stile.com/docs">📚 文档</a> ·
+   <a href="https://turn-stile.com/docs/changelog">更新日志</a> ·
    <a href="#本地设置">🛠️ 本地设置</a> ·
    <a href="#部署">🚀 部署</a> ·
    <a href="CONTRIBUTING.md">🤝 参与贡献</a>
@@ -161,6 +162,13 @@ git diff --check
 ## 部署
 
 Bicep 模板会创建 PostgreSQL、Event Hubs、Storage、Key Vault、Application Insights、Web App、Functions 和 APIM 集成等 Turnstile 平台资源，但不会创建 Azure AI Foundry 项目或提供商模型部署。
+
+对于**尚未发布的 v1.1 候选版**，请先选择对应路径：
+
+- **已安装 v1.0：**按照[升级指南](docs/deployment.md#upgrade-v10-to-v11)操作。保留原部署状态、数据库、账本、APIM、身份和历史；除应用包外，还需补齐必要的基础设施配置。
+- **完全从零安装：**按照[全新部署指南](docs/deployment.md#deploy-v11-from-zero)操作。使用独立前缀和新状态，默认新建 StandardV2 APIM；提供商模型与凭据需要另行准备。
+
+以下快速步骤用于新安装。已有安装不能用新生成的文件替换原部署状态。
 
 1. 将公开参数样例复制到Git忽略目录，填写资源名称、区域、发布者邮箱和 `bootstrapOwnerEmail` 等非机密参数：
 

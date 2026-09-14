@@ -4,6 +4,10 @@ targetScope = 'resourceGroup'
 @minLength(1)
 param apiNames string[]
 
+@description('Existing App Settings keyed by API name, read immediately before deployment.')
+@secure()
+param currentApiSettings object
+
 @description('Resource group containing the existing authoritative budget ledger.')
 param ledgerResourceGroupName string
 
@@ -36,7 +40,7 @@ module ledgerAccess 'modules/model-access-ledger-rbac.bicep' = [for (apiName, in
 resource apiSettings 'Microsoft.Web/sites/config@2024-11-01' = [for (apiName, index) in apiNames: {
   parent: apis[index]
   name: 'appsettings'
-  properties: union(list('${apis[index].id}/config/appsettings', '2024-11-01').properties, {
+  properties: union(currentApiSettings[apiName], {
     LEDGER_SYNC_ENABLED: 'true'
     LEDGER_TABLE_ENDPOINT: ledgerStorage.properties.primaryEndpoints.table
     LEDGER_TABLE_NAME: ledgerTableName

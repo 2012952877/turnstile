@@ -13,7 +13,7 @@
 <p align="center"><strong>Governed AI access, spend, and operations through one self-hosted control plane.</strong></p>
 
 <p align="center">
-   <img alt="Turnstile release v1.0" src="https://img.shields.io/badge/release-v1.0-2f6fdd.svg">
+   <a href="https://github.com/xuleihive/turnstile/releases/tag/v1.1"><img alt="Turnstile release v1.1" src="https://img.shields.io/badge/release-v1.1-2f6fdd.svg"></a>
    <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-2f6fdd.svg"></a>
    <a href="#prerequisites"><img alt="Python 3.11 or newer" src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&amp;logoColor=white"></a>
    <a href="#prerequisites"><img alt="Node.js 20.19.x or 22.12 and newer" src="https://img.shields.io/badge/Node.js-20.19.x%20%7C%2022.12%2B-339933?logo=node.js&amp;logoColor=white"></a>
@@ -23,7 +23,7 @@
 <p align="center">
    <a href="https://turn-stile.com">🌐 Website</a> ·
    <a href="https://turn-stile.com/docs">📚 Docs</a> ·
-   <a href="https://turn-stile.com/docs/changelog">Changelog</a> ·
+   <a href="https://github.com/xuleihive/turnstile/releases">Changelog</a> ·
    <a href="#local-setup">🛠️ Local setup</a> ·
    <a href="#deployment">🚀 Deployment</a> ·
    <a href="CONTRIBUTING.md">🤝 Contributing</a>
@@ -32,7 +32,7 @@
 Turnstile is a self-hosted control plane for governed AI model access. It combines an Azure API Management gateway, token and cost telemetry, budgets, application access, model onboarding, release controls, and an operational web console.
 
 > [!NOTE]
-> **Turnstile v1.0** is the current public release. The project is evolving rapidly, so APIs, configuration, and deployment workflows may change as it matures. Review changes carefully before upgrading production deployments.
+> **Turnstile v1.1** is the current public release. The project is evolving rapidly, so APIs, configuration, and deployment workflows may change as it matures. Review changes carefully before upgrading production deployments.
 
 > [!IMPORTANT]
 > The included infrastructure templates deploy only the Turnstile platform. They do not create an Azure AI Foundry project, deploy provider models, or preload customer connections and models. Operators connect their own Foundry or compatible provider resources after the platform is running.
@@ -163,7 +163,7 @@ In-memory repositories are used only for isolated unit tests. Integration and en
 
 The Bicep templates create Turnstile platform resources such as PostgreSQL, Event Hubs, Storage, Key Vault, Application Insights, Web App, Functions, and APIM integration. The deployment does not create an Azure AI Foundry project or provider model deployment.
 
-For the **unreleased v1.1 candidate**, choose the matching deployment path:
+For **Turnstile v1.1**, choose the matching deployment path:
 
 - **Already running v1.0:** follow the [upgrade guide](docs/deployment.md#upgrade-v10-to-v11). Keep the original state, database, ledger, APIM, identities and history; apply the required infrastructure changes as well as the application packages.
 - **Installing from zero:** follow the [fresh-install guide](docs/deployment.md#deploy-v11-from-zero). Use a unique prefix and new state; a new StandardV2 APIM is the default. Provider models and credentials must already be available separately.

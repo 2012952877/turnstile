@@ -294,8 +294,12 @@ def sync_model_prices(
     request: PriceSyncRequest | None = None,
     authorization: Authorization = None,
 ) -> PriceSyncResponse:
-    service.authorize(identity.role, authorization, manage=True)
-    return service.sync_prices(request.model_ids if request else None)
+    # Syncing rates is the same kind of act as editing one by hand -- it changes what a request
+    # costs, not where it is routed -- so it is gated the same way a price edit is, rather than
+    # behind the management credential that guards routing identity. The narrower role check
+    # lives in the service, because "who may reprice the catalogue" is a product rule.
+    service.authorize(identity.role, authorization, manage=False)
+    return service.sync_prices(identity.role, request.model_ids if request else None)
 
 
 @protected_router.post("/api/v1/model-management/models", response_model=RegistryResponse)

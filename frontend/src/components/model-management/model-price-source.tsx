@@ -62,6 +62,10 @@ export function ModelPriceSourceFields({ model, draft, setDraft, busy, connectio
   const [chosenModel, setChosenModel] = useState<PriceCatalogModel | null>(null)
   const [details, setDetails] = useState<PriceCatalogOptionsResponse | null>(null)
   const [loadingOptions, setLoadingOptions] = useState(false)
+  // Set when someone asks to choose a different model. Without it the effect below sees an empty
+  // picker and a stored reference and helpfully puts the old choice straight back, so the button
+  // appears to do nothing.
+  const [reselecting, setReselecting] = useState(false)
 
   const following = draft.priceSource !== "manual"
   const discount = resolveDiscount(draft, connectionDiscount)
@@ -70,7 +74,7 @@ export function ModelPriceSourceFields({ model, draft, setDraft, busy, connectio
   // Reopening the dialog on a model that already follows a list price should show what it
   // follows, not an empty picker.
   useEffect(() => {
-    if (!following || chosenModel || !storedModelKey || details) return
+    if (!following || chosenModel || !storedModelKey || details || reselecting) return
     let cancelled = false
     setLoadingOptions(true)
     dataSource.priceCatalogOptions(storedModelKey)
@@ -82,7 +86,7 @@ export function ModelPriceSourceFields({ model, draft, setDraft, busy, connectio
       .catch(() => undefined)
       .finally(() => { if (!cancelled) setLoadingOptions(false) })
     return () => { cancelled = true }
-  }, [following, storedModelKey, chosenModel, details])
+  }, [following, storedModelKey, chosenModel, details, reselecting])
 
   const selectedOption = useMemo(
     () => details?.options.find((option) => option.reference === draft.priceReference) ?? null,
@@ -121,6 +125,7 @@ export function ModelPriceSourceFields({ model, draft, setDraft, busy, connectio
   }
 
   const chooseModel = async (candidate: PriceCatalogModel) => {
+    setReselecting(false)
     setChosenModel(candidate)
     setDetails(null)
     setMatches(null)
@@ -169,7 +174,10 @@ export function ModelPriceSourceFields({ model, draft, setDraft, busy, connectio
       <ModelStep
         busy={busy} query={query} setQuery={setQuery} searching={searching}
         matches={matches} chosen={chosenModel} onSearch={search} onChoose={chooseModel}
-        onClear={() => { setChosenModel(null); setDetails(null); setMatches(null) }} />
+        onClear={() => {
+          setReselecting(true)
+          setChosenModel(null); setDetails(null); setMatches(null)
+        }} />
 
       {error && <p className="publication-form-note" role="alert">{error}</p>}
       {loadingOptions && <p className="publication-form-note">

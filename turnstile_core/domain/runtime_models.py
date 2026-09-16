@@ -501,21 +501,52 @@ class ManagedModel(ManagedModelWrite):
     updated_at: datetime
 
 
-class PriceCatalogEntry(StrictModel):
-    """One published price a person can point a model at."""
+class PriceCatalogModel(StrictModel):
+    """One priceable model in a vendor's published list, named the way that vendor names it."""
+
+    key: str
+    label: str
+    product: str
+    source: PriceSource
+
+
+class PriceCatalogModelsResponse(StrictModel):
+    models: list[PriceCatalogModel]
+    # Named rather than silently omitted: a source that cannot be read right now is different
+    # from a source with nothing in it, and only one of those is worth waiting out.
+    unavailable: list[str] = Field(default_factory=list)
+
+
+class PriceCatalogOption(StrictModel):
+    """How one model is priced under one deployment shape.
+
+    `regions` lists every region charging exactly these rates. `region_required` is false when
+    the shape charges one figure everywhere -- Global always does -- because asking for a region
+    that cannot change the answer is asking someone to guess at nothing.
+    """
 
     reference: str
-    label: str
-    source: PriceSource
-    detail: str | None = None
+    deployment: str
+    regions: list[str] = Field(default_factory=list)
+    region_required: bool = False
     input_per_million: float | None = None
     output_per_million: float | None = None
     cached_per_million: float | None = None
     cache_write_per_million: float | None = None
 
 
-class PriceCatalogResponse(StrictModel):
-    entries: list[PriceCatalogEntry]
+class PriceCatalogOptionsResponse(StrictModel):
+    model_entry: PriceCatalogModel
+    options: list[PriceCatalogOption] = Field(default_factory=list)
+    # Meters that mention this model but that the vocabulary could not read. Reported rather
+    # than dropped: a parser meeting an unfamiliar naming convention should look like a gap,
+    # not like a model with no published price.
+    unreadable: list[str] = Field(default_factory=list)
+    # Other meters that mention this model but price something else: a batch rate, a
+    # fine-tuning rate, a per-hour reservation. Named so the answer is "that one prices
+    # something else" rather than silence.
+    other_meters: list[str] = Field(default_factory=list)
+    note: str | None = None
 
 
 class PriceSyncRequest(StrictModel):

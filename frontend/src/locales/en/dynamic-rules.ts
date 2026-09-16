@@ -155,4 +155,8 @@ export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
   [/^继承连接（未设折扣）$/g, () => "Inherits the connection (no discount set)"],
   [/^当前继承连接折扣\s*([\d.]+)%。$/g, (_match, value) => `Currently inheriting the connection's ${value}% discount.`],
   [/^当前使用本模型单独设置的\s*([\d.]+)%。$/g, (_match, value) => `Currently using this model's own ${value}%.`],
+  [/^与其他\s*([\d,]+)\s*个区域同价。$/g, (_match, value) => `Same rate as ${value} other regions.`],
+  [/^另有\s*([\d,]+)\s*条计量表未能识别$/g, (_match, value) => `${value} more meters could not be read`],
+  [/^另有\s*([\d,]+)\s*条计量表计的是别的东西$/g, (_match, value) => `${value} more meters price something else`],
+  [/^这些来源暂时读不到：(.+)$/g, (_match, value) => `These sources cannot be read right now: ${value}`],
 ]

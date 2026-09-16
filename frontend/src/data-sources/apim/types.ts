@@ -542,18 +542,41 @@ export type ManagedModel = {
 export type PriceSource = "manual" | "azure_retail" | "anthropic"
 export type PriceSyncStatus = "ok" | "unmapped" | "stale" | "review_needed"
 
-export type PriceCatalogEntry = {
-  reference: string
+/** One priceable model in a vendor's published list, named the way that vendor names it. */
+export type PriceCatalogModel = {
+  key: string
   label: string
+  product: string
   source: PriceSource
-  detail: string | null
+}
+
+export type PriceCatalogModelsResponse = {
+  models: PriceCatalogModel[]
+  unavailable: string[]
+}
+
+/**
+ * How one model is priced under one deployment shape. `region_required` is false when the shape
+ * charges one figure everywhere -- Global always does -- so there is nothing to pick.
+ */
+export type PriceCatalogOption = {
+  reference: string
+  deployment: string
+  regions: string[]
+  region_required: boolean
   input_per_million: number | null
   output_per_million: number | null
   cached_per_million: number | null
   cache_write_per_million: number | null
 }
 
-export type PriceCatalogResponse = { entries: PriceCatalogEntry[] }
+export type PriceCatalogOptionsResponse = {
+  model_entry: PriceCatalogModel
+  options: PriceCatalogOption[]
+  unreadable: string[]
+  other_meters: string[]
+  note: string | null
+}
 
 export type PriceSyncDetail = {
   model_id: string

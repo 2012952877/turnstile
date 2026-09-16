@@ -36,8 +36,10 @@ from turnstile_core.domain.runtime_models import (
     ModelInvocationResponse,
     ModelVendorKey,
     OAuthClientCredentialsConfig,
-    PriceCatalogEntry,
-    PriceCatalogResponse,
+    PriceCatalogModel,
+    PriceCatalogModelsResponse,
+    PriceCatalogOption,
+    PriceCatalogOptionsResponse,
     PriceSyncDetail,
     PriceSyncResponse,
     PriceSyncStatus,
@@ -122,35 +124,64 @@ class ModelRuntimeService:
         )
         self.authorize(role, authorization, manage=changes_routing_identity)
 
-    def price_catalog(
-        self, query: str, *, region: str | None = None, limit: int = 40
-    ) -> PriceCatalogResponse:
-        """Candidate list-price entries for a person to choose between.
+    def price_catalog_models(self, query: str, *, limit: int = 60) -> PriceCatalogModelsResponse:
+        """The models a person can point a registry model at, one row each.
 
-        Deliberately a search rather than a match: the caller picks, and the pick is stored. An
-        automatic match here would be wrong roughly as often as names are ambiguous, and nothing
-        downstream would notice.
+        Deliberately a search over names rather than an automatic match: the caller picks, and
+        the pick is stored. Matching on the registry alias would be wrong about as often as
+        names are ambiguous, and nothing downstream would notice.
         """
         try:
-            entries = self._price_catalog.search(query, region=region, limit=limit)
+            found = self._price_catalog.search_models(query, limit=limit)
         except Exception as error:  # noqa: BLE001 - an unreachable vendor is not a server fault
             raise HTTPException(
                 status_code=503, detail=f"价目表暂时读取不到：{type(error).__name__}"
             ) from error
-        return PriceCatalogResponse(
-            entries=[
-                PriceCatalogEntry(
-                    reference=entry.reference,
-                    label=entry.label,
-                    source=entry.source,
-                    detail=entry.detail,
-                    input_per_million=entry.input_per_million,
-                    output_per_million=entry.output_per_million,
-                    cached_per_million=entry.cached_per_million,
-                    cache_write_per_million=entry.cache_write_per_million,
+        return PriceCatalogModelsResponse(
+            models=[
+                PriceCatalogModel(
+                    key=model.key,
+                    label=model.label,
+                    product=model.product,
+                    source=model.source,
                 )
-                for entry in entries
-            ]
+                for model in found.models
+            ],
+            unavailable=list(found.unavailable),
+        )
+
+    def price_catalog_options(self, model_key: str) -> PriceCatalogOptionsResponse:
+        try:
+            found = self._price_catalog.options(model_key)
+        except Exception as error:  # noqa: BLE001
+            raise HTTPException(
+                status_code=503, detail=f"价目表暂时读取不到：{type(error).__name__}"
+            ) from error
+        if found is None:
+            raise HTTPException(status_code=404, detail="价目表中没有这个模型")
+        return PriceCatalogOptionsResponse(
+            model_entry=PriceCatalogModel(
+                key=found.model.key,
+                label=found.model.label,
+                product=found.model.product,
+                source=found.model.source,
+            ),
+            options=[
+                PriceCatalogOption(
+                    reference=option.reference,
+                    deployment=option.deployment,
+                    regions=list(option.regions),
+                    region_required=option.region_required,
+                    input_per_million=option.entry.input_per_million,
+                    output_per_million=option.entry.output_per_million,
+                    cached_per_million=option.entry.cached_per_million,
+                    cache_write_per_million=option.entry.cache_write_per_million,
+                )
+                for option in found.options
+            ],
+            unreadable=list(found.unreadable),
+            other_meters=list(found.other_meters),
+            note=found.note,
         )
 
     def sync_prices(self, only: Sequence[UUID] | None = None) -> PriceSyncResponse:

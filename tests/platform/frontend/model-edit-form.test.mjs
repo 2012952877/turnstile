@@ -6,9 +6,10 @@ import { fileURLToPath } from "node:url"
 import { runInNewContext } from "node:vm"
 
 import {
-  applyCatalogEntry,
+  applyCatalogOption,
   createModelEditDraft,
   discountedRate,
+  modelKeyFromReference,
   modelEditHasChanges,
   modelEditPayload,
   modelEditRoleOptions,
@@ -284,11 +285,11 @@ for (const [locale, exportName] of [["en", "ENGLISH_CORE_PHRASES"], ["ja", "JAPA
   })
 }
 
-const catalogEntry = (overrides = {}) => ({
-  reference: "azure_retail:koreacentral:gpt 4.1:glbl",
-  label: "gpt 4.1",
-  source: "azure_retail",
-  detail: "Global - koreacentral",
+const catalogOption = (overrides = {}) => ({
+  reference: "azure_retail:Azure OpenAI:gpt 4.1:Global:*",
+  deployment: "Global",
+  regions: ["brazilsouth", "canadaeast", "eastus"],
+  region_required: false,
   input_per_million: 2,
   output_per_million: 8,
   cached_per_million: 0.5,
@@ -306,10 +307,11 @@ test("a model keeps its typed rates until someone opts it into a list price", ()
   assert.equal(payload.input_cost_per_million, model.input_cost_per_million)
 })
 
-test("choosing a catalog entry prices every bucket the source publishes", () => {
-  const draft = applyCatalogEntry(createModelEditDraft(savedModel()), catalogEntry(), 90)
+test("choosing a deployment prices every bucket the source publishes", () => {
+  const draft = applyCatalogOption(
+    createModelEditDraft(savedModel()), "azure_retail", catalogOption(), 90)
   assert.equal(draft.priceSource, "azure_retail")
-  assert.equal(draft.priceReference, "azure_retail:koreacentral:gpt 4.1:glbl")
+  assert.equal(draft.priceReference, "azure_retail:Azure OpenAI:gpt 4.1:Global:*")
   assert.equal(draft.inputPrice, "1.8")
   assert.equal(draft.outputPrice, "7.2")
   assert.equal(draft.cacheReadPrice, "0.45")
@@ -336,4 +338,16 @@ test("following a list price requires a chosen reference, and a discount stays i
   assert.equal(validateModelEdit({ ...base, discountPercent: "0" }), "discount")
   assert.equal(validateModelEdit({ ...base, discountPercent: "101" }), "discount")
   assert.equal(validateModelEdit({ ...base, discountPercent: "90" }), null)
+})
+
+
+test("a stored reference points back at the model it was chosen from", () => {
+  assert.equal(
+    modelKeyFromReference("azure_retail:Azure OpenAI:gpt 4.1:Global:*"),
+    "azure_retail:Azure OpenAI:gpt 4.1")
+  assert.equal(
+    modelKeyFromReference("anthropic:Anthropic:Claude Opus 5:List price:*"),
+    "anthropic:Anthropic:Claude Opus 5")
+  // Anything that is not a reference has no model to point at, and saying so beats guessing.
+  assert.equal(modelKeyFromReference("nonsense"), null)
 })

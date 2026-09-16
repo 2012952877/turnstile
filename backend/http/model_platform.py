@@ -46,7 +46,8 @@ from turnstile_core.domain.runtime_models import (
     ModelConnectionUpdate,
     ModelInvocationRequest,
     ModelInvocationResponse,
-    PriceCatalogResponse,
+    PriceCatalogModelsResponse,
+    PriceCatalogOptionsResponse,
     PriceSyncRequest,
     PriceSyncResponse,
     ProviderWrite,
@@ -270,22 +271,34 @@ def update_runtime(
 
 
 @protected_router.get(
-    "/api/v1/model-management/price-catalog",
-    response_model=PriceCatalogResponse,
+    "/api/v1/model-management/price-catalog/models",
+    response_model=PriceCatalogModelsResponse,
 )
-def search_price_catalog(
+def search_price_catalog_models(
     service: RuntimeService,
     identity: CurrentSession,
     q: Annotated[str, Query(max_length=120)] = "",
-    region: Annotated[str | None, Query(max_length=64)] = None,
     authorization: Authorization = None,
-) -> PriceCatalogResponse:
+) -> PriceCatalogModelsResponse:
     # Reading a vendor's published price list changes nothing and reveals nothing the vendor
     # does not print on its own website, so this is gated like the registry read it sits beside
-    # rather than like the write it leads to. Requiring an owner here only meant that anyone
-    # else opening the dialog saw a 403 where the candidate list should be.
+    # rather than like the write it leads to.
     service.authorize(identity.role, authorization, manage=False)
-    return service.price_catalog(q, region=region)
+    return service.price_catalog_models(q)
+
+
+@protected_router.get(
+    "/api/v1/model-management/price-catalog/options",
+    response_model=PriceCatalogOptionsResponse,
+)
+def price_catalog_options(
+    service: RuntimeService,
+    identity: CurrentSession,
+    model: Annotated[str, Query(max_length=300)],
+    authorization: Authorization = None,
+) -> PriceCatalogOptionsResponse:
+    service.authorize(identity.role, authorization, manage=False)
+    return service.price_catalog_options(model)
 
 
 @protected_router.post(

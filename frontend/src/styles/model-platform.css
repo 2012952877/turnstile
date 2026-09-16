@@ -849,17 +849,31 @@
 .model-price-source-choice { display: flex; flex-wrap: wrap; gap: 4px 20px; }
 .model-price-source-choice input[type="radio"] { accent-color: var(--primary); }
 .model-price-follow { display: grid; gap: 12px; padding-top: 4px; border-top: 1px solid var(--border); }
-.model-price-chosen { min-width: 0; padding: 4px 8px; border-radius: 6px; background: var(--background); }
-.model-price-chosen code { font-size: 11px; overflow-wrap: anywhere; -webkit-user-select: text; user-select: text; }
+
+.model-price-chosen { min-width: 0; display: flex; align-items: baseline; gap: 10px; padding: 6px 8px; border-radius: 6px; background: var(--background); }
+.model-price-chosen > b { min-width: 0; font-size: 12px; line-height: 18px; overflow-wrap: anywhere; }
+.model-price-chosen > small { flex: 1 1 auto; min-width: 0; color: var(--muted-foreground); font-size: 11px; line-height: 16px; overflow-wrap: anywhere; }
+.model-price-chosen > button { flex: 0 0 auto; height: 22px; padding: 0 6px; border: 0; border-radius: 4px; background: transparent; color: var(--muted-foreground); font-size: 11px; line-height: 16px; cursor: pointer; }
+.model-price-chosen > button:hover { color: var(--foreground); background: var(--muted); }
+
 .model-price-search { display: flex; gap: 6px; }
 .model-price-search > input { flex: 1 1 auto; min-width: 0; }
-.model-price-results { max-height: 190px; overflow-y: auto; margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; }
-.model-price-results button { width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 6px 8px; border: 1px solid transparent; border-radius: 6px; background: var(--background); color: var(--foreground); font-size: 12px; line-height: 18px; text-align: left; cursor: pointer; }
+.model-price-results { max-height: 220px; overflow-y: auto; margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; }
+.model-price-results button { width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: baseline; gap: 10px; padding: 6px 8px; border: 1px solid transparent; border-radius: 6px; background: var(--background); color: var(--foreground); font-size: 12px; line-height: 18px; text-align: left; cursor: pointer; }
 .model-price-results button:hover { border-color: var(--border); }
-.model-price-results button.active { border-color: var(--primary); }
 .model-price-result-label { min-width: 0; overflow-wrap: anywhere; }
-.model-price-result-detail { color: var(--muted-foreground); font-size: 11px; line-height: 16px; }
-.model-price-result-rate { color: var(--muted-foreground); font-size: 11px; line-height: 16px; white-space: nowrap; }
+.model-price-result-detail { color: var(--muted-foreground); font-size: 11px; line-height: 16px; overflow-wrap: anywhere; }
+
+.model-price-options { display: grid; gap: 4px; }
+.model-price-options > label { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 0.8fr) minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); font-size: 12px; line-height: 18px; cursor: pointer; }
+.model-price-options > label.active { border-color: var(--primary); }
+.model-price-options input[type="radio"] { accent-color: var(--primary); }
+.model-price-option-name { min-width: 0; overflow-wrap: anywhere; }
+.model-price-option-rate { min-width: 0; color: var(--foreground); }
+.model-price-option-note { color: var(--muted-foreground); font-size: 11px; line-height: 16px; white-space: nowrap; }
+
+.model-price-region { width: 100%; height: 32px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); color: var(--foreground); font-size: 12px; }
+
 .model-price-arithmetic { display: grid; gap: 6px; }
 .model-price-grid { display: grid; gap: 0; font-size: 12px; line-height: 18px; }
 .model-price-grid-head, .model-price-grid-row { display: grid; grid-template-columns: minmax(0, 1.2fr) repeat(3, minmax(0, 1fr)); gap: 10px; padding: 3px 6px; }
@@ -867,3 +881,4 @@
 .model-price-grid-row { border-top: 1px solid var(--border); }
 .model-price-grid-actual { color: var(--foreground); font-weight: 500; }
 .model-price-arithmetic .publication-form-note { display: flex; align-items: center; gap: 4px; }
+.model-price-follow .model-editor-advanced-body code { display: block; padding: 2px 0; color: var(--muted-foreground); font-size: 11px; overflow-wrap: anywhere; }

@@ -40,7 +40,8 @@ import type {
   ImageInvocationRequest,
   ImageInvocationResponse,
   ModelRegistry,
-  PriceCatalogResponse,
+  PriceCatalogModelsResponse,
+  PriceCatalogOptionsResponse,
   PriceSyncResponse,
   OptimizationEvent,
   PeopleBudgetFilter,
@@ -343,9 +344,11 @@ export const dataSource = {
     { method: "DELETE" },
   ).then(normalizeRegistry),
   saveModel: (value: Record<string, unknown>, id?: string) => saveRegistry("/api/v1/model-management/models", value, id),
-  priceCatalog: (query: string, region?: string | null) => request<PriceCatalogResponse>(
-    `/api/v1/model-management/price-catalog?q=${encodeURIComponent(query)}`
-    + (region ? `&region=${encodeURIComponent(region)}` : ""),
+  priceCatalogModels: (query: string) => request<PriceCatalogModelsResponse>(
+    `/api/v1/model-management/price-catalog/models?q=${encodeURIComponent(query)}`,
+  ),
+  priceCatalogOptions: (modelKey: string) => request<PriceCatalogOptionsResponse>(
+    `/api/v1/model-management/price-catalog/options?model=${encodeURIComponent(modelKey)}`,
   ),
   // Omitting the ids syncs everything that follows a list price. Passing them is how the
   // price table's row selection turns into "sync just these".

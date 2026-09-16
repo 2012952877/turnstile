@@ -1,14 +1,20 @@
-import { LoaderCircle, RefreshCw, Search } from "lucide-react"
-import { useEffect, useState } from "react"
+import { AlertTriangle, LoaderCircle, RefreshCw, Search } from "lucide-react"
+import { useEffect, useMemo, useState } from "react"
 
 import { dataSource } from "../../data-sources/apim/api"
-import type { ManagedModel, PriceCatalogEntry } from "../../data-sources/apim/types"
+import type {
+  ManagedModel,
+  PriceCatalogModel,
+  PriceCatalogOption,
+  PriceCatalogOptionsResponse,
+} from "../../data-sources/apim/types"
 import { Button } from "../ui/button"
 import { Input } from "../ui/input"
 import { FieldHelp } from "./field-help"
 import {
-  applyCatalogEntry,
+  applyCatalogOption,
   discountedRate,
+  modelKeyFromReference,
   resolveDiscount,
   type ModelEditDraft,
 } from "./model-edit-form"
@@ -32,12 +38,15 @@ function money(value: number | null | undefined): string {
 }
 
 /**
- * Lets a person point a model at a published price and see what that turns into.
+ * Points a model at a published price, in the order a person actually decides: which model, then
+ * how it is deployed, then -- only when it changes the answer -- which region.
  *
- * The arithmetic is shown rather than just its result. A rate that appears without explanation
- * is a number the reader has to trust; `list x discount = charged`, spelled out, is one they can
- * check. That matters more here than saving a line, because a wrong rate is invisible until an
- * invoice disagrees weeks later.
+ * The shape follows the data rather than the API's row layout. One model's prices arrive as
+ * dozens of near-identical meters, one per region, and a flat list of them is unreadable: gpt 5
+ * pro alone returns 37 rows carrying two distinct prices, and those 37 rows crowded every other
+ * model out of the results. Grouping first means Global -- which charges one figure across all
+ * 24 to 28 regions it is sold in -- is a single choice with no region to pick, and a region is
+ * asked for only where two regions genuinely disagree.
  */
 export function ModelPriceSourceFields({ model, draft, setDraft, busy, connectionDiscount }: {
   model: ManagedModel
@@ -46,40 +55,96 @@ export function ModelPriceSourceFields({ model, draft, setDraft, busy, connectio
   busy: boolean
   connectionDiscount: number | null
 }) {
-  // The display name usually reads "gpt-4.1-mini · Microsoft Foundry"; only the part before the
-  // separator resembles anything a vendor's price list calls a model, so that is what the box
-  // opens with. Searching the whole string finds nothing and makes the feature look broken.
   const [query, setQuery] = useState(() => model.display_name.split("·")[0].trim())
-  const [results, setResults] = useState<PriceCatalogEntry[] | null>(null)
-  // The entry picked in this session, if any. The rates below are read from it rather than from
-  // the last sync: after picking a different entry the two disagree, and a table that showed the
-  // stale list price beside the new charged rate would print arithmetic that does not hold.
-  const [chosen, setChosen] = useState<PriceCatalogEntry | null>(null)
+  const [matches, setMatches] = useState<PriceCatalogModel[] | null>(null)
   const [searching, setSearching] = useState(false)
-  const [searchError, setSearchError] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [chosenModel, setChosenModel] = useState<PriceCatalogModel | null>(null)
+  const [details, setDetails] = useState<PriceCatalogOptionsResponse | null>(null)
+  const [loadingOptions, setLoadingOptions] = useState(false)
+
   const following = draft.priceSource !== "manual"
   const discount = resolveDiscount(draft, connectionDiscount)
+  const storedModelKey = draft.priceReference ? modelKeyFromReference(draft.priceReference) : null
 
-  // Re-pricing on a discount change keeps the four rates honest while the dialog is open;
-  // without it the box would say 90% while the rates below still showed the old figures.
+  // Reopening the dialog on a model that already follows a list price should show what it
+  // follows, not an empty picker.
   useEffect(() => {
-    if (!following || !results) return
-    const chosen = results.find((entry) => entry.reference === draft.priceReference)
-    if (chosen) setDraft((current) => applyCatalogEntry(current, chosen, discount.percent))
+    if (!following || chosenModel || !storedModelKey || details) return
+    let cancelled = false
+    setLoadingOptions(true)
+    dataSource.priceCatalogOptions(storedModelKey)
+      .then((response) => {
+        if (cancelled) return
+        setChosenModel(response.model_entry)
+        setDetails(response)
+      })
+      .catch(() => undefined)
+      .finally(() => { if (!cancelled) setLoadingOptions(false) })
+    return () => { cancelled = true }
+  }, [following, storedModelKey, chosenModel, details])
+
+  const selectedOption = useMemo(
+    () => details?.options.find((option) => option.reference === draft.priceReference) ?? null,
+    [details, draft.priceReference],
+  )
+  // Sibling options for the same deployment are the regions worth choosing between; when a
+  // deployment charges one figure everywhere there are no siblings and no question to ask.
+  const regionPeers = useMemo(() => {
+    if (!details || !selectedOption?.region_required) return []
+    return details.options.filter((option) => option.deployment === selectedOption.deployment)
+  }, [details, selectedOption])
+
+  // Re-pricing on a discount change keeps the rates honest while the dialog is open; without it
+  // the box would say 66% while the rates below still showed the old figures.
+  useEffect(() => {
+    if (!following || !selectedOption || !chosenModel) return
+    setDraft((current) =>
+      applyCatalogOption(current, chosenModel.source, selectedOption, discount.percent))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft.discountPercent])
 
   const search = async () => {
     setSearching(true)
-    setSearchError(null)
+    setError(null)
     try {
-      const response = await dataSource.priceCatalog(query)
-      setResults(response.entries)
-    } catch (error) {
-      setSearchError(error instanceof Error ? error.message : "价目表读取失败")
+      const response = await dataSource.priceCatalogModels(query)
+      setMatches(response.models)
+      if (response.unavailable.length) {
+        setError(`这些来源暂时读不到：${response.unavailable.join("、")}`)
+      }
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : "价目表读取失败")
     } finally {
       setSearching(false)
     }
+  }
+
+  const chooseModel = async (candidate: PriceCatalogModel) => {
+    setChosenModel(candidate)
+    setDetails(null)
+    setMatches(null)
+    setLoadingOptions(true)
+    setError(null)
+    try {
+      const response = await dataSource.priceCatalogOptions(candidate.key)
+      setDetails(response)
+      const first = response.options[0]
+      if (first) {
+        setDraft((current) =>
+          applyCatalogOption(current, candidate.source, first, discount.percent))
+      }
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : "价目表读取失败")
+    } finally {
+      setLoadingOptions(false)
+    }
+  }
+
+  const chooseOption = (option: PriceCatalogOption) => {
+    if (!chosenModel) return
+    setDraft((current) =>
+      applyCatalogOption(current, chosenModel.source, option, discount.percent))
   }
 
   return <div className="model-price-source">
@@ -101,89 +166,204 @@ export function ModelPriceSourceFields({ model, draft, setDraft, busy, connectio
     </div>
 
     {following && <div className="model-price-follow">
-      <div className="registry-field">
-        <div className="registry-field-label-row">
-          <span className="registry-field-label">官方价基准</span>
-          <FieldHelp>
-            由你确认一次，之后同步按这个基准取值。自动按名称匹配会错，而且错了看不出来。
-          </FieldHelp>
-        </div>
-        {draft.priceReference
-          ? <div className="model-price-chosen">
-              <code data-no-localize>{draft.priceReference}</code>
-            </div>
-          : <p className="publication-form-note">尚未选择基准，下方搜索后点选一条。</p>}
-        <div className="model-price-search">
-          <Input value={query} disabled={busy} placeholder="搜索官方价目，例如 gpt-4.1 或 opus"
-            onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void search() } }} />
-          <Button type="button" variant="secondary" size="sm" disabled={busy || searching}
-            onClick={() => void search()}>
-            {searching ? <LoaderCircle className="spin" size={14} /> : <Search size={14} />}
-            搜索
-          </Button>
-        </div>
-        {searchError && <p className="publication-form-note" role="alert">{searchError}</p>}
-        {results && results.length === 0 && <p className="publication-form-note">没有匹配的官方价目。</p>}
-        {results && results.length > 0 && <ul className="model-price-results">
-          {results.slice(0, 8).map((entry) => (
-            <li key={entry.reference}>
-              <button type="button" disabled={busy}
-                className={entry.reference === draft.priceReference ? "active" : ""}
-                onClick={() => {
-                  setChosen(entry)
-                  setDraft((current) => applyCatalogEntry(current, entry, discount.percent))
-                }}>
-                <span className="model-price-result-label" data-no-localize>{entry.label}</span>
-                <span className="model-price-result-detail">{entry.detail}</span>
-                <span className="model-price-result-rate" data-no-localize>
-                  入 {money(entry.input_per_million)} / 出 {money(entry.output_per_million)}
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>}
-      </div>
+      <ModelStep
+        busy={busy} query={query} setQuery={setQuery} searching={searching}
+        matches={matches} chosen={chosenModel} onSearch={search} onChoose={chooseModel}
+        onClear={() => { setChosenModel(null); setDetails(null); setMatches(null) }} />
 
-      <div className="registry-field">
-        <div className="registry-field-label-row">
-          <label htmlFor="model-discount" className="registry-field-label">折扣</label>
-          <span className="model-editor-unit" data-no-localize>%</span>
-          <FieldHelp>
-            官方价乘以这个百分比得到实际单价。90 表示九折。留空则继承连接的折扣。
-          </FieldHelp>
-        </div>
-        <Input id="model-discount" type="number" inputMode="decimal" min={0} max={100} step="any"
-          disabled={busy} value={draft.discountPercent}
-          placeholder={connectionDiscount === null ? "继承连接（未设折扣）" : `继承连接（${connectionDiscount}%）`}
-          onChange={(event) => setDraft((current) => ({ ...current, discountPercent: event.target.value }))} />
-        <p className="publication-form-note">
-          {discount.percent === null
-            ? "当前按官方价原价计费。"
-            : discount.inherited
-              ? `当前继承连接折扣 ${discount.percent}%。`
-              : `当前使用本模型单独设置的 ${discount.percent}%。`}
-        </p>
-      </div>
+      {error && <p className="publication-form-note" role="alert">{error}</p>}
+      {loadingOptions && <p className="publication-form-note">
+        <LoaderCircle className="spin" size={12} /> 正在读取该模型的价目…
+      </p>}
 
-      <PriceArithmetic model={model} draft={draft} percent={discount.percent} chosen={chosen} />
+      {details && <DeploymentStep
+        details={details} selected={selectedOption} busy={busy} onChoose={chooseOption} />}
+
+      {regionPeers.length > 1 && <RegionStep
+        peers={regionPeers} selected={selectedOption} busy={busy} onChoose={chooseOption} />}
+
+      <DiscountField
+        draft={draft} setDraft={setDraft} busy={busy}
+        connectionDiscount={connectionDiscount} discount={discount} />
+
+      <PriceArithmetic model={model} draft={draft} percent={discount.percent}
+        option={selectedOption} />
+
+      {details && <CatalogNotices details={details} />}
     </div>}
   </div>
 }
 
-function PriceArithmetic({ model, draft, percent, chosen }: {
+function ModelStep({ busy, query, setQuery, searching, matches, chosen, onSearch, onChoose,
+  onClear }: {
+  busy: boolean
+  query: string
+  setQuery: (value: string) => void
+  searching: boolean
+  matches: PriceCatalogModel[] | null
+  chosen: PriceCatalogModel | null
+  onSearch: () => void
+  onChoose: (model: PriceCatalogModel) => void
+  onClear: () => void
+}) {
+  return <div className="registry-field">
+    <div className="registry-field-label-row">
+      <span className="registry-field-label">官方价目里的模型</span>
+      <FieldHelp>
+        由你确认一次，之后同步按这个模型取值。按名称自动匹配会错，而且错了看不出来。
+      </FieldHelp>
+    </div>
+    {chosen
+      ? <div className="model-price-chosen">
+          <b data-no-localize>{chosen.label}</b>
+          <small data-no-localize>{chosen.product}</small>
+          <button type="button" disabled={busy} onClick={onClear}>重新选择</button>
+        </div>
+      : <div className="model-price-search">
+          <Input value={query} disabled={busy} placeholder="搜索模型，例如 gpt 5、opus、grok"
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") { event.preventDefault(); onSearch() }
+            }} />
+          <Button type="button" variant="secondary" size="sm" disabled={busy || searching}
+            onClick={onSearch}>
+            {searching ? <LoaderCircle className="spin" size={14} /> : <Search size={14} />}
+            搜索
+          </Button>
+        </div>}
+    {!chosen && matches && matches.length === 0 && (
+      <p className="publication-form-note">没有匹配的模型。</p>
+    )}
+    {!chosen && matches && matches.length > 0 && <ul className="model-price-results">
+      {matches.map((candidate) => (
+        <li key={candidate.key}>
+          <button type="button" disabled={busy} onClick={() => onChoose(candidate)}>
+            <span className="model-price-result-label" data-no-localize>{candidate.label}</span>
+            <span className="model-price-result-detail" data-no-localize>{candidate.product}</span>
+          </button>
+        </li>
+      ))}
+    </ul>}
+  </div>
+}
+
+function DeploymentStep({ details, selected, busy, onChoose }: {
+  details: PriceCatalogOptionsResponse
+  selected: PriceCatalogOption | null
+  busy: boolean
+  onChoose: (option: PriceCatalogOption) => void
+}) {
+  // One row per deployment, priced at its cheapest variant. The regions inside a deployment are
+  // a second question, and only when they disagree.
+  const shapes = new Map<string, PriceCatalogOption>()
+  for (const option of details.options) {
+    const existing = shapes.get(option.deployment)
+    if (!existing || (option.input_per_million ?? 0) < (existing.input_per_million ?? 0)) {
+      shapes.set(option.deployment, option)
+    }
+  }
+  if (!shapes.size) return <p className="publication-form-note">该模型没有可用于对话调用的价目。</p>
+  return <div className="registry-field">
+    <div className="registry-field-label-row">
+      <span className="registry-field-label">计价方式</span>
+      <FieldHelp>对应你在 Foundry 上的部署形态。Global 在所有区域同价，无需选区域。</FieldHelp>
+    </div>
+    <div className="model-price-options" role="radiogroup" aria-label="计价方式">
+      {[...shapes.values()].map((option) => (
+        <label key={option.deployment}
+          className={selected?.deployment === option.deployment ? "active" : ""}>
+          <input type="radio" name="price-deployment" disabled={busy}
+            checked={selected?.deployment === option.deployment}
+            onChange={() => onChoose(option)} />
+          <span className="model-price-option-name" data-no-localize>{option.deployment}</span>
+          <span className="model-price-option-rate" data-no-localize>
+            入 {money(option.input_per_million)} / 出 {money(option.output_per_million)}
+          </span>
+          <span className="model-price-option-note">
+            {option.region_required ? "按区域不同" : `${option.regions.length || ""} 全区域同价`}
+          </span>
+        </label>
+      ))}
+    </div>
+  </div>
+}
+
+function RegionStep({ peers, selected, busy, onChoose }: {
+  peers: PriceCatalogOption[]
+  selected: PriceCatalogOption | null
+  busy: boolean
+  onChoose: (option: PriceCatalogOption) => void
+}) {
+  return <div className="registry-field">
+    <div className="registry-field-label-row">
+      <span className="registry-field-label">区域</span>
+      <FieldHelp>这种计价方式下各区域单价不同，请选你实际部署所在的区域。</FieldHelp>
+    </div>
+    <select className="model-price-region" disabled={busy}
+      value={selected?.reference ?? ""}
+      onChange={(event) => {
+        const next = peers.find((option) => option.reference === event.target.value)
+        if (next) onChoose(next)
+      }}>
+      {peers.map((option) => (
+        <optgroup key={option.reference}
+          label={`${money(option.input_per_million)} / ${money(option.output_per_million)}`}>
+          {option.regions.map((region) => (
+            <option key={region} value={option.reference}>{region}</option>
+          ))}
+        </optgroup>
+      ))}
+    </select>
+    {selected && selected.regions.length > 1 && <p className="publication-form-note">
+      {`与其他 ${selected.regions.length - 1} 个区域同价。`}
+    </p>}
+  </div>
+}
+
+function DiscountField({ draft, setDraft, busy, connectionDiscount, discount }: {
+  draft: ModelEditDraft
+  setDraft: (updater: (current: ModelEditDraft) => ModelEditDraft) => void
+  busy: boolean
+  connectionDiscount: number | null
+  discount: { percent: number | null; inherited: boolean }
+}) {
+  return <div className="registry-field">
+    <div className="registry-field-label-row">
+      <label htmlFor="model-discount" className="registry-field-label">折扣</label>
+      <span className="model-editor-unit" data-no-localize>%</span>
+      <FieldHelp>
+        官方价乘以这个百分比得到实际单价。90 表示九折。留空则继承连接的折扣。
+      </FieldHelp>
+    </div>
+    <Input id="model-discount" type="number" inputMode="decimal" min={0} max={100} step="any"
+      disabled={busy} value={draft.discountPercent}
+      placeholder={connectionDiscount === null
+        ? "继承连接（未设折扣）" : `继承连接（${connectionDiscount}%）`}
+      onChange={(event) =>
+        setDraft((current) => ({ ...current, discountPercent: event.target.value }))} />
+    <p className="publication-form-note">
+      {discount.percent === null
+        ? "当前按官方价原价计费。"
+        : discount.inherited
+          ? `当前继承连接折扣 ${discount.percent}%。`
+          : `当前使用本模型单独设置的 ${discount.percent}%。`}
+    </p>
+  </div>
+}
+
+function PriceArithmetic({ model, draft, percent, option }: {
   model: ManagedModel
   draft: ModelEditDraft
   percent: number | null
-  chosen: PriceCatalogEntry | null
+  option: PriceCatalogOption | null
 }) {
-  // A freshly picked entry wins over the last sync, so the list price and the charged rate in
+  // A freshly picked option wins over the last sync, so the list price and the charged rate in
   // each row always come from the same place and the multiplication reads true.
-  const list = chosen !== null ? {
-    input: chosen.input_per_million,
-    output: chosen.output_per_million,
-    cached: chosen.cached_per_million,
-    cacheWrite: chosen.cache_write_per_million,
+  const list = option !== null ? {
+    input: option.input_per_million,
+    output: option.output_per_million,
+    cached: option.cached_per_million,
+    cacheWrite: option.cache_write_per_million,
   } : {
     input: model.list_input_cost_per_million,
     output: model.list_output_cost_per_million,
@@ -224,10 +404,10 @@ function PriceArithmetic({ model, draft, percent, chosen }: {
         </div>
       ))}
     </div>
-    {chosen !== null && <p className="publication-form-note">
+    {option !== null && <p className="publication-form-note">
       保存后按此基准计费；下次同步会沿用它。
     </p>}
-    {chosen === null && model.price_synced_at && <p className="publication-form-note">
+    {option === null && model.price_synced_at && <p className="publication-form-note">
       <RefreshCw size={12} /> 最近同步 {new Date(model.price_synced_at).toLocaleString()}
       {model.price_sync_status && model.price_sync_status !== "ok"
         && ` · ${SYNC_STATUS_LABEL[model.price_sync_status] ?? model.price_sync_status}`}
@@ -237,4 +417,36 @@ function PriceArithmetic({ model, draft, percent, chosen }: {
       该来源未单独发布缓存写入价，按缓存读取单价计费。
     </p>}
   </div>
+}
+
+function CatalogNotices({ details }: { details: PriceCatalogOptionsResponse }) {
+  return <>
+    {details.note && <p className="publication-form-note">{details.note}</p>}
+    {details.unreadable.length > 0 && <details className="model-editor-advanced">
+      <summary>
+        <AlertTriangle size={12} />
+        {`另有 ${details.unreadable.length} 条计量表未能识别`}
+      </summary>
+      <div className="model-editor-advanced-body">
+        <p className="publication-form-note">
+          这些计量表提到了该模型，但名称写法本系统还不认识，因此没有纳入上面的选项。
+          如果你要的价在里面，告诉我们即可补上。
+        </p>
+        {details.unreadable.map((name) => (
+          <code key={name} data-no-localize>{name}</code>
+        ))}
+      </div>
+    </details>}
+    {details.other_meters.length > 0 && <details className="model-editor-advanced">
+      <summary>{`另有 ${details.other_meters.length} 条计量表计的是别的东西`}</summary>
+      <div className="model-editor-advanced-body">
+        <p className="publication-form-note">
+          批量调用、微调、预留吞吐等，不是普通对话调用的单价，因此不作为选项。
+        </p>
+        {details.other_meters.map((name) => (
+          <code key={name} data-no-localize>{name}</code>
+        ))}
+      </div>
+    </details>}
+  </>
 }

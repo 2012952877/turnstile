@@ -1,4 +1,4 @@
-import type { ManagedModel, PriceCatalogEntry, PriceSource } from "../../data-sources/apim/types"
+import type { ManagedModel, PriceCatalogOption, PriceSource } from "../../data-sources/apim/types"
 
 export type ModelEditDraft = {
   displayName: string
@@ -69,23 +69,34 @@ export function setModelEditPriceSource(
   return { ...draft, priceSource }
 }
 
-/** Picking a catalog entry fills the rates in so the dialog shows the arithmetic immediately. */
-export function applyCatalogEntry(
+/** Picking a deployment fills the rates in so the dialog shows the arithmetic immediately. */
+export function applyCatalogOption(
   draft: ModelEditDraft,
-  entry: PriceCatalogEntry,
+  source: PriceSource,
+  option: PriceCatalogOption,
   effectiveDiscountPercent: number | null,
 ): ModelEditDraft {
   const rate = (value: number | null) =>
     value === null ? "" : discountedRate(value, effectiveDiscountPercent).toString()
   return {
     ...draft,
-    priceSource: entry.source,
-    priceReference: entry.reference,
-    inputPrice: rate(entry.input_per_million),
-    outputPrice: rate(entry.output_per_million),
-    cacheReadPrice: rate(entry.cached_per_million),
-    cacheWritePrice: rate(entry.cache_write_per_million),
+    priceSource: source,
+    priceReference: option.reference,
+    inputPrice: rate(option.input_per_million),
+    outputPrice: rate(option.output_per_million),
+    cacheReadPrice: rate(option.cached_per_million),
+    cacheWritePrice: rate(option.cache_write_per_million),
   }
+}
+
+/**
+ * The model key a stored reference came from, so reopening the dialog can show the chosen model
+ * rather than an empty picker. References read
+ * `<source>:<product>:<model>:<deployment>:<region-or-*>`; the first three parts are the key.
+ */
+export function modelKeyFromReference(reference: string): string | null {
+  const parts = reference.split(":")
+  return parts.length === 5 ? parts.slice(0, 3).join(":") : null
 }
 
 export function discountedRate(listPrice: number, percent: number | null): number {

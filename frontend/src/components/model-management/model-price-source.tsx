@@ -51,6 +51,10 @@ export function ModelPriceSourceFields({ model, draft, setDraft, busy, connectio
   // opens with. Searching the whole string finds nothing and makes the feature look broken.
   const [query, setQuery] = useState(() => model.display_name.split("·")[0].trim())
   const [results, setResults] = useState<PriceCatalogEntry[] | null>(null)
+  // The entry picked in this session, if any. The rates below are read from it rather than from
+  // the last sync: after picking a different entry the two disagree, and a table that showed the
+  // stale list price beside the new charged rate would print arithmetic that does not hold.
+  const [chosen, setChosen] = useState<PriceCatalogEntry | null>(null)
   const [searching, setSearching] = useState(false)
   const [searchError, setSearchError] = useState<string | null>(null)
   const following = draft.priceSource !== "manual"
@@ -126,7 +130,10 @@ export function ModelPriceSourceFields({ model, draft, setDraft, busy, connectio
             <li key={entry.reference}>
               <button type="button" disabled={busy}
                 className={entry.reference === draft.priceReference ? "active" : ""}
-                onClick={() => setDraft((current) => applyCatalogEntry(current, entry, discount.percent))}>
+                onClick={() => {
+                  setChosen(entry)
+                  setDraft((current) => applyCatalogEntry(current, entry, discount.percent))
+                }}>
                 <span className="model-price-result-label" data-no-localize>{entry.label}</span>
                 <span className="model-price-result-detail">{entry.detail}</span>
                 <span className="model-price-result-rate" data-no-localize>
@@ -159,17 +166,25 @@ export function ModelPriceSourceFields({ model, draft, setDraft, busy, connectio
         </p>
       </div>
 
-      <PriceArithmetic model={model} draft={draft} percent={discount.percent} />
+      <PriceArithmetic model={model} draft={draft} percent={discount.percent} chosen={chosen} />
     </div>}
   </div>
 }
 
-function PriceArithmetic({ model, draft, percent }: {
+function PriceArithmetic({ model, draft, percent, chosen }: {
   model: ManagedModel
   draft: ModelEditDraft
   percent: number | null
+  chosen: PriceCatalogEntry | null
 }) {
-  const list = {
+  // A freshly picked entry wins over the last sync, so the list price and the charged rate in
+  // each row always come from the same place and the multiplication reads true.
+  const list = chosen !== null ? {
+    input: chosen.input_per_million,
+    output: chosen.output_per_million,
+    cached: chosen.cached_per_million,
+    cacheWrite: chosen.cache_write_per_million,
+  } : {
     input: model.list_input_cost_per_million,
     output: model.list_output_cost_per_million,
     cached: model.list_cached_cost_per_million,
@@ -209,7 +224,10 @@ function PriceArithmetic({ model, draft, percent }: {
         </div>
       ))}
     </div>
-    {model.price_synced_at && <p className="publication-form-note">
+    {chosen !== null && <p className="publication-form-note">
+      保存后按此基准计费；下次同步会沿用它。
+    </p>}
+    {chosen === null && model.price_synced_at && <p className="publication-form-note">
       <RefreshCw size={12} /> 最近同步 {new Date(model.price_synced_at).toLocaleString()}
       {model.price_sync_status && model.price_sync_status !== "ok"
         && ` · ${SYNC_STATUS_LABEL[model.price_sync_status] ?? model.price_sync_status}`}

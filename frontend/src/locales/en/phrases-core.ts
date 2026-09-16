@@ -1934,4 +1934,5 @@ export const ENGLISH_CORE_PHRASES: Record<string, string> = {
   "Anthropic 列表价": "Anthropic list price",
   "计费项": "Item",
   "官方价": "List price",
+  "保存后按此基准计费；下次同步会沿用它。": "Saving charges at this entry, and the next sync follows it.",
 }

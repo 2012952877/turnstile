@@ -1928,4 +1928,5 @@ export const JAPANESE_CORE_PHRASES: Record<string, string> = {
   "Anthropic 列表价": "Anthropic 定価",
   "计费项": "課金項目",
   "官方价": "定価",
+  "保存后按此基准计费；下次同步会沿用它。": "保存するとこの基準で課金され、次回の同期もこれに従います。",
 }

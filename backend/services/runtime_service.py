@@ -153,16 +153,7 @@ class ModelRuntimeService:
             ]
         )
 
-    def sync_prices(
-        self, role: str, only: Sequence[UUID] | None = None
-    ) -> PriceSyncResponse:
-        # One click reprices many models at once, so this is narrower than editing a single
-        # rate: a member may correct one model's price, but repricing the catalogue belongs to
-        # whoever owns the commercial terms.
-        if role not in {"owner", "admin"}:
-            raise HTTPException(
-                status_code=403, detail="只有 owner 或 admin 可以同步价格"
-            )
+    def sync_prices(self, only: Sequence[UUID] | None = None) -> PriceSyncResponse:
         registry = self.registry()
         summary = plan_price_sync(registry.models, self._price_catalog, only=only)
         written = self._repository.apply_model_price_sync(

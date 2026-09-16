@@ -275,11 +275,15 @@ def update_runtime(
 )
 def search_price_catalog(
     service: RuntimeService,
-    identity: OwnerSession,
+    identity: CurrentSession,
     q: Annotated[str, Query(max_length=120)] = "",
     region: Annotated[str | None, Query(max_length=64)] = None,
     authorization: Authorization = None,
 ) -> PriceCatalogResponse:
+    # Reading a vendor's published price list changes nothing and reveals nothing the vendor
+    # does not print on its own website, so this is gated like the registry read it sits beside
+    # rather than like the write it leads to. Requiring an owner here only meant that anyone
+    # else opening the dialog saw a 403 where the candidate list should be.
     service.authorize(identity.role, authorization, manage=False)
     return service.price_catalog(q, region=region)
 
@@ -294,12 +298,11 @@ def sync_model_prices(
     request: PriceSyncRequest | None = None,
     authorization: Authorization = None,
 ) -> PriceSyncResponse:
-    # Syncing rates is the same kind of act as editing one by hand -- it changes what a request
-    # costs, not where it is routed -- so it is gated the same way a price edit is, rather than
-    # behind the management credential that guards routing identity. The narrower role check
-    # lives in the service, because "who may reprice the catalogue" is a product rule.
+    # Gated exactly like editing one model's rate by hand: `update_model` already requires an
+    # owner session and skips the management credential for a price-only change, and repricing
+    # in bulk is the same act at a larger scale. One gate, stated once.
     service.authorize(identity.role, authorization, manage=False)
-    return service.sync_prices(identity.role, request.model_ids if request else None)
+    return service.sync_prices(request.model_ids if request else None)
 
 
 @protected_router.post("/api/v1/model-management/models", response_model=RegistryResponse)

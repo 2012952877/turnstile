@@ -1928,4 +1928,5 @@ export const KOREAN_CORE_PHRASES: Record<string, string> = {
   "Anthropic 列表价": "Anthropic 정가",
   "计费项": "과금 항목",
   "官方价": "정가",
+  "保存后按此基准计费；下次同步会沿用它。": "저장하면 이 기준으로 청구되며, 다음 동기화도 이를 따릅니다.",
 }

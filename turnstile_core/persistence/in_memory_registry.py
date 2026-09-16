@@ -60,6 +60,39 @@ class InMemoryRegistryRepositoryMixin:
             ],
         }
 
+    def apply_model_price_sync(self, updates: Sequence[Mapping[str, Any]]) -> int:
+        charged = (
+            "input_cost_per_million",
+            "output_cost_per_million",
+            "cached_cost_per_million",
+            "cache_write_cost_per_million",
+        )
+        listed = (
+            "list_input_cost_per_million",
+            "list_output_cost_per_million",
+            "list_cached_cost_per_million",
+            "list_cache_write_cost_per_million",
+        )
+        now = datetime.now(UTC)
+        written = 0
+        by_id = {model.get("id"): model for model in self.models}
+        for update in updates:
+            model = by_id.get(update.get("model_id"))
+            if model is None:
+                continue
+            for column in listed:
+                if update.get(column) is not None:
+                    model[column] = update[column]
+            if update.get("writes"):
+                for column in charged:
+                    model[column] = update.get(column)
+                model["updated_at"] = now
+                written += 1
+            model["price_sync_status"] = update.get("status")
+            model["price_sync_message"] = update.get("message")
+            model["price_synced_at"] = now
+        return written
+
     def create_registry_item(self, kind: str, values: Mapping[str, Any]) -> dict[str, Any]:
         now = datetime.now(UTC)
         row = dict(values)

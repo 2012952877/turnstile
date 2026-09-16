@@ -490,6 +490,15 @@ class QueryRepository(ABC):
     ) -> dict[str, Any] | None: ...
 
     @abstractmethod
+    def apply_model_price_sync(self, updates: Sequence[Mapping[str, Any]]) -> int:
+        """Record what a price sync decided.
+
+        Separate from `update_registry_item` because the sync writes fields no client may set:
+        the outcome of the last run is something the system observed, not something a caller
+        asserts. Returns how many rows had their charged rates actually changed.
+        """
+
+    @abstractmethod
     def delete_runtime_if_empty(self, runtime_id: UUID) -> bool: ...
 
     @abstractmethod

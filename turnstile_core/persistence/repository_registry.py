@@ -74,7 +74,13 @@ class PostgreSqlRegistryRepositoryMixin:
                                     COALESCE(metadata.assignment_required, FALSE)
                                         AS assignment_required,
                                     metadata.publication_id,
-                                    binding.value->'model'->'image_profile' AS image_profile
+                                    binding.value->'model'->'image_profile' AS image_profile,
+                                    -- Resolved here rather than in the caller so every reader
+                                    -- sees the same answer to "which discount actually applied".
+                                    COALESCE(
+                                        model.price_discount_percent,
+                                        runtime.price_discount_percent
+                                    ) AS effective_discount_percent
                      FROM managed_model model
                      JOIN model_provider provider ON provider.id = model.provider_id
                      JOIN model_runtime runtime ON runtime.id = model.runtime_id
@@ -99,6 +105,59 @@ class PostgreSqlRegistryRepositoryMixin:
             "runtimes": cast(Sequence[dict[str, Any]], runtimes),
             "models": cast(Sequence[dict[str, Any]], models),
         }
+
+    def apply_model_price_sync(self, updates: Sequence[Mapping[str, Any]]) -> int:
+        written = 0
+        with self._connection() as connection, connection.transaction():
+            for update in updates:
+                if update.get("writes"):
+                    connection.execute(
+                        """UPDATE managed_model SET
+                               input_cost_per_million = %(input_cost_per_million)s,
+                               output_cost_per_million = %(output_cost_per_million)s,
+                               cached_cost_per_million = %(cached_cost_per_million)s,
+                               cache_write_cost_per_million =
+                                   %(cache_write_cost_per_million)s,
+                               list_input_cost_per_million =
+                                   %(list_input_cost_per_million)s,
+                               list_output_cost_per_million =
+                                   %(list_output_cost_per_million)s,
+                               list_cached_cost_per_million =
+                                   %(list_cached_cost_per_million)s,
+                               list_cache_write_cost_per_million =
+                                   %(list_cache_write_cost_per_million)s,
+                               price_sync_status = %(status)s,
+                               price_sync_message = %(message)s,
+                               price_synced_at = now(),
+                               updated_at = now()
+                           WHERE id = %(model_id)s""",
+                        dict(update),
+                    )
+                    written += 1
+                else:
+                    # The rates stay exactly as they are; only the record of what happened
+                    # changes, so the dashboard can say why a model was skipped.
+                    connection.execute(
+                        """UPDATE managed_model SET
+                               list_input_cost_per_million = COALESCE(
+                                   %(list_input_cost_per_million)s,
+                                   list_input_cost_per_million),
+                               list_output_cost_per_million = COALESCE(
+                                   %(list_output_cost_per_million)s,
+                                   list_output_cost_per_million),
+                               list_cached_cost_per_million = COALESCE(
+                                   %(list_cached_cost_per_million)s,
+                                   list_cached_cost_per_million),
+                               list_cache_write_cost_per_million = COALESCE(
+                                   %(list_cache_write_cost_per_million)s,
+                                   list_cache_write_cost_per_million),
+                               price_sync_status = %(status)s,
+                               price_sync_message = %(message)s,
+                               price_synced_at = now()
+                           WHERE id = %(model_id)s""",
+                        dict(update),
+                    )
+        return written
 
     def create_registry_item(self, kind: str, values: Mapping[str, Any]) -> dict[str, Any]:
         parameters = dict(values)
@@ -142,10 +201,12 @@ class PostgreSqlRegistryRepositoryMixin:
                 row = connection.execute(
                     """INSERT INTO model_runtime (
                                provider_id, gateway_profile_id, name, runtime_kind,
-                               enabled, is_default, config, allowed_roles
+                               enabled, is_default, config, allowed_roles,
+                               price_discount_percent
                            ) VALUES (%(provider_id)s, %(gateway_profile_id)s,
                                %(name)s, %(runtime_kind)s, %(enabled)s,
-                               %(is_default)s, %(config)s, %(allowed_roles)s)
+                               %(is_default)s, %(config)s, %(allowed_roles)s,
+                               %(price_discount_percent)s)
                            RETURNING *""",
                         parameters,
                 ).fetchone()
@@ -169,13 +230,15 @@ class PostgreSqlRegistryRepositoryMixin:
                                enabled, is_default, capabilities, context_window,
                                input_cost_per_million, output_cost_per_million,
                                cached_cost_per_million, cache_write_cost_per_million,
-                               allowed_roles
+                               allowed_roles, price_source, price_reference,
+                               price_discount_percent
                            ) VALUES (%(provider_id)s, %(runtime_id)s, %(model_key)s,
                                %(display_name)s, %(enabled)s, %(is_default)s,
                                %(capabilities)s, %(context_window)s,
                                %(input_cost_per_million)s, %(output_cost_per_million)s,
                                %(cached_cost_per_million)s, %(cache_write_cost_per_million)s,
-                               %(allowed_roles)s) RETURNING *""",
+                               %(allowed_roles)s, %(price_source)s, %(price_reference)s,
+                               %(price_discount_percent)s) RETURNING *""",
                         parameters,
                 ).fetchone()
                 metadata = {
@@ -437,6 +500,7 @@ class PostgreSqlRegistryRepositoryMixin:
                 "is_default",
                 "config",
                 "allowed_roles",
+                "price_discount_percent",
             ],
             "model": [
                 "provider_id",
@@ -452,6 +516,9 @@ class PostgreSqlRegistryRepositoryMixin:
                 "cached_cost_per_million",
                 "cache_write_cost_per_million",
                 "allowed_roles",
+                "price_source",
+                "price_reference",
+                "price_discount_percent",
             ],
         }[kind]
         assignments = [f"{column} = %({column})s" for column in allowed if column in values]

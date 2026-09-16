@@ -101,6 +101,7 @@ import type {
   ManagedModel,
   ModelProvider,
   ModelRegistry,
+  ModelConnectionUpdate,
   ModelRuntime,
   RuntimeHealth,
   UsageRequestSummary,
@@ -447,7 +448,7 @@ export function ModelManagementPage({ onToggleSidebar }: { onToggleSidebar: () =
     },
   })
   const updateConnection = useMutation({
-    mutationFn: ({ runtime, value }: { runtime: ModelRuntime; value: { name: string; enabled: boolean; is_default: boolean } }) => dataSource.updateConnection(runtime.id, value),
+    mutationFn: ({ runtime, value }: { runtime: ModelRuntime; value: ModelConnectionUpdate }) => dataSource.updateConnection(runtime.id, value),
     onSuccess: (registry) => {
       client.setQueryData(finopsKeys.registry, registry)
       setConnectionOpen(false)
@@ -532,6 +533,9 @@ export function ModelManagementPage({ onToggleSidebar }: { onToggleSidebar: () =
           name: patch.name ?? runtime.name,
           enabled: patch.enabled ?? runtime.enabled,
           is_default: patch.is_default ?? runtime.is_default,
+          // Carried through unchanged: toggling a connection on or off must not quietly
+          // reset the discount someone set on it.
+          price_discount_percent: patch.price_discount_percent ?? runtime.price_discount_percent,
         } })
       : save.mutate({ kind: "runtime", id: runtime.id, value: runtimePayload(runtime, patch) })
   const updateModel = (model: ManagedModel, patch: Partial<ManagedModel>) =>

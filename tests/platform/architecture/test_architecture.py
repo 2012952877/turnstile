@@ -25,7 +25,11 @@ CORE_ALLOWED: dict[str, set[str]] = {
     "persistence": {"domain"},
     "integrations": {"domain", "persistence"},
     "ingestion": {"domain", "persistence", "integrations"},
-    "services": {"domain", "persistence", "integrations"},
+    # Reading a vendor's published price list is the same shape as reading a vendor's API, so
+    # pricing sits beside integrations rather than inside services: it talks outward and owns no
+    # registry state of its own.
+    "pricing": {"domain"},
+    "services": {"domain", "persistence", "integrations", "pricing"},
 }
 
 BACKEND_ALLOWED: dict[str, set[str]] = {

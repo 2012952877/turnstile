@@ -487,6 +487,9 @@ export type ModelRuntime = {
   brand_key: BrandKey
   config: Record<string, unknown>
   allowed_roles: string[]
+  // Percent of list price charged for models on this connection that follow a list price.
+  // 90 means a 10% discount. null charges list price.
+  price_discount_percent: number | null
   health_status: "unknown" | "available" | "unavailable"
   health_message: string | null
   last_checked_at: string | null
@@ -516,8 +519,57 @@ export type ManagedModel = {
   cached_cost_per_million: number | null
   cache_write_cost_per_million: number | null
   allowed_roles: string[]
+  // Where the four rates above came from. "manual" means someone typed them and the price sync
+  // leaves the row alone, which is what every model did before this existed.
+  price_source: PriceSource
+  price_reference: string | null
+  // Percent of list price, overriding the connection's own figure. null inherits it.
+  price_discount_percent: number | null
+  // Resolved server-side from the model's figure or the connection's, so the UI never has to
+  // work out which one won.
+  effective_discount_percent: number | null
+  list_input_cost_per_million: number | null
+  list_output_cost_per_million: number | null
+  list_cached_cost_per_million: number | null
+  list_cache_write_cost_per_million: number | null
+  price_synced_at: string | null
+  price_sync_status: PriceSyncStatus | null
+  price_sync_message: string | null
   created_at: string
   updated_at: string
+}
+
+export type PriceSource = "manual" | "azure_retail" | "anthropic"
+export type PriceSyncStatus = "ok" | "unmapped" | "stale" | "review_needed"
+
+export type PriceCatalogEntry = {
+  reference: string
+  label: string
+  source: PriceSource
+  detail: string | null
+  input_per_million: number | null
+  output_per_million: number | null
+  cached_per_million: number | null
+  cache_write_per_million: number | null
+}
+
+export type PriceCatalogResponse = { entries: PriceCatalogEntry[] }
+
+export type PriceSyncDetail = {
+  model_id: string
+  model_key: string
+  status: PriceSyncStatus
+  message: string | null
+}
+
+export type PriceSyncResponse = {
+  considered: number
+  updated: number
+  unmapped: number
+  review_needed: number
+  stale: number
+  details: PriceSyncDetail[]
+  registry: ModelRegistry
 }
 
 export type ModelRegistry = {
@@ -553,6 +605,7 @@ export type ModelConnectionUpdate = {
   name: string
   enabled: boolean
   is_default: boolean
+  price_discount_percent: number | null
 }
 
 export type GatewayPublicationStatus = "queued" | "validating" | "provisioning" | "building_revision" | "verifying" | "awaiting_authorization" | "promoting" | "active" | "failed" | "superseded" | "rolling_back" | "rolled_back"

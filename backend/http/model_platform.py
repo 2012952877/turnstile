@@ -46,6 +46,9 @@ from turnstile_core.domain.runtime_models import (
     ModelConnectionUpdate,
     ModelInvocationRequest,
     ModelInvocationResponse,
+    PriceCatalogResponse,
+    PriceSyncRequest,
+    PriceSyncResponse,
     ProviderWrite,
     RegistryResponse,
     RuntimeHealth,
@@ -264,6 +267,35 @@ def update_runtime(
 ) -> RegistryResponse:
     service.authorize(identity.role, authorization, manage=True)
     return service.save_runtime(write, item_id)
+
+
+@protected_router.get(
+    "/api/v1/model-management/price-catalog",
+    response_model=PriceCatalogResponse,
+)
+def search_price_catalog(
+    service: RuntimeService,
+    identity: OwnerSession,
+    q: Annotated[str, Query(max_length=120)] = "",
+    region: Annotated[str | None, Query(max_length=64)] = None,
+    authorization: Authorization = None,
+) -> PriceCatalogResponse:
+    service.authorize(identity.role, authorization, manage=False)
+    return service.price_catalog(q, region=region)
+
+
+@protected_router.post(
+    "/api/v1/model-management/price-sync",
+    response_model=PriceSyncResponse,
+)
+def sync_model_prices(
+    service: RuntimeService,
+    identity: OwnerSession,
+    request: PriceSyncRequest | None = None,
+    authorization: Authorization = None,
+) -> PriceSyncResponse:
+    service.authorize(identity.role, authorization, manage=True)
+    return service.sync_prices(request.model_ids if request else None)
 
 
 @protected_router.post("/api/v1/model-management/models", response_model=RegistryResponse)

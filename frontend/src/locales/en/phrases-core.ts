@@ -1949,4 +1949,6 @@ export const ENGLISH_CORE_PHRASES: Record<string, string> = {
   "这种计价方式下各区域单价不同，请选你实际部署所在的区域。": "Under this mode the rate differs by region; pick the one you actually deployed in.",
   "这些计量表提到了该模型，但名称写法本系统还不认识，因此没有纳入上面的选项。如果你要的价在里面，告诉我们即可补上。": "These meters mention this model, but their naming is one this system has not met, so they are not offered above. If the rate you want is among them, say so and it will be added.",
   "批量调用、微调、预留吞吐等，不是普通对话调用的单价，因此不作为选项。": "Batch calls, fine-tuning, reserved throughput and the like are not the rate a normal chat request is billed at, so they are not offered.",
+  "未能识别的计量表": "Meters not recognised",
+  "计的是别的东西的计量表": "Meters that price something else",
 }

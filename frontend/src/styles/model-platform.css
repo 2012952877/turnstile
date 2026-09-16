@@ -882,3 +882,5 @@
 .model-price-grid-actual { color: var(--foreground); font-weight: 500; }
 .model-price-arithmetic .publication-form-note { display: flex; align-items: center; gap: 4px; }
 .model-price-follow .model-editor-advanced-body code { display: block; padding: 2px 0; color: var(--muted-foreground); font-size: 11px; overflow-wrap: anywhere; }
+.model-price-follow .model-editor-advanced > summary { gap: 6px; }
+.model-price-follow .model-editor-advanced > summary > span:last-child { padding: 0 5px; border-radius: 999px; background: var(--muted); font-size: 10px; line-height: 16px; }

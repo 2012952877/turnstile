@@ -431,9 +431,14 @@ function CatalogNotices({ details }: { details: PriceCatalogOptionsResponse }) {
   return <>
     {details.note && <p className="publication-form-note">{details.note}</p>}
     {details.unreadable.length > 0 && <details className="model-editor-advanced">
+      {/* The count sits in its own untranslated element rather than inside the sentence. An
+          interpolated sentence has to be matched by a dynamic rule, and a generic fragment rule
+          earlier in the table -- `(\d+)\s*条` -> "$1 records" -- rewrites the digits first, so
+          the whole-sentence rule never fires and the line renders half translated. */}
       <summary>
         <AlertTriangle size={12} />
-        {`另有 ${details.unreadable.length} 条计量表未能识别`}
+        <span>未能识别的计量表</span>
+        <span data-no-localize>{details.unreadable.length}</span>
       </summary>
       <div className="model-editor-advanced-body">
         <p className="publication-form-note">
@@ -446,7 +451,10 @@ function CatalogNotices({ details }: { details: PriceCatalogOptionsResponse }) {
       </div>
     </details>}
     {details.other_meters.length > 0 && <details className="model-editor-advanced">
-      <summary>{`另有 ${details.other_meters.length} 条计量表计的是别的东西`}</summary>
+      <summary>
+        <span>计的是别的东西的计量表</span>
+        <span data-no-localize>{details.other_meters.length}</span>
+      </summary>
       <div className="model-editor-advanced-body">
         <p className="publication-form-note">
           批量调用、微调、预留吞吐等，不是普通对话调用的单价，因此不作为选项。

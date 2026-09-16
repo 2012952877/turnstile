@@ -1932,4 +1932,6 @@ export const ENGLISH_CORE_PHRASES: Record<string, string> = {
   "跟随官方价时，这四个值由 官方价 × 折扣 自动算出，改折扣或换基准即可调整。": "While following a list price these four are computed as list x discount; change the discount or the entry to adjust them.",
   "Azure 零售价": "Azure retail price",
   "Anthropic 列表价": "Anthropic list price",
+  "计费项": "Item",
+  "官方价": "List price",
 }

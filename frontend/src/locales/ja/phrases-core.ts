@@ -1926,4 +1926,6 @@ export const JAPANESE_CORE_PHRASES: Record<string, string> = {
   "跟随官方价时，这四个值由 官方价 × 折扣 自动算出，改折扣或换基准即可调整。": "定価に追従している間、この 4 つは 定価 × 割引 で自動計算されます。割引か基準を変更して調整してください。",
   "Azure 零售价": "Azure 小売価格",
   "Anthropic 列表价": "Anthropic 定価",
+  "计费项": "課金項目",
+  "官方价": "定価",
 }

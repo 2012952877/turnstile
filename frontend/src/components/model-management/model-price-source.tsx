@@ -46,7 +46,10 @@ export function ModelPriceSourceFields({ model, draft, setDraft, busy, connectio
   busy: boolean
   connectionDiscount: number | null
 }) {
-  const [query, setQuery] = useState(model.display_name)
+  // The display name usually reads "gpt-4.1-mini · Microsoft Foundry"; only the part before the
+  // separator resembles anything a vendor's price list calls a model, so that is what the box
+  // opens with. Searching the whole string finds nothing and makes the feature look broken.
+  const [query, setQuery] = useState(() => model.display_name.split("·")[0].trim())
   const [results, setResults] = useState<PriceCatalogEntry[] | null>(null)
   const [searching, setSearching] = useState(false)
   const [searchError, setSearchError] = useState<string | null>(null)
@@ -191,7 +194,7 @@ function PriceArithmetic({ model, draft, percent }: {
     </div>
     <div className="model-price-grid">
       <div className="model-price-grid-head">
-        <span>桶</span><span>官方价</span><span>折扣</span><span>实际单价</span>
+        <span>计费项</span><span>官方价</span><span>折扣</span><span>实际单价</span>
       </div>
       {rows.map(([label, listed, actual]) => (
         <div className="model-price-grid-row" key={label}>

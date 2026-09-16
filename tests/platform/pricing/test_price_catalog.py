@@ -62,16 +62,25 @@ class StubAzure(AzureRetailCatalog):
         ("gpt 4.1 Inp regnl Tokens", ("gpt 4.1", "input", "Regional")),
         # Azure OpenAI GPT5 -- the model name is a bare version, `opt` means output,
         # `cd` means cached, `Gl`/`Dz` are the deployment.
-        ("5.4 pp inp Gl 1M Tokens", ("5.4", "input", "Global")),
-        ("5.4 pp opt Gl 1M Tokens", ("5.4", "output", "Global")),
-        ("5.1 pp cd inp Dz 1M Tokens", ("5.1", "cached", "Data Zone")),
+        ("5.4 inp Gl 1M Tokens", ("5.4", "input", "Global")),
+        ("5.4 opt Gl 1M Tokens", ("5.4", "output", "Global")),
+        ("5.1 cd inp Dz 1M Tokens", ("5.1", "cached", "Data Zone")),
         ("gpt 5 pro out glbl Tokens", ("gpt 5 pro", "output", "Global")),
         ("gpt-5-codex-inp-glbl Tokens", ("gpt 5 codex", "input", "Global")),
         ("gpt-5-codex-ccchd-inp-glbl Tokens", ("gpt 5 codex", "cached", "Global")),
+        # Spelling variants of the bucket words themselves.
+        ("GPT 5 Nano Inpt Glbl 1M Tokens", ("GPT 5 Nano", "input", "Global")),
+        ("GPT 5 Mini outpt Glbl 1M Tokens", ("GPT 5 Mini", "output", "Global")),
+        # The write side of the cache. Azure publishes it on GPT5 and GPT6.
+        ("5.6 sol LongCo Cd Wr Std Gl 1M Tokens",
+         ("5.6 sol LongCo Std", "cache_write", "Global")),
+        ("6-astra ShortCo Cd Wr Std DZ 1M Tokens",
+         ("6 astra ShortCo Std", "cache_write", "Data Zone")),
+        # A cached marker with no bucket word beside it still prices cached input.
+        ("K2.5 cached glbl Tokens", ("K2.5", "cached", "Global")),
         # Other vendors, each with its own spelling.
         ("FW GLM 5.2 Inp DZ Tokens", ("FW GLM 5.2", "input", "Data Zone")),
         ("K2.5 Thinking Outp DZ Tokens", ("K2.5 Thinking", "output", "Data Zone")),
-        ("4.6 Outp DZ L Tokens", ("4.6", "output", "Data Zone")),
         ("V3.1 Inp DZone Tokens", ("V3.1", "input", "Data Zone")),
         # No deployment segment at all.
         ("Phi-3.5-Mini-128K-Instruct-Output Tokens",
@@ -82,6 +91,35 @@ def test_reads_every_naming_convention_in_the_catalogue(
     name: str, expected: tuple[str, str, str]
 ) -> None:
     assert parse_meter_name(name) == expected
+
+
+@pytest.mark.parametrize(
+    ("premium", "base", "stem"),
+    [
+        ("5.4 pp inp Gl 1M Tokens", "5.4 inp Gl 1M Tokens", "5.4"),
+        ("4.6 Outp DZ L Tokens", "4.6 Outp DZ Tokens", "4.6"),
+    ],
+)
+def test_a_service_tier_is_a_different_thing_to_buy(
+    premium: str, base: str, stem: str
+) -> None:
+    """`pp` and `l` were read as noise, on the belief that Azure prices them the same.
+
+    It does not. Every meter carrying either marker is exactly twice the same meter without it
+    -- 24 matched pairs for `pp`, 12 for `l`, not one of them equal. Collapsing them onto one
+    stem meant two prices landed in the same slot and the later row won, so a model could
+    quietly start charging the premium rate.
+    """
+    premium_parsed = parse_meter_name(premium)
+    base_parsed = parse_meter_name(base)
+    assert premium_parsed is not None
+    assert base_parsed is not None
+    assert base_parsed[0] == stem
+    assert premium_parsed[0] != base_parsed[0], (
+        "the premium tier has to reach the picker as its own entry, or its price overwrites "
+        "the standard one"
+    )
+    assert premium_parsed[1:] == base_parsed[1:]
 
 
 @pytest.mark.parametrize(
@@ -161,6 +199,30 @@ def test_options_are_ordered_so_the_usual_choice_comes_first() -> None:
     assert [option.deployment for option in found.options][0] == "Global"
 
 
+def test_a_published_cache_write_rate_reaches_the_entry() -> None:
+    """The registry charges cache writes separately, and GPT5/GPT6 publish the rate. Leaving it
+    empty would silently fall back to the cached read rate, which is 12.5x too cheap here."""
+    rows = [
+        meter("5.6 sol ShortCo Inp Std Gl 1M Tokens", 4.0,
+              product="Azure OpenAI GPT5", unit="1M"),
+        meter("5.6 sol ShortCo Opt Std Gl 1M Tokens", 20.0,
+              product="Azure OpenAI GPT5", unit="1M"),
+        meter("5.6 sol ShortCo Cd Inp Std Gl 1M Tokens", 0.4,
+              product="Azure OpenAI GPT5", unit="1M"),
+        meter("5.6 sol ShortCo Cd Wr Std Gl 1M Tokens", 5.0,
+              product="Azure OpenAI GPT5", unit="1M"),
+    ]
+    model = CatalogModel(
+        key="azure_retail:Azure OpenAI GPT5:5.6 sol ShortCo Std",
+        label="5.6 sol ShortCo Std",
+        product="Azure OpenAI GPT5",
+        source=PriceSource.AZURE_RETAIL,
+    )
+    entry = options_for(rows, model).options[0].entry
+    assert entry.cached_per_million == pytest.approx(0.4)
+    assert entry.cache_write_per_million == pytest.approx(5.0)
+
+
 def test_a_meter_it_cannot_read_is_reported_not_dropped() -> None:
     rows = GPT_41 + [meter("gpt 4.1 weirdly-worded glbl Tokens", 0.003)]
     found = options_for(rows, GPT_41_MODEL)
@@ -176,8 +238,8 @@ def test_a_meter_billed_in_something_else_says_so() -> None:
 
 def test_per_million_meters_are_not_multiplied_again() -> None:
     rows = [
-        meter("5.4 pp inp Gl 1M Tokens", 1.25, product="Azure OpenAI GPT5", unit="1M"),
-        meter("5.4 pp opt Gl 1M Tokens", 10.0, product="Azure OpenAI GPT5", unit="1M"),
+        meter("5.4 inp Gl 1M Tokens", 1.25, product="Azure OpenAI GPT5", unit="1M"),
+        meter("5.4 opt Gl 1M Tokens", 10.0, product="Azure OpenAI GPT5", unit="1M"),
     ]
     model = CatalogModel(
         key="azure_retail:Azure OpenAI GPT5:5.4",
@@ -232,10 +294,35 @@ def test_the_typed_words_go_into_the_api_filter() -> None:
     sent = catalog.filters[-1]
     assert "serviceName eq 'Foundry Models'" in sent
     assert "productName eq 'Azure OpenAI'" in sent
-    assert "contains(meterName,'gpt 4.1')" in sent
-    assert "contains(meterName,'gpt-4.1')" in sent
-    # The bare first word matches tens of thousands of meters and earns a rate limit.
-    assert "contains(meterName,'gpt')" not in sent
+    assert "contains(meterName,'gpt') and contains(meterName,'4.1')" in sent
+
+
+def test_the_filter_does_not_assume_the_name_survives_as_one_run_of_text() -> None:
+    """`6-astra LongCo Opt Std DZ 1M Tokens` puts the bucket word inside the model's name.
+
+    Asking for the words joined back together matched nothing there, so gpt-6-astra appeared in
+    the picker and then offered no prices at all -- which reads as "Azure does not publish a
+    price for this", the one conclusion that was not true.
+    """
+    rows = [
+        meter("6-astra ShortCo Inp Std Gl 1M Tokens", 10.0,
+              product="Azure OpenAI GPT6", unit="1M"),
+        meter("6-astra ShortCo Opt Std Gl 1M Tokens", 50.0,
+              product="Azure OpenAI GPT6", unit="1M"),
+    ]
+    model = CatalogModel(
+        key="azure_retail:Azure OpenAI GPT6:6 astra ShortCo Std",
+        label="6 astra ShortCo Std",
+        product="Azure OpenAI GPT6",
+        source=PriceSource.AZURE_RETAIL,
+    )
+    catalog = StubAzure(rows)
+    found = catalog.options(model)
+    sent = catalog.filters[-1]
+
+    assert "contains(meterName,'6 astra ShortCo Std')" not in sent
+    assert found.options, "the model must reach a price, not just a name"
+    assert found.options[0].entry.input_per_million == pytest.approx(10.0)
 
 
 def test_an_unreachable_source_is_named_rather_than_pretended_empty() -> None:

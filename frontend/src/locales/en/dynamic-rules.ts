@@ -151,4 +151,8 @@ export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
   [/(\d{2}\/\d{2})\s+(\d{2})时/g, (_match, date, hour) => `${date} ${hour}:00`],
   [/([+-]?\d+(?:\.\d+)?)%\s*较上期/g, (_match, value) => `${value}% vs previous period`],
   [/([+-]?\d+(?:\.\d+)?)%\s*用量占比/g, (_match, value) => `${value}% usage share`],
+  [/^继承连接（([\d.]+)%）$/g, (_match, value) => `Inherits the connection (${value}%)`],
+  [/^继承连接（未设折扣）$/g, () => "Inherits the connection (no discount set)"],
+  [/^当前继承连接折扣\s*([\d.]+)%。$/g, (_match, value) => `Currently inheriting the connection's ${value}% discount.`],
+  [/^当前使用本模型单独设置的\s*([\d.]+)%。$/g, (_match, value) => `Currently using this model's own ${value}%.`],
 ]

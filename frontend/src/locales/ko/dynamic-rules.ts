@@ -140,4 +140,8 @@ export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
   [/(\d{2}\/\d{2})\s+(\d{2})时/g, (_match, date, hour) => `${date} ${hour}:00`],
   [/([+-]?\d+(?:\.\d+)?)%\s*较上期/g, (_match, value) => `이전 기간 대비 ${value}%`],
   [/([+-]?\d+(?:\.\d+)?)%\s*用量占比/g, (_match, value) => `사용량 비중 ${value}%`],
+  [/^继承连接（([\d.]+)%）$/g, (_match, value) => `연결 상속 (${value}%)`],
+  [/^继承连接（未设折扣）$/g, () => "연결 상속 (할인 없음)"],
+  [/^当前继承连接折扣\s*([\d.]+)%。$/g, (_match, value) => `현재 연결의 ${value}% 할인을 상속합니다.`],
+  [/^当前使用本模型单独设置的\s*([\d.]+)%。$/g, (_match, value) => `현재 이 모델 고유의 ${value}%를 사용합니다.`],
 ]

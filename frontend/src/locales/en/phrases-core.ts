@@ -1930,4 +1930,6 @@ export const ENGLISH_CORE_PHRASES: Record<string, string> = {
   "继承连接（未设折扣）": "Inherits the connection (no discount set)",
   "跟随官方价时，必须先选定一个官方价基准。": "Following a list price requires choosing which entry to follow.",
   "跟随官方价时，这四个值由 官方价 × 折扣 自动算出，改折扣或换基准即可调整。": "While following a list price these four are computed as list x discount; change the discount or the entry to adjust them.",
+  "Azure 零售价": "Azure retail price",
+  "Anthropic 列表价": "Anthropic list price",
 }

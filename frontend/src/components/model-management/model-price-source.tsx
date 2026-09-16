@@ -288,7 +288,7 @@ function DeploymentStep({ details, selected, busy, onChoose }: {
             入 {money(option.input_per_million)} / 出 {money(option.output_per_million)}
           </span>
           <span className="model-price-option-note">
-            {option.region_required ? "按区域不同" : `${option.regions.length || ""} 全区域同价`}
+            {option.region_required ? "按区域不同" : "全区域同价"}
           </span>
         </label>
       ))}

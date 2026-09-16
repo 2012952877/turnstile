@@ -75,7 +75,9 @@ class CatalogEntry:
 class PriceCatalog(Protocol):
     source: PriceSource
 
-    def entries(self, *, region: str | None = None) -> Sequence[CatalogEntry]: ...
+    def entries(
+        self, *, region: str | None = None, query: str | None = None
+    ) -> Sequence[CatalogEntry]: ...
 
 
 def _http_get_json(url: str, *, timeout: float = 30.0) -> dict[str, Any]:
@@ -89,13 +91,22 @@ def _http_get_json(url: str, *, timeout: float = 30.0) -> dict[str, Any]:
 # Azure
 # --------------------------------------------------------------------------------------------
 
-# Meter names read like `gpt 4.1 cached Inp glbl Tokens`: a model stem, an optional `cached`, the
-# bucket, the deployment shape, then the literal `Tokens`. Anything that does not fit this shape
-# is skipped rather than guessed at -- fine-tuning, batch, audio and realtime meters all exist in
-# the same product and none of them price a chat request.
+# Meter names read like `gpt 4.1 cached Inp glbl Tokens`: a model stem, an optional cached
+# marker, the bucket, the deployment shape, then the literal `Tokens`. Anything that does not fit
+# this shape is skipped rather than guessed at -- fine-tuning, batch, audio and realtime meters
+# all exist in the same product and none of them price a chat request.
+#
+# The vocabulary is not consistent across model families and the inconsistencies are not
+# cosmetic: they decide whether a model is priceable at all. `gpt 4.1` writes `Inp`/`Outp` with
+# spaces, `gpt 5 pro` writes `inp`/`out`, and `gpt-5-codex` hyphenates throughout and spells
+# cached as `ccchd`. Accepting only the first spelling silently dropped every gpt-5 meter: the
+# output bucket never matched, so those entries carried an input rate and no output rate, and an
+# entry without both is treated as unpriced and hidden. The search then looked broken -- typing
+# `gpt 5` returned gpt-4o -- rather than looking incomplete.
 _AZURE_METER = re.compile(
-    r"^(?P<stem>.+?)\s+(?P<cached>cached\s+)?(?P<bucket>Inp|Input|Outp|Output)\s+"
-    r"(?P<deployment>glbl|global|regnl|regional|DataZone|Data Zone)\s+Tokens$",
+    r"^(?P<stem>.+?)[\s-]+(?P<cached>(?:cached|ccchd)[\s-]+)?"
+    r"(?P<bucket>Inp|Input|Outp|Output|Out)[\s-]+"
+    r"(?P<deployment>glbl|global|regnl|regional|dzone|DataZone|Data Zone)[\s-]+Tokens$",
     re.IGNORECASE,
 )
 _AZURE_EXCLUDE = re.compile(
@@ -108,6 +119,7 @@ _DEPLOYMENT_LABEL = {
     "global": "Global",
     "regnl": "Regional",
     "regional": "Regional",
+    "dzone": "Data Zone",
     "datazone": "Data Zone",
     "data zone": "Data Zone",
 }
@@ -128,18 +140,32 @@ class AzureRetailCatalog:
         self._ttl = ttl_seconds
         self._cache: dict[str, tuple[float, tuple[CatalogEntry, ...]]] = {}
 
-    def entries(self, *, region: str | None = None) -> Sequence[CatalogEntry]:
-        key = region or "*"
+    def entries(
+        self, *, region: str | None = None, query: str | None = None
+    ) -> Sequence[CatalogEntry]:
+        key = f"{region or '*'}|{(query or '').strip().lower()}"
         cached = self._cache.get(key)
         now = time.monotonic()
         if cached is not None and now - cached[0] < self._ttl:
             return cached[1]
-        built = tuple(self._build(region))
+        built = tuple(self._build(region, query))
         self._cache[key] = (now, built)
         return built
 
-    def _build(self, region: str | None) -> Iterable[CatalogEntry]:
-        clauses = ["productName eq 'Azure OpenAI'", "contains(meterName,'Tokens')"]
+    def _build(self, region: str | None, query: str | None = None) -> Iterable[CatalogEntry]:
+        # The search term goes into the API filter rather than being applied after the fact.
+        # Filtering locally meant guessing which products to download, and the guess was wrong:
+        # `productName eq 'Azure OpenAI'` covers gpt-4.1 but not gpt-5, which Microsoft files
+        # under `Azure OpenAI GPT5`. Matching on the meter name instead needs no such guess, and
+        # keeps each query small enough to page through completely.
+        clauses = ["serviceName eq 'Foundry Models'", "contains(meterName,'Tokens')"]
+        name_filter = _meter_name_filter(query)
+        if name_filter:
+            clauses.append(name_filter)
+        else:
+            # No search term means "show me something": bound it to the product that holds the
+            # bulk of the chat models rather than downloading every meter Azure publishes.
+            clauses.append("productName eq 'Azure OpenAI'")
         if region:
             clauses.append(f"armRegionName eq '{region}'")
         rows = self._fetch(" and ".join(clauses))
@@ -171,6 +197,9 @@ class AzureRetailCatalog:
                 if bucket in {"inp", "input"}
                 else "output"
             )
+            # A hyphenated stem reads as one word; normalising it means `gpt-5-codex` and
+            # `gpt 5 codex` are the same thing to both the grouping and the search.
+            stem = stem.replace("-", " ").strip()
             row_region = str(row.get("armRegionName") or region or "global")
             grouped.setdefault((row_region, stem, deployment), {})[slot] = per_million
 
@@ -199,9 +228,17 @@ class AzureRetailCatalog:
         )
         rows: list[dict[str, Any]] = []
         # Bounded rather than unbounded: a filter that accidentally matches everything should
-        # fail loudly on incompleteness, not spend the afternoon paging.
-        for _ in range(60):
-            payload = _http_get_json(url)
+        # stop, not spend the afternoon paging and earn a rate limit.
+        for page in range(25):
+            try:
+                payload = _http_get_json(url)
+            except httpx.HTTPError:
+                # A page that fails partway through leaves what was already read. Returning
+                # nothing instead would turn a throttled request into "this model has no
+                # published price", which is a different and much more misleading answer.
+                if page == 0:
+                    raise
+                break
             items = payload.get("Items")
             if isinstance(items, list):
                 rows.extend(item for item in items if isinstance(item, dict))
@@ -222,6 +259,26 @@ _TAG = re.compile(r"<[^>]+>")
 _DROP = re.compile(r"<(script|style).*?</\1>", re.IGNORECASE | re.DOTALL)
 
 
+def _meter_name_filter(query: str | None) -> str:
+    """An OData clause matching the typed words against a meter name.
+
+    Meter names separate words with spaces in one model family and hyphens in another -- `gpt 5
+    pro` beside `gpt-5-codex` -- so both spellings are tried. Quotes are dropped rather than
+    escaped: nothing in a model name needs one, and a filter is not the place to be clever.
+    """
+    terms = [term for term in re.split(r"[^A-Za-z0-9.]+", (query or "").strip()) if term]
+    if not terms:
+        return ""
+    joined = terms[:3]
+    # Only the joined forms. Adding the first word on its own looked like harmless breadth and
+    # was not: `contains(meterName,'gpt')` matches tens of thousands of meters, paging through
+    # them earns a 429, and a failed page meant the whole Azure source returned nothing -- so a
+    # widening meant to find more models found none at all.
+    variants = {" ".join(joined), "-".join(joined)}
+    clauses = [f"contains(meterName,'{value}')" for value in sorted(variants) if "'" not in value]
+    return "(" + " or ".join(clauses) + ")" if clauses else ""
+
+
 class AnthropicCatalog:
     """Anthropic's published list, parsed from the pricing page.
 
@@ -239,8 +296,12 @@ class AnthropicCatalog:
         self._ttl = ttl_seconds
         self._cache: tuple[float, tuple[CatalogEntry, ...]] | None = None
 
-    def entries(self, *, region: str | None = None) -> Sequence[CatalogEntry]:
-        del region  # Anthropic publishes one list, not one per region.
+    def entries(
+        self, *, region: str | None = None, query: str | None = None
+    ) -> Sequence[CatalogEntry]:
+        # Anthropic publishes one list, not one per region, and it is a single page -- so there
+        # is nothing to narrow and the whole list is parsed regardless of the query.
+        del region, query
         now = time.monotonic()
         if self._cache is not None and now - self._cache[0] < self._ttl:
             return self._cache[1]
@@ -320,6 +381,13 @@ def _multiples_hold(base: float, write_5m: float, write_1h: float, read: float) 
 # --------------------------------------------------------------------------------------------
 
 
+def _term_score(term: str, tokens: Sequence[str]) -> int:
+    """2 for an exact token, 1 for a token that starts with the term, 0 for no match."""
+    if term in tokens:
+        return 2
+    return 1 if any(token.startswith(term) for token in tokens) else 0
+
+
 class CompositeCatalog:
     """Every source behind one lookup, because a single connection serves several vendors."""
 
@@ -331,37 +399,43 @@ class CompositeCatalog:
     ) -> list[CatalogEntry]:
         terms = [term for term in re.split(r"[^a-z0-9.]+", query.lower()) if term]
         scored: list[tuple[int, int, str, CatalogEntry]] = []
-        for entry in self._all(region):
+        for entry in self._all(region, query):
             if not entry.priced:
                 continue
             label = entry.label.lower()
-            # Whole-token matching, not substring: searching `opus 5` must not rank
-            # `Claude Opus 4.5` above `Claude Opus 5` just because "5" appears inside "4.5".
-            tokens = set(re.split(r"[^a-z0-9.]+", label)) - {""}
-            score = sum(2 if term in tokens else 1 if term in label else 0 for term in terms)
-            if terms and score == 0:
+            tokens = [token for token in re.split(r"[^a-z0-9.]+", label) if token]
+            # A term matches a whole token or the start of one, never a fragment buried inside
+            # another number. Substring matching made `gpt 5` find `gpt 4o 0513`, because "5"
+            # appears inside "0513" -- a match no reader would call one.
+            scores = [_term_score(term, tokens) for term in terms]
+            # Every term has to land. A search box that returns rows missing half of what was
+            # typed reads as "your model is not here" even when it is, further down.
+            if terms and not all(scores):
                 continue
-            scored.append((-score, len(label), label, entry))
+            scored.append((-sum(scores), len(label), label, entry))
         scored.sort(key=lambda item: item[:3])
         return [entry for *_, entry in scored[:limit]]
 
     def lookup(self, reference: str, *, region: str | None = None) -> CatalogEntry | None:
-        # An Azure reference carries the region it was priced in, so a stored mapping resolves
-        # without the caller having to remember which region the connection lives in.
-        if region is None and reference.startswith("azure_retail:"):
+        # An Azure reference carries the region and the model stem it was priced from, so a
+        # stored mapping resolves with one narrow query instead of a full download.
+        query: str | None = None
+        if reference.startswith("azure_retail:"):
             parts = reference.split(":")
-            if len(parts) >= 2 and parts[1] not in {"", "any"}:
+            if region is None and len(parts) >= 2 and parts[1] not in {"", "any"}:
                 region = parts[1]
-        for entry in self._all(region):
+            if len(parts) >= 3:
+                query = parts[2]
+        for entry in self._all(region, query):
             if entry.reference == reference:
                 return entry
         return None
 
-    def _all(self, region: str | None) -> list[CatalogEntry]:
+    def _all(self, region: str | None, query: str | None = None) -> list[CatalogEntry]:
         collected: list[CatalogEntry] = []
         for catalog in self._catalogs:
             try:
-                collected.extend(catalog.entries(region=region))
+                collected.extend(catalog.entries(region=region, query=query))
             except (httpx.HTTPError, ValueError):
                 # One unreachable source must not blank the others: a Claude price that cannot
                 # be read is a reason to leave that model alone, not to stop pricing GPT.

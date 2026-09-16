@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 from ..domain.runtime_models import apply_databricks_adoption
@@ -49,13 +49,33 @@ class InMemoryRegistryRepositoryMixin:
                 return apply_databricks_adoption(runtime, binding["runtime_config"])
         return runtime
 
+    def _effective_discount(self, model: dict[str, Any]) -> float | None:
+        """The discount that actually applies: the model's own, else its connection's.
+
+        The SQL repository resolves this in the query. Resolving it here too keeps the two
+        implementations answering the same question -- without it the fake charges list price
+        for every model whose discount is set on the connection, and the tests would agree
+        with it.
+        """
+        own = model.get("price_discount_percent")
+        if own is not None:
+            return cast(float, own)
+        runtime = next(
+            (row for row in self.runtimes if row["id"] == model.get("runtime_id")), None
+        )
+        return cast("float | None", runtime.get("price_discount_percent") if runtime else None)
+
     def registry(self) -> dict[str, Sequence[dict[str, Any]]]:
         return {
             "gateways": self.gateways,
             "providers": self.providers,
             "runtimes": [self._published_databricks_runtime(row) for row in self.runtimes],
             "models": [
-                {**model, "image_profile": self._published_image_profile(model)}
+                {
+                    **model,
+                    "image_profile": self._published_image_profile(model),
+                    "effective_discount_percent": self._effective_discount(model),
+                }
                 for model in self.models
             ],
         }

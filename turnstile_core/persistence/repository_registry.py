@@ -37,12 +37,15 @@ class PostgreSqlRegistryRepositoryMixin:
                 """SELECT runtime.*, provider.name AS provider_name,
                                     gateway.name AS gateway_name,
                                     COALESCE(metadata.brand_key, 'generic') AS brand_key,
+                                    price.price_discount_percent,
                                     adopted.value->'runtime_config' AS adopted_config
                      FROM model_runtime runtime
                      JOIN model_provider provider ON provider.id = runtime.provider_id
                      LEFT JOIN gateway_profile gateway ON gateway.id = runtime.gateway_profile_id
                      LEFT JOIN model_runtime_metadata metadata
                          ON metadata.runtime_id = runtime.id
+                     LEFT JOIN model_runtime_price price
+                         ON price.runtime_id = runtime.id
                      LEFT JOIN effective_gateway_release effective
                          ON effective.gateway_profile_id = runtime.gateway_profile_id
                      LEFT JOIN gateway_publication publication
@@ -75,15 +78,31 @@ class PostgreSqlRegistryRepositoryMixin:
                                         AS assignment_required,
                                     metadata.publication_id,
                                     binding.value->'model'->'image_profile' AS image_profile,
+                                    -- A model with no price row was priced by hand, which is
+                                    -- what 'manual' means, so the COALESCE is the whole
+                                    -- backfill.
+                                    COALESCE(price.price_source, 'manual') AS price_source,
+                                    price.price_reference,
+                                    price.list_input_cost_per_million,
+                                    price.list_output_cost_per_million,
+                                    price.list_cached_cost_per_million,
+                                    price.list_cache_write_cost_per_million,
+                                    price.price_discount_percent,
+                                    price.price_synced_at,
+                                    price.price_sync_status,
+                                    price.price_sync_message,
                                     -- Resolved here rather than in the caller so every reader
                                     -- sees the same answer to "which discount actually applied".
                                     COALESCE(
-                                        model.price_discount_percent,
-                                        runtime.price_discount_percent
+                                        price.price_discount_percent,
+                                        runtime_price.price_discount_percent
                                     ) AS effective_discount_percent
                      FROM managed_model model
                      JOIN model_provider provider ON provider.id = model.provider_id
                      JOIN model_runtime runtime ON runtime.id = model.runtime_id
+                     LEFT JOIN managed_model_price price ON price.model_id = model.id
+                     LEFT JOIN model_runtime_price runtime_price
+                         ON runtime_price.runtime_id = runtime.id
                      LEFT JOIN managed_model_metadata metadata
                          ON metadata.model_id = model.id
                      LEFT JOIN effective_gateway_release effective
@@ -111,6 +130,9 @@ class PostgreSqlRegistryRepositoryMixin:
         with self._connection() as connection, connection.transaction():
             for update in updates:
                 if update.get("writes"):
+                    # The charged rates live on managed_model and always have: they are what
+                    # the billing path reads, and this job is only one of the ways they get
+                    # set. Where they came from is the part that is new.
                     connection.execute(
                         """UPDATE managed_model SET
                                input_cost_per_million = %(input_cost_per_million)s,
@@ -118,45 +140,36 @@ class PostgreSqlRegistryRepositoryMixin:
                                cached_cost_per_million = %(cached_cost_per_million)s,
                                cache_write_cost_per_million =
                                    %(cache_write_cost_per_million)s,
-                               list_input_cost_per_million =
-                                   %(list_input_cost_per_million)s,
-                               list_output_cost_per_million =
-                                   %(list_output_cost_per_million)s,
-                               list_cached_cost_per_million =
-                                   %(list_cached_cost_per_million)s,
-                               list_cache_write_cost_per_million =
-                                   %(list_cache_write_cost_per_million)s,
-                               price_sync_status = %(status)s,
-                               price_sync_message = %(message)s,
-                               price_synced_at = now(),
                                updated_at = now()
                            WHERE id = %(model_id)s""",
                         dict(update),
                     )
                     written += 1
-                else:
-                    # The rates stay exactly as they are; only the record of what happened
-                    # changes, so the dashboard can say why a model was skipped.
-                    connection.execute(
-                        """UPDATE managed_model SET
-                               list_input_cost_per_million = COALESCE(
-                                   %(list_input_cost_per_million)s,
-                                   list_input_cost_per_million),
-                               list_output_cost_per_million = COALESCE(
-                                   %(list_output_cost_per_million)s,
-                                   list_output_cost_per_million),
-                               list_cached_cost_per_million = COALESCE(
-                                   %(list_cached_cost_per_million)s,
-                                   list_cached_cost_per_million),
-                               list_cache_write_cost_per_million = COALESCE(
-                                   %(list_cache_write_cost_per_million)s,
-                                   list_cache_write_cost_per_million),
-                               price_sync_status = %(status)s,
-                               price_sync_message = %(message)s,
-                               price_synced_at = now()
-                           WHERE id = %(model_id)s""",
-                        dict(update),
-                    )
+                # The list price and the outcome are recorded either way. On a skip the rates
+                # stay exactly as they are and only the record changes, so the registry can
+                # say why a model was passed over instead of going quiet. An UPDATE is enough:
+                # a model without a price row is manual, and the planner never selects one.
+                connection.execute(
+                    """UPDATE managed_model_price SET
+                           list_input_cost_per_million = COALESCE(
+                               %(list_input_cost_per_million)s,
+                               list_input_cost_per_million),
+                           list_output_cost_per_million = COALESCE(
+                               %(list_output_cost_per_million)s,
+                               list_output_cost_per_million),
+                           list_cached_cost_per_million = COALESCE(
+                               %(list_cached_cost_per_million)s,
+                               list_cached_cost_per_million),
+                           list_cache_write_cost_per_million = COALESCE(
+                               %(list_cache_write_cost_per_million)s,
+                               list_cache_write_cost_per_million),
+                           price_sync_status = %(status)s,
+                           price_sync_message = %(message)s,
+                           price_synced_at = now(),
+                           updated_at = now()
+                       WHERE model_id = %(model_id)s""",
+                    dict(update),
+                )
         return written
 
     def create_registry_item(self, kind: str, values: Mapping[str, Any]) -> dict[str, Any]:
@@ -201,12 +214,10 @@ class PostgreSqlRegistryRepositoryMixin:
                 row = connection.execute(
                     """INSERT INTO model_runtime (
                                provider_id, gateway_profile_id, name, runtime_kind,
-                               enabled, is_default, config, allowed_roles,
-                               price_discount_percent
+                               enabled, is_default, config, allowed_roles
                            ) VALUES (%(provider_id)s, %(gateway_profile_id)s,
                                %(name)s, %(runtime_kind)s, %(enabled)s,
-                               %(is_default)s, %(config)s, %(allowed_roles)s,
-                               %(price_discount_percent)s)
+                               %(is_default)s, %(config)s, %(allowed_roles)s)
                            RETURNING *""",
                         parameters,
                 ).fetchone()
@@ -215,7 +226,19 @@ class PostgreSqlRegistryRepositoryMixin:
                        VALUES (%s, %s)""",
                     (row["id"], values.get("brand_key", "generic")),
                 )
-                row = {**row, "brand_key": values.get("brand_key", "generic")}
+                discount = values.get("price_discount_percent")
+                if discount is not None:
+                    connection.execute(
+                        """INSERT INTO model_runtime_price (
+                               runtime_id, price_discount_percent
+                           ) VALUES (%s, %s)""",
+                        (row["id"], discount),
+                    )
+                row = {
+                    **row,
+                    "brand_key": values.get("brand_key", "generic"),
+                    "price_discount_percent": discount,
+                }
             elif kind == "model":
                 if values["is_default"]:
                     connection.execute("UPDATE managed_model SET is_default = FALSE")
@@ -230,15 +253,13 @@ class PostgreSqlRegistryRepositoryMixin:
                                enabled, is_default, capabilities, context_window,
                                input_cost_per_million, output_cost_per_million,
                                cached_cost_per_million, cache_write_cost_per_million,
-                               allowed_roles, price_source, price_reference,
-                               price_discount_percent
+                               allowed_roles
                            ) VALUES (%(provider_id)s, %(runtime_id)s, %(model_key)s,
                                %(display_name)s, %(enabled)s, %(is_default)s,
                                %(capabilities)s, %(context_window)s,
                                %(input_cost_per_million)s, %(output_cost_per_million)s,
                                %(cached_cost_per_million)s, %(cache_write_cost_per_million)s,
-                               %(allowed_roles)s, %(price_source)s, %(price_reference)s,
-                               %(price_discount_percent)s) RETURNING *""",
+                               %(allowed_roles)s) RETURNING *""",
                         parameters,
                 ).fetchone()
                 metadata = {
@@ -261,7 +282,29 @@ class PostgreSqlRegistryRepositoryMixin:
                         metadata["publication_id"],
                     ),
                 )
-                row = {**row, **metadata}
+                price = {
+                    "price_source": values.get("price_source") or "manual",
+                    "price_reference": values.get("price_reference"),
+                    "price_discount_percent": values.get("price_discount_percent"),
+                }
+                # A row only when there is something to say. 'manual' with no reference and no
+                # override is exactly what an absent row means, and every model created before
+                # this migration has no row.
+                if price != {"price_source": "manual", "price_reference": None,
+                             "price_discount_percent": None}:
+                    connection.execute(
+                        """INSERT INTO managed_model_price (
+                               model_id, price_source, price_reference,
+                               price_discount_percent
+                           ) VALUES (%s, %s, %s, %s)""",
+                        (
+                            row["id"],
+                            price["price_source"],
+                            price["price_reference"],
+                            price["price_discount_percent"],
+                        ),
+                    )
+                row = {**row, **metadata, **price}
             else:
                 raise ValueError(f"Unsupported registry kind: {kind}")
         self._invalidate_identities()
@@ -500,7 +543,6 @@ class PostgreSqlRegistryRepositoryMixin:
                 "is_default",
                 "config",
                 "allowed_roles",
-                "price_discount_percent",
             ],
             "model": [
                 "provider_id",
@@ -516,9 +558,6 @@ class PostgreSqlRegistryRepositoryMixin:
                 "cached_cost_per_million",
                 "cache_write_cost_per_million",
                 "allowed_roles",
-                "price_source",
-                "price_reference",
-                "price_discount_percent",
             ],
         }[kind]
         assignments = [f"{column} = %({column})s" for column in allowed if column in values]
@@ -528,7 +567,12 @@ class PostgreSqlRegistryRepositoryMixin:
             "model": {"family_key", "upstream_model_id", "assignment_required"},
         }.get(kind, set())
         metadata_values = {key: values[key] for key in metadata_fields if key in values}
-        if not assignments and not metadata_values:
+        price_fields = {
+            "runtime": {"price_discount_percent"},
+            "model": {"price_source", "price_reference", "price_discount_percent"},
+        }.get(kind, set())
+        price_values = {key: values[key] for key in price_fields if key in values}
+        if not assignments and not metadata_values and not price_values:
             return None
         parameters = dict(values)
         if "config" in parameters:
@@ -632,5 +676,67 @@ class PostgreSqlRegistryRepositoryMixin:
                     "assignment_required": assignment_required,
                     "publication_id": metadata["publication_id"] if metadata else None,
                 }
+            # Outside the chain above: a price edit can arrive on its own, and pricing a
+            # model is the one edit that is always on its own -- nothing else on the form
+            # changes when someone picks a list price.
+            if price_values:
+                row = {**row, **self._write_price(connection, kind, item_id, price_values)}
         self._invalidate_identities()
         return cast(dict[str, Any] | None, row)
+
+    @staticmethod
+    def _write_price(
+        connection: Any,
+        kind: str,
+        item_id: UUID,
+        values: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Upsert the price row and return the fields as they now stand."""
+        if kind == "runtime":
+            discount = values.get("price_discount_percent")
+            connection.execute(
+                """INSERT INTO model_runtime_price (runtime_id, price_discount_percent)
+                   VALUES (%s, %s)
+                   ON CONFLICT (runtime_id) DO UPDATE SET
+                     price_discount_percent = EXCLUDED.price_discount_percent,
+                     updated_at = now()""",
+                (item_id, discount),
+            )
+            return {"price_discount_percent": discount}
+
+        current = connection.execute(
+            "SELECT * FROM managed_model_price WHERE model_id = %s", (item_id,)
+        ).fetchone()
+        merged = {
+            "price_source": values.get(
+                "price_source", current["price_source"] if current else "manual"
+            ),
+            "price_reference": values.get(
+                "price_reference", current["price_reference"] if current else None
+            ),
+            "price_discount_percent": values.get(
+                "price_discount_percent",
+                current["price_discount_percent"] if current else None,
+            ),
+        }
+        # Going back to manual drops the reference with it. Keeping it would leave a model
+        # that reads as "following gpt-4.1 mini" while charging whatever was typed.
+        if merged["price_source"] == "manual":
+            merged["price_reference"] = None
+        connection.execute(
+            """INSERT INTO managed_model_price (
+                   model_id, price_source, price_reference, price_discount_percent
+               ) VALUES (%s, %s, %s, %s)
+               ON CONFLICT (model_id) DO UPDATE SET
+                 price_source = EXCLUDED.price_source,
+                 price_reference = EXCLUDED.price_reference,
+                 price_discount_percent = EXCLUDED.price_discount_percent,
+                 updated_at = now()""",
+            (
+                item_id,
+                merged["price_source"],
+                merged["price_reference"],
+                merged["price_discount_percent"],
+            ),
+        )
+        return merged

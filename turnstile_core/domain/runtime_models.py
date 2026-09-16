@@ -239,6 +239,27 @@ class HealthStatus(StrEnum):
     UNAVAILABLE = "unavailable"
 
 
+class PriceSource(StrEnum):
+    """Where a model's charged rates come from.
+
+    `MANUAL` is what every model did before this existed: a person typed four numbers and they
+    stay until that person changes them. The other two derive the rates as list price times
+    discount and keep them current, which only works because the discount is stored separately
+    -- a published list price is a fact, the discount is a contract term.
+    """
+
+    MANUAL = "manual"
+    AZURE_RETAIL = "azure_retail"
+    ANTHROPIC = "anthropic"
+
+
+class PriceSyncStatus(StrEnum):
+    OK = "ok"
+    UNMAPPED = "unmapped"
+    STALE = "stale"
+    REVIEW_NEEDED = "review_needed"
+
+
 class GatewayProfileWrite(StrictModel):
     name: str = Field(min_length=1, max_length=120)
     implementation: GatewayKind
@@ -289,6 +310,11 @@ class RuntimeWrite(StrictModel):
     brand_key: BrandKey = BrandKey.GENERIC
     config: dict[str, Any] = Field(default_factory=dict)
     allowed_roles: list[str] = Field(default_factory=lambda: ["owner", "admin", "member"])
+    # Percent of list price charged for every model on this connection that follows a list
+    # price. 90 means a 10% discount. None charges list price. One connection is the right
+    # grain for this: a discount comes from the agreement covering that account, and a single
+    # connection can serve models from several vendors, each with its own published list.
+    price_discount_percent: float | None = Field(default=None, gt=0, le=100)
 
 
 class ProviderTarget(StrictModel):
@@ -385,6 +411,10 @@ class ModelConnectionUpdate(StrictModel):
     name: str = Field(min_length=1, max_length=160)
     enabled: bool
     is_default: bool
+    # The default percent of list price for models on this connection. Optional so a caller that
+    # predates it keeps working; omitting it clears the discount, which is the same thing the
+    # dialog does when the field is emptied.
+    price_discount_percent: float | None = Field(default=None, gt=0, le=100)
 
     @model_validator(mode="after")
     def require_enabled_default(self) -> ModelConnectionUpdate:
@@ -425,6 +455,13 @@ class ManagedModelWrite(StrictModel):
     # OpenAI 1.25x on GPT-5.6 and later). None falls back to the cached rate.
     cache_write_cost_per_million: float | None = Field(default=None, ge=0)
     allowed_roles: list[str] = Field(default_factory=lambda: ["owner", "admin", "member"])
+    # `manual` is the default so an existing registry keeps behaving exactly as it did: the four
+    # rates above stay whatever someone typed, and the price sync leaves the row alone.
+    price_source: PriceSource = PriceSource.MANUAL
+    price_reference: str | None = Field(default=None, min_length=1, max_length=255)
+    # Percent of list price this model is charged at, overriding the connection's own figure.
+    # None inherits it. This is a commercial term, so nothing derives it -- a person types it.
+    price_discount_percent: float | None = Field(default=None, gt=0, le=100)
 
     @model_validator(mode="after")
     def validate_image_model(self) -> ManagedModelWrite:
@@ -435,6 +472,12 @@ class ManagedModelWrite(StrictModel):
                 raise ValueError("An image model cannot be the default chat model")
         return self
 
+    @model_validator(mode="after")
+    def validate_price_source(self) -> ManagedModelWrite:
+        if self.price_source is not PriceSource.MANUAL and not self.price_reference:
+            raise ValueError("Following a list price requires the catalog entry to follow")
+        return self
+
 
 class ManagedModel(ManagedModelWrite):
     id: UUID
@@ -442,8 +485,50 @@ class ManagedModel(ManagedModelWrite):
     runtime_name: str
     publication_id: UUID | None = None
     image_profile: ImageGenerationProfile | None = None
+    # The un-discounted rates last read from the source, kept beside the charged rates so the
+    # dashboard can show the arithmetic instead of a number the reader has to trust.
+    list_input_cost_per_million: float | None = None
+    list_output_cost_per_million: float | None = None
+    list_cached_cost_per_million: float | None = None
+    list_cache_write_cost_per_million: float | None = None
+    price_synced_at: datetime | None = None
+    price_sync_status: PriceSyncStatus | None = None
+    price_sync_message: str | None = None
+    # Resolved from the model's own figure or the connection's, so the caller does not have to
+    # know which one applied.
+    effective_discount_percent: float | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class PriceCatalogEntry(StrictModel):
+    """One published price a person can point a model at."""
+
+    reference: str
+    label: str
+    source: PriceSource
+    detail: str | None = None
+    input_per_million: float | None = None
+    output_per_million: float | None = None
+    cached_per_million: float | None = None
+    cache_write_per_million: float | None = None
+
+
+class PriceCatalogResponse(StrictModel):
+    entries: list[PriceCatalogEntry]
+
+
+class PriceSyncRequest(StrictModel):
+    """Which models to sync. Omitting the list syncs everything that follows a list price."""
+
+    model_ids: list[UUID] | None = None
+
+
+class PriceSyncDetail(StrictModel):
+    model_id: UUID
+    model_key: str
+    status: PriceSyncStatus
+    message: str | None = None
 
 
 class RegistryResponse(StrictModel):
@@ -457,6 +542,24 @@ class RegistryResponse(StrictModel):
     image_generation_supported: bool = False
     image_configuration_defaults: ImageGenerationLimits | None = None
     image_configuration_schema_version: Literal[4] = 4
+
+
+class PriceSyncResponse(StrictModel):
+    """What a sync run did, reported per outcome rather than as a single count.
+
+    `updated` counts rows whose charged rates changed. The rest is why the others did not, which
+    is the part worth reading: a sync that silently prices nothing looks identical to one that
+    prices everything unless the skips are named. The refreshed registry rides along so the
+    dashboard can show the new rates without a second round trip.
+    """
+
+    considered: int
+    updated: int
+    unmapped: int
+    review_needed: int
+    stale: int
+    details: list[PriceSyncDetail]
+    registry: RegistryResponse
 
 
 class RuntimeHealth(StrictModel):

@@ -843,3 +843,27 @@
 	.app-shell > main .settings-page { min-height: calc(100vh - 48px); }
 	.sidebar-resize-rail { display: none; }
 }
+
+/* Price source: following a published list price instead of typing four numbers. */
+.model-price-source { min-width: 0; display: grid; gap: 8px; padding: 10px 12px; border-radius: 8px; background: var(--muted); }
+.model-price-source-choice { display: flex; flex-wrap: wrap; gap: 4px 20px; }
+.model-price-source-choice input[type="radio"] { accent-color: var(--primary); }
+.model-price-follow { display: grid; gap: 12px; padding-top: 4px; border-top: 1px solid var(--border); }
+.model-price-chosen { min-width: 0; padding: 4px 8px; border-radius: 6px; background: var(--background); }
+.model-price-chosen code { font-size: 11px; overflow-wrap: anywhere; -webkit-user-select: text; user-select: text; }
+.model-price-search { display: flex; gap: 6px; }
+.model-price-search > input { flex: 1 1 auto; min-width: 0; }
+.model-price-results { max-height: 190px; overflow-y: auto; margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; }
+.model-price-results button { width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 6px 8px; border: 1px solid transparent; border-radius: 6px; background: var(--background); color: var(--foreground); font-size: 12px; line-height: 18px; text-align: left; cursor: pointer; }
+.model-price-results button:hover { border-color: var(--border); }
+.model-price-results button.active { border-color: var(--primary); }
+.model-price-result-label { min-width: 0; overflow-wrap: anywhere; }
+.model-price-result-detail { color: var(--muted-foreground); font-size: 11px; line-height: 16px; }
+.model-price-result-rate { color: var(--muted-foreground); font-size: 11px; line-height: 16px; white-space: nowrap; }
+.model-price-arithmetic { display: grid; gap: 6px; }
+.model-price-grid { display: grid; gap: 0; font-size: 12px; line-height: 18px; }
+.model-price-grid-head, .model-price-grid-row { display: grid; grid-template-columns: minmax(0, 1.2fr) repeat(3, minmax(0, 1fr)); gap: 10px; padding: 3px 6px; }
+.model-price-grid-head { color: var(--muted-foreground); font-size: 11px; line-height: 16px; }
+.model-price-grid-row { border-top: 1px solid var(--border); }
+.model-price-grid-actual { color: var(--foreground); font-weight: 500; }
+.model-price-arithmetic .publication-form-note { display: flex; align-items: center; gap: 4px; }

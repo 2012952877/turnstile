@@ -1,4 +1,4 @@
-import type { ManagedModel } from "../../data-sources/apim/types"
+import type { ManagedModel, PriceCatalogEntry, PriceSource } from "../../data-sources/apim/types"
 
 export type ModelEditDraft = {
   displayName: string
@@ -10,9 +10,22 @@ export type ModelEditDraft = {
   allowedRoles: string[]
   enabled: boolean
   isDefault: boolean
+  // "manual" keeps the four fields above exactly as they have always behaved. The other sources
+  // derive them from a published list price, so the fields become read-out rather than input.
+  priceSource: PriceSource
+  priceReference: string
+  // Blank inherits the connection's discount. Kept as a string so an empty box stays empty
+  // instead of becoming a zero.
+  discountPercent: string
 }
 
-export type ModelEditError = "display_name" | "context_window" | "prices" | "default_disabled"
+export type ModelEditError =
+  | "display_name"
+  | "context_window"
+  | "prices"
+  | "default_disabled"
+  | "price_reference"
+  | "discount"
 
 export function createModelEditDraft(model: ManagedModel): ModelEditDraft {
   return {
@@ -25,6 +38,9 @@ export function createModelEditDraft(model: ManagedModel): ModelEditDraft {
     allowedRoles: [...model.allowed_roles],
     enabled: model.enabled,
     isDefault: model.is_default,
+    priceSource: model.price_source ?? "manual",
+    priceReference: model.price_reference ?? "",
+    discountPercent: model.price_discount_percent?.toString() ?? "",
   }
 }
 
@@ -42,6 +58,53 @@ export function setModelEditEnabled(draft: ModelEditDraft, enabled: boolean): Mo
 
 export function setModelEditDefault(draft: ModelEditDraft, isDefault: boolean): ModelEditDraft {
   return { ...draft, isDefault, enabled: isDefault || draft.enabled }
+}
+
+/** Switching back to manual keeps the rates that were showing, so nothing silently blanks. */
+export function setModelEditPriceSource(
+  draft: ModelEditDraft,
+  priceSource: PriceSource,
+): ModelEditDraft {
+  if (priceSource === "manual") return { ...draft, priceSource }
+  return { ...draft, priceSource }
+}
+
+/** Picking a catalog entry fills the rates in so the dialog shows the arithmetic immediately. */
+export function applyCatalogEntry(
+  draft: ModelEditDraft,
+  entry: PriceCatalogEntry,
+  effectiveDiscountPercent: number | null,
+): ModelEditDraft {
+  const rate = (value: number | null) =>
+    value === null ? "" : discountedRate(value, effectiveDiscountPercent).toString()
+  return {
+    ...draft,
+    priceSource: entry.source,
+    priceReference: entry.reference,
+    inputPrice: rate(entry.input_per_million),
+    outputPrice: rate(entry.output_per_million),
+    cacheReadPrice: rate(entry.cached_per_million),
+    cacheWritePrice: rate(entry.cache_write_per_million),
+  }
+}
+
+export function discountedRate(listPrice: number, percent: number | null): number {
+  if (percent === null || percent === 100) return listPrice
+  return Number((listPrice * (percent / 100)).toFixed(8))
+}
+
+/**
+ * Which discount actually applies, given what the model overrides and what the connection sets.
+ * Returned to the caller rather than resolved deep inside a component so the dialog can say
+ * which of the two it used.
+ */
+export function resolveDiscount(
+  draft: ModelEditDraft,
+  connectionPercent: number | null,
+): { percent: number | null; inherited: boolean } {
+  const own = draft.discountPercent.trim()
+  if (own) return { percent: Number(own), inherited: false }
+  return { percent: connectionPercent, inherited: true }
 }
 
 export function modelEditHasChanges(initial: ModelEditDraft, draft: ModelEditDraft): boolean {
@@ -62,6 +125,11 @@ export function validateModelEdit(draft: ModelEditDraft): ModelEditError | null 
   const prices = [draft.inputPrice, draft.outputPrice, draft.cacheReadPrice, draft.cacheWritePrice]
   if (prices.some((value) => value.trim() && (!Number.isFinite(Number(value)) || Number(value) < 0))) {
     return "prices"
+  }
+  if (draft.priceSource !== "manual" && !draft.priceReference.trim()) return "price_reference"
+  const discount = draft.discountPercent.trim()
+  if (discount && (!Number.isFinite(Number(discount)) || Number(discount) <= 0 || Number(discount) > 100)) {
+    return "discount"
   }
   if (draft.isDefault && !draft.enabled) return "default_disabled"
   return null
@@ -91,5 +159,8 @@ export function modelEditPayload(model: ManagedModel, draft: ModelEditDraft) {
     allowed_roles: [...draft.allowedRoles],
     enabled: draft.enabled,
     is_default: draft.isDefault,
+    price_source: draft.priceSource,
+    price_reference: draft.priceSource === "manual" ? null : draft.priceReference.trim(),
+    price_discount_percent: optionalNumber(draft.discountPercent),
   }
 }

@@ -6,10 +6,13 @@ import { fileURLToPath } from "node:url"
 import { runInNewContext } from "node:vm"
 
 import {
+  applyCatalogEntry,
   createModelEditDraft,
+  discountedRate,
   modelEditHasChanges,
   modelEditPayload,
   modelEditRoleOptions,
+  resolveDiscount,
   setModelEditDefault,
   setModelEditEnabled,
   toggleModelRole,
@@ -76,6 +79,11 @@ function savedModel(overrides = {}) {
     allowed_roles: ["owner", "member", "custom-role"],
     enabled: true,
     is_default: false,
+    // Every model carries these once the registry knows about list prices. "manual" is what a
+    // model that was priced by hand reports, which is every model that existed before.
+    price_source: "manual",
+    price_reference: null,
+    price_discount_percent: null,
     ...overrides,
   }
 }
@@ -275,3 +283,57 @@ for (const [locale, exportName] of [["en", "ENGLISH_CORE_PHRASES"], ["ja", "JAPA
     }
   })
 }
+
+const catalogEntry = (overrides = {}) => ({
+  reference: "azure_retail:koreacentral:gpt 4.1:glbl",
+  label: "gpt 4.1",
+  source: "azure_retail",
+  detail: "Global - koreacentral",
+  input_per_million: 2,
+  output_per_million: 8,
+  cached_per_million: 0.5,
+  cache_write_per_million: null,
+  ...overrides,
+})
+
+test("a model keeps its typed rates until someone opts it into a list price", () => {
+  const model = savedModel()
+  const draft = createModelEditDraft(model)
+  assert.equal(draft.priceSource, "manual")
+  const payload = modelEditPayload(model, draft)
+  assert.equal(payload.price_source, "manual")
+  assert.equal(payload.price_reference, null)
+  assert.equal(payload.input_cost_per_million, model.input_cost_per_million)
+})
+
+test("choosing a catalog entry prices every bucket the source publishes", () => {
+  const draft = applyCatalogEntry(createModelEditDraft(savedModel()), catalogEntry(), 90)
+  assert.equal(draft.priceSource, "azure_retail")
+  assert.equal(draft.priceReference, "azure_retail:koreacentral:gpt 4.1:glbl")
+  assert.equal(draft.inputPrice, "1.8")
+  assert.equal(draft.outputPrice, "7.2")
+  assert.equal(draft.cacheReadPrice, "0.45")
+  assert.equal(draft.cacheWritePrice, "")
+})
+
+test("a discount of 100 percent and no discount price identically", () => {
+  assert.equal(discountedRate(2, 100), 2)
+  assert.equal(discountedRate(2, null), 2)
+  assert.equal(discountedRate(15, 66), 9.9)
+})
+
+test("a model discount overrides the connection, and blank inherits it", () => {
+  const base = createModelEditDraft(savedModel())
+  assert.deepEqual(resolveDiscount(base, 90), { percent: 90, inherited: true })
+  assert.deepEqual(resolveDiscount({ ...base, discountPercent: "66" }, 90),
+    { percent: 66, inherited: false })
+  assert.deepEqual(resolveDiscount(base, null), { percent: null, inherited: true })
+})
+
+test("following a list price requires a chosen reference, and a discount stays in range", () => {
+  const base = createModelEditDraft(savedModel())
+  assert.equal(validateModelEdit({ ...base, priceSource: "anthropic" }), "price_reference")
+  assert.equal(validateModelEdit({ ...base, discountPercent: "0" }), "discount")
+  assert.equal(validateModelEdit({ ...base, discountPercent: "101" }), "discount")
+  assert.equal(validateModelEdit({ ...base, discountPercent: "90" }), null)
+})

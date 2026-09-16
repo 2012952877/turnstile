@@ -40,6 +40,8 @@ import type {
   ImageInvocationRequest,
   ImageInvocationResponse,
   ModelRegistry,
+  PriceCatalogResponse,
+  PriceSyncResponse,
   OptimizationEvent,
   PeopleBudgetFilter,
   RunDetail,
@@ -341,6 +343,16 @@ export const dataSource = {
     { method: "DELETE" },
   ).then(normalizeRegistry),
   saveModel: (value: Record<string, unknown>, id?: string) => saveRegistry("/api/v1/model-management/models", value, id),
+  priceCatalog: (query: string, region?: string | null) => request<PriceCatalogResponse>(
+    `/api/v1/model-management/price-catalog?q=${encodeURIComponent(query)}`
+    + (region ? `&region=${encodeURIComponent(region)}` : ""),
+  ),
+  // Omitting the ids syncs everything that follows a list price. Passing them is how the
+  // price table's row selection turns into "sync just these".
+  syncPrices: (modelIds?: string[]) => writeJson<PriceSyncResponse>(
+    "/api/v1/model-management/price-sync",
+    { model_ids: modelIds ?? null },
+  ).then((result) => ({ ...result, registry: normalizeRegistry(result.registry) })),
   deleteModel: (id: string) => request<GatewayPublicationAccepted>(
     `/api/v1/model-management/models/${encodeURIComponent(id)}`,
     { method: "DELETE" },

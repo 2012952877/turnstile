@@ -212,6 +212,10 @@ export function ConnectionDialog({
   })
   const [enabled, setEnabled] = useState(runtime?.enabled ?? true)
   const [isDefault, setIsDefault] = useState(runtime?.is_default ?? false)
+  // Kept as a string so an empty box stays empty rather than becoming a zero discount.
+  const [discountPercent, setDiscountPercent] = useState(
+    runtime?.price_discount_percent?.toString() ?? "",
+  )
   const [formError, setFormError] = useState<string | null>(null)
 
   const provider = providerOptions.find((item) => item.value === providerValue)
@@ -243,11 +247,17 @@ export function ConnectionDialog({
     }
     if (runtime) {
       if (!connectionName.trim()) return setFormError("请输入连接名称。")
+      const discount = discountPercent.trim()
+      if (discount && (!Number.isFinite(Number(discount))
+        || Number(discount) <= 0 || Number(discount) > 100)) {
+        return setFormError("折扣须为 0–100 之间的数字，或留空表示不打折。")
+      }
       setFormError(null)
       onUpdate({
         name: connectionName.trim(),
         enabled,
         is_default: isDefault,
+        price_discount_percent: discount ? Number(discount) : null,
       })
       return
     }
@@ -383,6 +393,19 @@ export function ConnectionDialog({
           </>}
 
           {editing && !adopting && <div className="form-switches"><div className="registry-checkbox-field"><Checkbox id="connection-enabled" checked={enabled} onCheckedChange={(checked) => { const next = checked === true; setEnabled(next); if (!next) setIsDefault(false) }} disabled={busy} /><label htmlFor="connection-enabled">启用</label></div><div className="registry-checkbox-field"><Checkbox id="connection-default" checked={isDefault} onCheckedChange={(checked) => { const next = checked === true; setIsDefault(next); if (next) setEnabled(true) }} disabled={busy} /><label htmlFor="connection-default">设为默认</label></div></div>}
+          {editing && !adopting && <div className="registry-field">
+            <div className="registry-field-label-row">
+              <label htmlFor="connection-discount" className="registry-field-label">默认折扣</label>
+              <span className="model-editor-unit" data-no-localize>%</span>
+              <FieldHelp>
+                该连接下「跟随官方价」的模型，实际单价 = 官方价 × 此折扣。90 表示九折。
+                留空表示按官方价原价计费。单个模型可以单独覆盖。
+              </FieldHelp>
+            </div>
+            <Input id="connection-discount" type="number" inputMode="decimal"
+              min={0} max={100} step="any" disabled={busy} value={discountPercent}
+              placeholder="留空则不打折" onChange={(event) => setDiscountPercent(event.target.value)} />
+          </div>}
 
           {(formError || error) && <div className="registry-error" role="alert">{formError ?? error}</div>}
         </div>

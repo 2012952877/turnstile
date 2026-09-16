@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from typing import Any, NoReturn
 from urllib.parse import unquote, urlsplit
@@ -35,6 +36,11 @@ from turnstile_core.domain.runtime_models import (
     ModelInvocationResponse,
     ModelVendorKey,
     OAuthClientCredentialsConfig,
+    PriceCatalogEntry,
+    PriceCatalogResponse,
+    PriceSyncDetail,
+    PriceSyncResponse,
+    PriceSyncStatus,
     Provider,
     ProviderKind,
     ProviderWrite,
@@ -53,6 +59,8 @@ from turnstile_core.domain.runtime_models import (
 )
 from turnstile_core.integrations.gateway import GatewayInvocationError, GatewayRouter, elapsed_ms
 from turnstile_core.persistence.repository import QueryRepository
+from turnstile_core.pricing.catalog import CompositeCatalog, build_default_catalog
+from turnstile_core.pricing.sync import plan_price_sync
 from turnstile_core.security import CredentialCipher, credential_hint
 
 logger = logging.getLogger(__name__)
@@ -66,11 +74,14 @@ class ModelRuntimeService:
         repository: QueryRepository,
         settings: Settings,
         router: GatewayRouter | None = None,
+        price_catalog: CompositeCatalog | None = None,
     ) -> None:
         self._repository = repository
         self._settings = settings
         self._cipher = CredentialCipher.from_settings(settings)
         self._router = router or GatewayRouter()
+        # Injectable so a test never reaches a vendor's website.
+        self._price_catalog = price_catalog or build_default_catalog()
 
     def authorize(self, role: str, authorization: str | None, *, manage: bool) -> None:
         if manage:
@@ -110,6 +121,80 @@ class ModelRuntimeService:
             for field in self._MODEL_ROUTING_FIELDS
         )
         self.authorize(role, authorization, manage=changes_routing_identity)
+
+    def price_catalog(
+        self, query: str, *, region: str | None = None, limit: int = 40
+    ) -> PriceCatalogResponse:
+        """Candidate list-price entries for a person to choose between.
+
+        Deliberately a search rather than a match: the caller picks, and the pick is stored. An
+        automatic match here would be wrong roughly as often as names are ambiguous, and nothing
+        downstream would notice.
+        """
+        try:
+            entries = self._price_catalog.search(query, region=region, limit=limit)
+        except Exception as error:  # noqa: BLE001 - an unreachable vendor is not a server fault
+            raise HTTPException(
+                status_code=503, detail=f"价目表暂时读取不到：{type(error).__name__}"
+            ) from error
+        return PriceCatalogResponse(
+            entries=[
+                PriceCatalogEntry(
+                    reference=entry.reference,
+                    label=entry.label,
+                    source=entry.source,
+                    detail=entry.detail,
+                    input_per_million=entry.input_per_million,
+                    output_per_million=entry.output_per_million,
+                    cached_per_million=entry.cached_per_million,
+                    cache_write_per_million=entry.cache_write_per_million,
+                )
+                for entry in entries
+            ]
+        )
+
+    def sync_prices(self, only: Sequence[UUID] | None = None) -> PriceSyncResponse:
+        registry = self.registry()
+        summary = plan_price_sync(registry.models, self._price_catalog, only=only)
+        written = self._repository.apply_model_price_sync(
+            [
+                {
+                    "model_id": update.model_id,
+                    "writes": update.writes,
+                    "status": update.status.value,
+                    "message": update.message,
+                    "input_cost_per_million": update.input_cost_per_million,
+                    "output_cost_per_million": update.output_cost_per_million,
+                    "cached_cost_per_million": update.cached_cost_per_million,
+                    "cache_write_cost_per_million": update.cache_write_cost_per_million,
+                    "list_input_cost_per_million": update.list_input_cost_per_million,
+                    "list_output_cost_per_million": update.list_output_cost_per_million,
+                    "list_cached_cost_per_million": update.list_cached_cost_per_million,
+                    "list_cache_write_cost_per_million": (
+                        update.list_cache_write_cost_per_million
+                    ),
+                }
+                for update in summary.updates
+            ]
+        )
+        return PriceSyncResponse(
+            considered=len(summary.updates),
+            updated=written,
+            unmapped=summary.unmapped,
+            review_needed=summary.review_needed,
+            stale=summary.stale,
+            details=[
+                PriceSyncDetail(
+                    model_id=update.model_id,
+                    model_key=update.model_key,
+                    status=update.status,
+                    message=update.message,
+                )
+                for update in summary.updates
+                if update.status is not PriceSyncStatus.OK
+            ],
+            registry=self.registry(),
+        )
 
     def registry(self) -> RegistryResponse:
         rows = self._repository.registry()

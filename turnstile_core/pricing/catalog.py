@@ -52,9 +52,12 @@ INDEX_REGION = "eastus"
 # The vocabulary
 # --------------------------------------------------------------------------------------------
 
-_BUCKET_INPUT = {"inp", "input"}
-_BUCKET_OUTPUT = {"outp", "output", "out", "opt"}
+_BUCKET_INPUT = {"inp", "inpt", "input"}
+_BUCKET_OUTPUT = {"outp", "outpt", "output", "out", "opt"}
 _CACHED = {"cached", "cchd", "ccchd", "cd", "cache"}
+# Follows a cached marker to mean the write side of the cache rather than the read side.
+# Azure does publish these, on the GPT5 and GPT6 lines at least.
+_CACHE_WRITE = {"wr", "write"}
 _DEPLOYMENT = {
     "glbl": "Global",
     "gl": "Global",
@@ -74,9 +77,16 @@ _NOT_A_CHAT_RATE = {
     "batch", "ft", "finetuned", "hosting", "training", "rft", "grader",
     "provisioned", "managed", "reservation", "surcharge", "deployment",
 }
-# Units and qualifiers that carry no meaning once the bucket is known. `pp` and `L` mark
-# provisioned and long-context variants that Azure prices identically to the base meter.
-_NOISE = {"tokens", "1m", "1k", "pp", "l"}
+# Units that carry no meaning once the bucket is known.
+#
+# `pp` and `l` used to be here, described as variants Azure prices identically to the base
+# meter. They are not: measured across the catalogue, every meter carrying either marker is
+# exactly 2.00x the same meter without it -- 24 matched pairs for `pp`, 12 for `l`, not one of
+# them equal. Dropping them merged two different prices into one stem, and whichever row the
+# API happened to return last became the rate. So they stay in the stem, which is what already
+# happens to `Std` and `Fl`: a service tier makes it a different thing to buy, and the picker
+# shows it as one.
+_NOISE = {"tokens", "1m", "1k"}
 # The only deployment word written as two words. Joined before tokenising so it is read as the
 # deployment it is, rather than as two words that happen to sit next to each other.
 _TWO_WORD_DEPLOYMENT = re.compile(r"\bdata\s+zone\b", re.IGNORECASE)
@@ -104,8 +114,9 @@ class CatalogEntry:
     """One priceable thing, with every bucket the registry can charge for.
 
     A bucket is `None` when the vendor does not price it separately, which is different from
-    free. Azure publishes no cache-write meter at all, so cache writes there keep the registry's
-    existing fallback rather than being given an invented number.
+    free: the registry keeps its existing fallback rather than being given an invented number.
+    Most Azure product lines publish no cache-write meter, but the GPT5 and GPT6 lines do, as
+    `Cd Wr`, so it is read where it exists rather than assumed absent everywhere.
     """
 
     reference: str
@@ -211,29 +222,53 @@ def parse_meter_name(name: str) -> tuple[str, str, str] | None:
     slot: str | None = None
     deployment: str | None = None
     cached = False
+    cache_write = False
     kept: list[str] = []
-    for index, word in enumerate(lowered):
+    index = 0
+    while index < len(lowered):
+        word = lowered[index]
+        following = lowered[index + 1] if index + 1 < len(lowered) else ""
+        if word in _CACHED and following in _CACHE_WRITE:
+            cache_write = True
+            index += 2
+            continue
         if slot is None and word in _BUCKET_INPUT:
             slot = "input"
-            if index and lowered[index - 1] in _CACHED:
-                cached = True
+            index += 1
             continue
         if slot is None and word in _BUCKET_OUTPUT:
             slot = "output"
+            index += 1
             continue
         if deployment is None and word in _DEPLOYMENT:
             deployment = _DEPLOYMENT[word]
+            index += 1
             continue
-        if word in _CACHED or word in _NOISE:
+        if word in _CACHED:
+            cached = True
+            index += 1
+            continue
+        if word in _NOISE:
+            index += 1
             continue
         kept.append(words[index])
+        index += 1
 
-    if slot is None:
+    if cache_write:
+        resolved = "cache_write"
+    elif cached and slot in (None, "input"):
+        # A cached marker with no bucket word beside it still prices cached input -- Azure Kimi
+        # writes `K2.5 cached glbl Tokens` and nothing else. Reading it as unknown would hide a
+        # rate that is plainly there.
+        resolved = "cached"
+    elif slot is None:
         return None
+    else:
+        resolved = slot
     stem = " ".join(kept).strip()
     if not stem:
         return None
-    return stem, ("cached" if cached else slot), (deployment or UNSPECIFIED_DEPLOYMENT)
+    return stem, resolved, (deployment or UNSPECIFIED_DEPLOYMENT)
 
 
 def prices_a_chat_request(name: str) -> bool:
@@ -360,14 +395,19 @@ class AzureRetailCatalog:
                 parsed.per_million
             )
 
-        Rates = tuple[float, float, float | None]
+        Rates = tuple[float, float, float | None, float | None]
         by_deployment: dict[str, dict[Rates, list[str]]] = {}
         for (deployment, region), slot_prices in buckets.items():
             input_rate = slot_prices.get("input")
             output_rate = slot_prices.get("output")
             if input_rate is None or output_rate is None:
                 continue
-            rates: Rates = (input_rate, output_rate, slot_prices.get("cached"))
+            rates: Rates = (
+                input_rate,
+                output_rate,
+                slot_prices.get("cached"),
+                slot_prices.get("cache_write"),
+            )
             by_deployment.setdefault(deployment, {}).setdefault(rates, []).append(region)
 
         options: list[CatalogOption] = []
@@ -395,7 +435,7 @@ class AzureRetailCatalog:
                             input_per_million=rates[0],
                             output_per_million=rates[1],
                             cached_per_million=rates[2],
-                            cache_write_per_million=None,
+                            cache_write_per_million=rates[3],
                         ),
                         regions=regions_sorted,
                         region_required=region_required,
@@ -488,20 +528,23 @@ def _odata_literal(value: str) -> str:
 def _meter_name_filter(label: str) -> str:
     """An OData clause matching a model's name against a meter name.
 
-    Meter names separate words with spaces in one family and hyphens in another -- `gpt 5 pro`
-    beside `gpt-5-codex` -- so both spellings are tried. The words are never sent one at a time:
+    Every word has to appear, but nothing says where. An earlier version asked for the words
+    joined back together -- `contains(meterName,'6 astra LongCo Std')`, and the hyphenated
+    spelling beside it -- which assumes the name survives in the meter as one run of text. It
+    often does not: `6-astra LongCo Opt Std DZ 1M Tokens` puts the bucket word *inside* the
+    name, so neither spelling matched and gpt-6-astra came back with no prices at all while
+    still appearing in the picker.
+
+    Sending the words separately is not the same mistake as sending one of them: a single
     `contains(meterName,'gpt')` matches tens of thousands of meters and gets the request
-    throttled long before it finishes paging.
+    throttled, while every word together with `productName` is narrower than the joined form
+    ever was.
     """
     terms = [term for term in re.split(r"[^A-Za-z0-9.]+", label.strip()) if term]
     if not terms:
         return ""
-    joined = terms[:4]
-    variants = {" ".join(joined), "-".join(joined)}
-    clauses = [
-        f"contains(meterName,'{_odata_literal(value)}')" for value in sorted(variants)
-    ]
-    return "(" + " or ".join(clauses) + ")" if clauses else ""
+    clauses = [f"contains(meterName,'{_odata_literal(term)}')" for term in terms[:4]]
+    return "(" + " and ".join(clauses) + ")"
 
 
 # --------------------------------------------------------------------------------------------

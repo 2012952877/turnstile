@@ -144,8 +144,10 @@ class AzureRetailCatalog:
             clauses.append(f"armRegionName eq '{region}'")
         rows = self._fetch(" and ".join(clauses))
         # A model's buckets arrive as separate meters, so they are assembled here into the one
-        # entry a person actually picks.
-        grouped: dict[tuple[str, str], dict[str, float]] = {}
+        # entry a person actually picks. The region is part of the grouping key even when the
+        # caller did not filter by one: the same meter is priced differently per region, so
+        # collapsing them would publish whichever region happened to be read last.
+        grouped: dict[tuple[str, str, str], dict[str, float]] = {}
         for row in rows:
             name = str(row.get("meterName") or "")
             if _AZURE_EXCLUDE.search(name):
@@ -169,13 +171,14 @@ class AzureRetailCatalog:
                 if bucket in {"inp", "input"}
                 else "output"
             )
-            grouped.setdefault((stem, deployment), {})[slot] = per_million
+            row_region = str(row.get("armRegionName") or region or "global")
+            grouped.setdefault((row_region, stem, deployment), {})[slot] = per_million
 
-        for (stem, deployment), buckets in sorted(grouped.items()):
+        for (row_region, stem, deployment), buckets in sorted(grouped.items()):
             label_deployment = _DEPLOYMENT_LABEL.get(deployment, deployment)
-            detail = label_deployment if region is None else f"{label_deployment} · {region}"
+            detail = f"{label_deployment} · {row_region}"
             yield CatalogEntry(
-                reference=f"azure_retail:{region or 'any'}:{stem}:{deployment}",
+                reference=f"azure_retail:{row_region}:{stem}:{deployment}",
                 label=stem,
                 source=PriceSource.AZURE_RETAIL,
                 detail=detail,

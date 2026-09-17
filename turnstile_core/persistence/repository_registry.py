@@ -224,10 +224,15 @@ class PostgreSqlRegistryRepositoryMixin:
                            -- Accepting the price clears the proposal; proposing one replaces
                            -- it; a run that could not read the source leaves the standing
                            -- proposal alone rather than forgetting what is waiting.
+                           --
+                           -- The cast is load-bearing. This parameter appears only inside
+                           -- `IS NOT NULL` and a CASE branch, so when it is NULL -- which is
+                           -- every ordinary sync -- PostgreSQL has nothing to infer a type
+                           -- from and rejects the statement with AmbiguousParameter.
                            pending_list_price = CASE
                                WHEN %(writes)s THEN NULL
-                               WHEN %(pending_list_price)s IS NOT NULL
-                                   THEN %(pending_list_price)s
+                               WHEN %(pending_list_price)s::jsonb IS NOT NULL
+                                   THEN %(pending_list_price)s::jsonb
                                ELSE pending_list_price END,
                            price_sync_status = %(status)s,
                            price_sync_message = %(message)s,

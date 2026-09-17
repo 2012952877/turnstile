@@ -285,6 +285,23 @@ def test_a_price_held_for_review_does_not_move_the_accepted_baseline() -> None:
     assert "CASE" in statement and "%(writes)s" in statement
 
 
+def test_the_proposal_parameter_is_cast_so_postgresql_can_type_it() -> None:
+    """Without the cast this statement is rejected on every ordinary sync.
+
+    The parameter appears only inside `IS NOT NULL` and a CASE branch, so when it is NULL --
+    which it is whenever nothing is waiting for review, i.e. almost always -- PostgreSQL has
+    nothing to infer a type from and answers `could not determine data type of parameter $3`.
+    A recording fake cannot see that; this pins the cast instead.
+    """
+    proxy, recorder = proxy_with([{"id": uuid4()}])
+
+    proxy.apply_model_price_sync([sync_result()])
+
+    statement = recorder.writes_to("managed_model_price")[0]
+    assert "%(pending_list_price)s::jsonb IS NOT NULL" in statement
+    assert "THEN %(pending_list_price)s::jsonb" in statement
+
+
 def test_a_skipped_sync_touches_only_the_record() -> None:
     proxy, recorder = proxy_with([])
 

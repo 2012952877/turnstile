@@ -206,18 +206,28 @@ def test_an_edit_that_names_no_price_field_writes_no_price_row() -> None:
 # ------------------------------------------------------------------------------------------
 
 
-def test_a_sync_writes_the_charged_rates_to_managed_model_and_nothing_else() -> None:
-    """The rates are what the billing path reads and have always lived there. Only the record
-    of where they came from is new, and only that record moved."""
-    proxy, recorder = proxy_with([])
-
-    written = proxy.apply_model_price_sync([{
+def sync_result(**overrides: Any) -> dict[str, Any]:
+    planned: dict[str, Any] = {
         "model_id": uuid4(), "writes": True, "status": "ok", "message": None,
         "input_cost_per_million": 0.36, "output_cost_per_million": 1.44,
         "cached_cost_per_million": 0.09, "cache_write_cost_per_million": None,
         "list_input_cost_per_million": 0.40, "list_output_cost_per_million": 1.60,
         "list_cached_cost_per_million": 0.10, "list_cache_write_cost_per_million": None,
-    }])
+        "pending_list_price": None,
+        "expected_source": "azure_retail",
+        "expected_reference": "azure_retail:Azure OpenAI:gpt 4.1 mini:Global:*",
+        "expected_discount_percent": 90,
+    }
+    planned.update(overrides)
+    return planned
+
+
+def test_a_sync_writes_the_charged_rates_to_managed_model_and_nothing_else() -> None:
+    """The rates are what the billing path reads and have always lived there. Only the record
+    of where they came from is new, and only that record moved."""
+    proxy, recorder = proxy_with([{"id": uuid4()}])
+
+    written = proxy.apply_model_price_sync([sync_result()])
 
     assert written == 1
     updated = recorder.writes_to("managed_model")
@@ -228,14 +238,61 @@ def test_a_sync_writes_the_charged_rates_to_managed_model_and_nothing_else() -> 
     assert recorder.writes_to("managed_model_price")
 
 
+def test_the_rate_write_is_guarded_by_the_configuration_it_was_planned_against() -> None:
+    """Without the guard, a sync that started before someone switched the model back to manual
+    finishes afterwards and puts a synced rate on a row the screen calls hand-typed."""
+    proxy, recorder = proxy_with([{"id": uuid4()}])
+
+    proxy.apply_model_price_sync([sync_result()])
+
+    statement = recorder.writes_to("managed_model")[0]
+    assert "expected_source" in statement
+    assert "expected_reference" in statement
+    assert "expected_discount_percent" in statement
+    assert "RETURNING" in statement, "the write has to report whether it matched anything"
+
+
+def test_a_guarded_write_that_matched_nothing_is_recorded_as_superseded() -> None:
+    proxy, recorder = proxy_with([])  # the guarded UPDATE returns no row
+
+    written = proxy.apply_model_price_sync([sync_result()])
+
+    assert written == 0
+    price_writes = recorder.writes_to("managed_model_price")
+    assert len(price_writes) == 1
+    assert "superseded" in price_writes[0]
+    assert "list_input_cost_per_million" not in price_writes[0], (
+        "a write that did not happen must not move the baseline either"
+    )
+
+
+def test_a_price_held_for_review_does_not_move_the_accepted_baseline() -> None:
+    """The whole point of the threshold: the figure it stopped must not become the figure it
+    compares against, or the next run finds no drift and charges it."""
+    proxy, recorder = proxy_with([])
+
+    proxy.apply_model_price_sync([sync_result(
+        writes=False, status="review_needed", message="变动 900%",
+        pending_list_price={"input": 4.0, "output": 16.0,
+                            "cached": None, "cache_write": None},
+    )])
+
+    assert recorder.writes_to("managed_model") == []
+    statement = recorder.writes_to("managed_model_price")[0]
+    assert "pending_list_price" in statement
+    # The baseline columns appear, but only inside a CASE that leaves them alone unless the
+    # price was accepted.
+    assert "CASE" in statement and "%(writes)s" in statement
+
+
 def test_a_skipped_sync_touches_only_the_record() -> None:
     proxy, recorder = proxy_with([])
 
-    written = proxy.apply_model_price_sync([{
-        "model_id": uuid4(), "writes": False, "status": "unmapped", "message": "找不到",
-        "list_input_cost_per_million": None, "list_output_cost_per_million": None,
-        "list_cached_cost_per_million": None, "list_cache_write_cost_per_million": None,
-    }])
+    written = proxy.apply_model_price_sync([sync_result(
+        writes=False, status="unmapped", message="找不到",
+        list_input_cost_per_million=None, list_output_cost_per_million=None,
+        list_cached_cost_per_million=None, list_cache_write_cost_per_million=None,
+    )])
 
     assert written == 0
     assert recorder.writes_to("managed_model") == []

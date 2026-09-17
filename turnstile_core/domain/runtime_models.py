@@ -258,6 +258,10 @@ class PriceSyncStatus(StrEnum):
     UNMAPPED = "unmapped"
     STALE = "stale"
     REVIEW_NEEDED = "review_needed"
+    # The model's pricing configuration changed between the plan and the write, so the result
+    # was discarded. Distinct from `stale`: the source was read fine, the answer just no longer
+    # applies to the row it was computed for.
+    SUPERSEDED = "superseded"
 
 
 class GatewayProfileWrite(StrictModel):
@@ -479,6 +483,15 @@ class ManagedModelWrite(StrictModel):
         return self
 
 
+class PendingListPrice(StrictModel):
+    """A published price waiting for a person, in the same four buckets as the accepted one."""
+
+    input: float | None = None
+    output: float | None = None
+    cached: float | None = None
+    cache_write: float | None = None
+
+
 class ManagedModel(ManagedModelWrite):
     id: UUID
     provider_name: str
@@ -494,6 +507,11 @@ class ManagedModel(ManagedModelWrite):
     price_synced_at: datetime | None = None
     price_sync_status: PriceSyncStatus | None = None
     price_sync_message: str | None = None
+    # What the source publishes now, held back because it moved further than the review
+    # threshold. Deliberately not merged into list_*: that is the price this model is charged
+    # from, and the one the next run measures drift against. Letting an unapproved figure land
+    # there makes the second run compare it with itself and accept it unasked.
+    pending_list_price: PendingListPrice | None = None
     # Resolved from the model's own figure or the connection's, so the caller does not have to
     # know which one applied.
     effective_discount_percent: float | None = None
@@ -528,6 +546,9 @@ class PriceCatalogOption(StrictModel):
     reference: str
     deployment: str
     regions: list[str] = Field(default_factory=list)
+    # Each region's own reference. The group is how the choice is shown; what gets stored is the
+    # region the person picked, so a later price split follows their region and not the first one.
+    references_by_region: dict[str, str] = Field(default_factory=dict)
     region_required: bool = False
     input_per_million: float | None = None
     output_per_million: float | None = None
@@ -589,6 +610,9 @@ class PriceSyncResponse(StrictModel):
     unmapped: int
     review_needed: int
     stale: int
+    # Planned a write, then found the model's pricing had been edited in the meantime and left
+    # it alone. Counted separately from `stale`: the source was fine, the plan was not.
+    superseded: int = 0
     details: list[PriceSyncDetail]
     registry: RegistryResponse
 

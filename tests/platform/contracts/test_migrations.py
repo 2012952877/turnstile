@@ -32,8 +32,22 @@ def test_migration_chain_preserves_clean_install_and_adds_attempt_identity() -> 
         "005_billable_request_lifecycle.up.sql",
         "006_versioned_budget_evidence.up.sql",
         "007_model_price_source.up.sql",
+        "008_price_review_and_guard.up.sql",
     ]
     assert not list(MIGRATIONS.glob("*.down.sql"))
+
+
+def test_the_review_baseline_and_the_pending_price_are_separate_columns() -> None:
+    """007 kept one set of list_* columns and wrote them on every run, including the runs that
+    refused the price. The refusal then approved itself on the next run by comparing the figure
+    with the baseline it had just moved. 008 gives the proposal its own home."""
+    sql = (MIGRATIONS / "008_price_review_and_guard.up.sql").read_text(encoding="utf-8")
+
+    assert "ADD COLUMN pending_list_price JSONB" in sql
+    assert "list_input_cost_per_million" not in sql, (
+        "the accepted baseline keeps the meaning it already had; only the proposal is new"
+    )
+    assert "'superseded'::text" in sql
 
 
 def test_attempt_identity_upgrade_preserves_existing_usage() -> None:

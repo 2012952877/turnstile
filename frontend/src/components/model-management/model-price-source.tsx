@@ -88,10 +88,18 @@ export function ModelPriceSourceFields({ model, draft, setDraft, busy, connectio
     return () => { cancelled = true }
   }, [following, storedModelKey, chosenModel, details, reselecting])
 
-  const selectedOption = useMemo(
-    () => details?.options.find((option) => option.reference === draft.priceReference) ?? null,
-    [details, draft.priceReference],
-  )
+  // A stored reference names one region, while an option covers every region charging alike, so
+  // matching on the option's own reference alone would fail to recognise a saved choice that is
+  // not the one region the group happens to be anchored at.
+  const selectedOption = useMemo(() => {
+    const found = details?.options.find((option) =>
+      option.reference === draft.priceReference
+      || Object.values(option.references_by_region ?? {}).includes(draft.priceReference ?? ""))
+    if (!found) return null
+    return found.reference === draft.priceReference
+      ? found
+      : { ...found, reference: draft.priceReference ?? found.reference }
+  }, [details, draft.priceReference])
   // Sibling options for the same deployment are the regions worth choosing between; when a
   // deployment charges one figure everywhere there are no siblings and no question to ask.
   const regionPeers = useMemo(() => {
@@ -310,14 +318,21 @@ function RegionStep({ peers, selected, busy, onChoose }: {
     <select className="model-price-region" disabled={busy}
       value={selected?.reference ?? ""}
       onChange={(event) => {
-        const next = peers.find((option) => option.reference === event.target.value)
-        if (next) onChoose(next)
+        const picked = event.target.value
+        // Grouping regions that charge alike is a display decision. What gets stored is the
+        // region the person actually chose, so that the day the vendor prices them apart this
+        // model follows its own region rather than whichever one sorted first.
+        const next = peers.find((option) =>
+          option.reference === picked
+          || Object.values(option.references_by_region ?? {}).includes(picked))
+        if (next) onChoose({ ...next, reference: picked })
       }}>
       {peers.map((option) => (
         <optgroup key={option.reference}
           label={`${money(option.input_per_million)} / ${money(option.output_per_million)}`}>
           {option.regions.map((region) => (
-            <option key={region} value={option.reference}>{region}</option>
+            <option key={region}
+              value={option.references_by_region?.[region] ?? option.reference}>{region}</option>
           ))}
         </optgroup>
       ))}

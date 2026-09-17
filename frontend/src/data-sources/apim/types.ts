@@ -563,6 +563,9 @@ export type PriceCatalogOption = {
   reference: string
   deployment: string
   regions: string[]
+  // Per-region references. Regions are grouped for display when they charge alike; the choice
+  // that gets stored is still the specific region.
+  references_by_region?: Record<string, string>
   region_required: boolean
   input_per_million: number | null
   output_per_million: number | null

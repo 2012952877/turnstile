@@ -17,6 +17,7 @@ from turnstile_core.pricing.catalog import (
     CatalogModel,
     CatalogOptions,
     CompositeCatalog,
+    _Fetched,
     parse_meter_name,
 )
 
@@ -36,14 +37,15 @@ def meter(name: str, price: float, region: str = "eastus",
 class StubAzure(AzureRetailCatalog):
     """Same parsing and grouping, no network."""
 
-    def __init__(self, rows: list[dict[str, Any]]) -> None:
+    def __init__(self, rows: list[dict[str, Any]], *, complete: bool = True) -> None:
         super().__init__()
         self._rows = rows
+        self._complete = complete
         self.filters: list[str] = []
 
-    def _fetch(self, filter_expression: str) -> list[dict[str, Any]]:
+    def _fetch(self, filter_expression: str) -> Any:
         self.filters.append(filter_expression)
-        return self._rows
+        return _Fetched(rows=self._rows, complete=self._complete)
 
 
 # --------------------------------------------------------------------------------------------
@@ -221,6 +223,64 @@ def test_a_published_cache_write_rate_reaches_the_entry() -> None:
     entry = options_for(rows, model).options[0].entry
     assert entry.cached_per_million == pytest.approx(0.4)
     assert entry.cache_write_per_million == pytest.approx(5.0)
+
+
+def test_every_region_in_a_group_keeps_its_own_reference() -> None:
+    """Regions that charge alike are shown as one choice. What gets stored is still the region.
+
+    Grouping is a display decision; storing the group's first region for someone who picked the
+    third is a data decision, and it only looks harmless while the prices agree.
+    """
+    found = options_for(GPT_41, GPT_41_MODEL)
+    regional = [option for option in found.options if option.deployment == "Regional"]
+    assert regional
+    for option in regional:
+        assert set(option.references_by_region) == set(option.regions)
+        for region, reference in option.references_by_region.items():
+            assert reference.endswith(f":{region}")
+
+
+def test_a_region_reference_survives_the_group_being_split_by_price() -> None:
+    """The day the vendor prices two grouped regions apart, each stored reference has to resolve
+    to its own region -- not to whichever one sorted first while they agreed."""
+    together = [
+        meter("gpt 4.1 Inp regnl Tokens", 0.002, region=region)
+        for region in ("eastus", "westus")
+    ] + [
+        meter("gpt 4.1 Outp regnl Tokens", 0.008, region=region)
+        for region in ("eastus", "westus")
+    ]
+    grouped = options_for(together, GPT_41_MODEL).options[0]
+    assert grouped.regions == ("eastus", "westus")
+    chosen = grouped.references_by_region["westus"]
+
+    # Same catalogue, later: westus is repriced and the group splits.
+    apart = [
+        meter("gpt 4.1 Inp regnl Tokens", 0.002, region="eastus"),
+        meter("gpt 4.1 Outp regnl Tokens", 0.008, region="eastus"),
+        meter("gpt 4.1 Inp regnl Tokens", 0.004, region="westus"),
+        meter("gpt 4.1 Outp regnl Tokens", 0.016, region="westus"),
+    ]
+    resolved = StubAzure(apart).entry(chosen)
+    assert resolved is not None
+    assert resolved.input_per_million == pytest.approx(4.0), (
+        "the model follows the region that was chosen, not the one that sorted first"
+    )
+
+
+def test_a_partially_read_price_is_marked_as_such() -> None:
+    """A page of the feed failing leaves rates that look published-and-absent rather than
+    unread. The entry has to carry that, because the sync must refuse to write it."""
+    found = StubAzure(GPT_41, complete=False).options(GPT_41_MODEL)
+    assert found.complete is False
+    assert all(option.entry.complete is False for option in found.options)
+    assert found.note is not None
+
+
+def test_a_fully_read_price_is_not_marked_partial() -> None:
+    found = options_for(GPT_41, GPT_41_MODEL)
+    assert found.complete is True
+    assert all(option.entry.complete for option in found.options)
 
 
 def test_a_meter_it_cannot_read_is_reported_not_dropped() -> None:

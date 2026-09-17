@@ -91,6 +91,7 @@ class PostgreSqlRegistryRepositoryMixin:
                                     price.price_synced_at,
                                     price.price_sync_status,
                                     price.price_sync_message,
+                                    price.pending_list_price,
                                     -- Resolved here rather than in the caller so every reader
                                     -- sees the same answer to "which discount actually applied".
                                     COALESCE(
@@ -125,50 +126,115 @@ class PostgreSqlRegistryRepositoryMixin:
             "models": cast(Sequence[dict[str, Any]], models),
         }
 
+    # A sync reads every model, talks to a price feed over the network, then writes. Between the
+    # read and the write someone can open the model and change how it is priced -- switch it back
+    # to manual and type a rate, repoint it, change the discount. The plan carries what it was
+    # made against and every write is guarded by it, so a result that is about to land on a
+    # configuration that no longer exists lands nowhere instead.
+    _PRICE_CONFIG_STILL_MATCHES = """
+        EXISTS (
+            SELECT 1 FROM managed_model_price guard
+            LEFT JOIN model_runtime runtime ON runtime.id = model.runtime_id
+            LEFT JOIN model_runtime_price runtime_price
+                ON runtime_price.runtime_id = runtime.id
+            WHERE guard.model_id = model.id
+              AND guard.price_source = %(expected_source)s
+              AND guard.price_reference IS NOT DISTINCT FROM %(expected_reference)s
+              AND COALESCE(
+                    guard.price_discount_percent, runtime_price.price_discount_percent
+                  ) IS NOT DISTINCT FROM %(expected_discount_percent)s
+        )
+    """
+
     def apply_model_price_sync(self, updates: Sequence[Mapping[str, Any]]) -> int:
         written = 0
         with self._connection() as connection, connection.transaction():
             for update in updates:
+                parameters = dict(update)
+                parameters["pending_list_price"] = (
+                    Jsonb(update["pending_list_price"])
+                    if update.get("pending_list_price") is not None
+                    else None
+                )
+                superseded = False
                 if update.get("writes"):
                     # The charged rates live on managed_model and always have: they are what
                     # the billing path reads, and this job is only one of the ways they get
                     # set. Where they came from is the part that is new.
-                    connection.execute(
-                        """UPDATE managed_model SET
+                    row = connection.execute(
+                        f"""UPDATE managed_model model SET
                                input_cost_per_million = %(input_cost_per_million)s,
                                output_cost_per_million = %(output_cost_per_million)s,
                                cached_cost_per_million = %(cached_cost_per_million)s,
                                cache_write_cost_per_million =
                                    %(cache_write_cost_per_million)s,
                                updated_at = now()
-                           WHERE id = %(model_id)s""",
-                        dict(update),
+                           WHERE model.id = %(model_id)s
+                             AND {self._PRICE_CONFIG_STILL_MATCHES}
+                           RETURNING model.id""",
+                        parameters,
+                    ).fetchone()
+                    if row is None:
+                        superseded = True
+                    else:
+                        written += 1
+
+                if superseded:
+                    # Nothing about the rates changed, so nothing about the baseline should
+                    # either. Only the record of what happened, and only if the row is still
+                    # the one that was planned for.
+                    connection.execute(
+                        """UPDATE managed_model_price SET
+                               price_sync_status = 'superseded',
+                               price_sync_message =
+                                   '同步期间该模型的计价配置被改动，本次结果已作废，未写入',
+                               price_synced_at = now(),
+                               updated_at = now()
+                           WHERE model_id = %(model_id)s""",
+                        parameters,
                     )
-                    written += 1
-                # The list price and the outcome are recorded either way. On a skip the rates
-                # stay exactly as they are and only the record changes, so the registry can
-                # say why a model was passed over instead of going quiet. An UPDATE is enough:
-                # a model without a price row is manual, and the planner never selects one.
+                    continue
+
+                # The outcome is recorded either way. On a skip the rates stay exactly as they
+                # are and only the record changes, so the registry can say why a model was
+                # passed over instead of going quiet. An UPDATE is enough: a model without a
+                # price row is manual, and the planner never selects one.
+                #
+                # list_* moves only when the sync accepted the price. A figure held back for
+                # review goes to pending_list_price, because a baseline that follows the price
+                # it is meant to gate agrees with it on the second run.
                 connection.execute(
                     """UPDATE managed_model_price SET
-                           list_input_cost_per_million = COALESCE(
-                               %(list_input_cost_per_million)s,
-                               list_input_cost_per_million),
-                           list_output_cost_per_million = COALESCE(
-                               %(list_output_cost_per_million)s,
-                               list_output_cost_per_million),
-                           list_cached_cost_per_million = COALESCE(
-                               %(list_cached_cost_per_million)s,
-                               list_cached_cost_per_million),
-                           list_cache_write_cost_per_million = COALESCE(
-                               %(list_cache_write_cost_per_million)s,
-                               list_cache_write_cost_per_million),
+                           list_input_cost_per_million = CASE WHEN %(writes)s
+                               THEN COALESCE(%(list_input_cost_per_million)s,
+                                             list_input_cost_per_million)
+                               ELSE list_input_cost_per_million END,
+                           list_output_cost_per_million = CASE WHEN %(writes)s
+                               THEN COALESCE(%(list_output_cost_per_million)s,
+                                             list_output_cost_per_million)
+                               ELSE list_output_cost_per_million END,
+                           list_cached_cost_per_million = CASE WHEN %(writes)s
+                               THEN COALESCE(%(list_cached_cost_per_million)s,
+                                             list_cached_cost_per_million)
+                               ELSE list_cached_cost_per_million END,
+                           list_cache_write_cost_per_million = CASE WHEN %(writes)s
+                               THEN COALESCE(%(list_cache_write_cost_per_million)s,
+                                             list_cache_write_cost_per_million)
+                               ELSE list_cache_write_cost_per_million END,
+                           -- Accepting the price clears the proposal; proposing one replaces
+                           -- it; a run that could not read the source leaves the standing
+                           -- proposal alone rather than forgetting what is waiting.
+                           pending_list_price = CASE
+                               WHEN %(writes)s THEN NULL
+                               WHEN %(pending_list_price)s IS NOT NULL
+                                   THEN %(pending_list_price)s
+                               ELSE pending_list_price END,
                            price_sync_status = %(status)s,
                            price_sync_message = %(message)s,
                            price_synced_at = now(),
                            updated_at = now()
                        WHERE model_id = %(model_id)s""",
-                    dict(update),
+                    parameters,
                 )
         return written
 

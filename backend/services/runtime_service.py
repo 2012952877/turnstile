@@ -204,27 +204,52 @@ class ModelRuntimeService:
                     "list_cache_write_cost_per_million": (
                         update.list_cache_write_cost_per_million
                     ),
+                    "pending_list_price": update.pending_list_price,
+                    "expected_source": update.expected_source,
+                    "expected_reference": update.expected_reference,
+                    "expected_discount_percent": update.expected_discount_percent,
                 }
                 for update in summary.updates
             ]
         )
+        # The plan intended `summary.written` writes and the repository performed `written`. The
+        # difference is exactly the rows whose pricing changed while the sync was talking to the
+        # price feed, so the guard refused them. Reported rather than absorbed: "considered 45,
+        # updated 44" with nothing saying why is the kind of arithmetic nobody chases.
+        superseded = max(summary.written - written, 0)
+        details = [
+            PriceSyncDetail(
+                model_id=update.model_id,
+                model_key=update.model_key,
+                status=update.status,
+                message=update.message,
+            )
+            for update in summary.updates
+            if update.status is not PriceSyncStatus.OK
+        ]
+        refreshed = self.registry()
+        if superseded:
+            planned = {update.model_id for update in summary.updates if update.writes}
+            details.extend(
+                PriceSyncDetail(
+                    model_id=model.id,
+                    model_key=model.model_key,
+                    status=PriceSyncStatus.SUPERSEDED,
+                    message=model.price_sync_message,
+                )
+                for model in refreshed.models
+                if model.id in planned
+                and model.price_sync_status is PriceSyncStatus.SUPERSEDED
+            )
         return PriceSyncResponse(
             considered=len(summary.updates),
             updated=written,
             unmapped=summary.unmapped,
             review_needed=summary.review_needed,
             stale=summary.stale,
-            details=[
-                PriceSyncDetail(
-                    model_id=update.model_id,
-                    model_key=update.model_key,
-                    status=update.status,
-                    message=update.message,
-                )
-                for update in summary.updates
-                if update.status is not PriceSyncStatus.OK
-            ],
-            registry=self.registry(),
+            superseded=superseded,
+            details=details,
+            registry=refreshed,
         )
 
     def registry(self) -> RegistryResponse:

@@ -31,9 +31,9 @@ from __future__ import annotations
 import re
 import time
 import urllib.parse
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any, Protocol
+from typing import Any, NamedTuple, Protocol
 
 import httpx
 
@@ -127,6 +127,12 @@ class CatalogEntry:
     output_per_million: float | None = None
     cached_per_million: float | None = None
     cache_write_per_million: float | None = None
+    # False when the source was read only in part -- a page of the price feed failed and the
+    # rest was kept. The buckets that did arrive are correct, but the ones that did not are
+    # indistinguishable from buckets the vendor does not publish, and writing that difference
+    # into a rate turns a transient 503 into a silent repricing. Readers that only display the
+    # entry can ignore this; anything that writes a charged rate must not.
+    complete: bool = True
 
     @property
     def priced(self) -> bool:
@@ -157,6 +163,12 @@ class CatalogOption:
     everywhere -- which is what Global does, in every case measured -- there is nothing for a
     person to choose and `region_required` is false. Asking anyway would be asking for a decision
     that cannot change the answer.
+
+    `references_by_region` gives each of those regions its own reference. Grouping regions that
+    charge alike is a display decision; storing one region's reference for a person who picked a
+    different one is a data decision, and a wrong one. The prices agree today -- that is why the
+    regions are grouped -- so the bill is right either way, right up until the vendor splits the
+    group and the model quietly follows whichever region happened to sort first.
     """
 
     reference: str
@@ -164,6 +176,7 @@ class CatalogOption:
     entry: CatalogEntry
     regions: tuple[str, ...]
     region_required: bool
+    references_by_region: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -175,6 +188,15 @@ class CatalogOptions:
     unreadable: tuple[str, ...] = ()
     other_meters: tuple[str, ...] = ()
     note: str | None = None
+    # See CatalogEntry.complete. Repeated here so a caller holding only the options knows.
+    complete: bool = True
+
+
+class _Fetched(NamedTuple):
+    """Rows from the price feed, and whether they are all of them."""
+
+    rows: list[dict[str, Any]]
+    complete: bool
 
 
 @dataclass
@@ -324,10 +346,12 @@ class AzureRetailCatalog:
         return built
 
     def _build_index(self) -> Iterable[CatalogModel]:
+        # A partial index only costs the picker a few entries someone can search for again;
+        # unlike a partial price, it cannot reach a bill.
         rows = self._fetch(
             f"serviceName eq 'Foundry Models' and armRegionName eq '{INDEX_REGION}' "
             f"and contains(meterName,'Tokens')"
-        )
+        ).rows
         seen: dict[tuple[str, str], CatalogModel] = {}
         slots: dict[tuple[str, str], set[str]] = {}
         for row in rows:
@@ -368,7 +392,8 @@ class AzureRetailCatalog:
         name_filter = _meter_name_filter(model.label)
         if name_filter:
             clauses.append(name_filter)
-        rows = self._fetch(" and ".join(clauses))
+        fetched = self._fetch(" and ".join(clauses))
+        rows = fetched.rows
 
         buckets: dict[tuple[str, str], dict[str, float]] = {}
         unreadable: set[str] = set()
@@ -415,20 +440,19 @@ class AzureRetailCatalog:
             region_required = len(groups) > 1
             for rates, regions in groups.items():
                 regions_sorted = tuple(sorted(regions))
+
+                def reference_for(region: str) -> str:
+                    return f"azure_retail:{model.product}:{model.label}:{deployment}:{region}"
+
                 # A shape that charges one figure everywhere needs no region in its reference:
                 # pinning one would make the stored mapping look region-specific when it is not.
                 anchor = regions_sorted[0] if region_required else "*"
                 options.append(
                     CatalogOption(
-                        reference=(
-                            f"azure_retail:{model.product}:{model.label}:{deployment}:{anchor}"
-                        ),
+                        reference=reference_for(anchor),
                         deployment=deployment,
                         entry=CatalogEntry(
-                            reference=(
-                                f"azure_retail:{model.product}:{model.label}:"
-                                f"{deployment}:{anchor}"
-                            ),
+                            reference=reference_for(anchor),
                             label=model.label,
                             source=PriceSource.AZURE_RETAIL,
                             detail=deployment,
@@ -436,9 +460,16 @@ class AzureRetailCatalog:
                             output_per_million=rates[1],
                             cached_per_million=rates[2],
                             cache_write_per_million=rates[3],
+                            complete=fetched.complete,
                         ),
                         regions=regions_sorted,
                         region_required=region_required,
+                        # One reference per region, so picking the third region in a group stores
+                        # the third region. The group exists because they charge alike now, not
+                        # because they are the same region.
+                        references_by_region={
+                            region: reference_for(region) for region in regions_sorted
+                        },
                     )
                 )
         options.sort(
@@ -452,6 +483,10 @@ class AzureRetailCatalog:
             options=tuple(options),
             unreadable=tuple(sorted(unreadable)),
             other_meters=tuple(sorted(other_meters)),
+            complete=fetched.complete,
+            note=None if fetched.complete else (
+                "价目表只读到一部分(分页中断),这些价格可以看,但不会被写成实际单价。"
+            ),
         )
 
     def entry(self, reference: str) -> CatalogEntry | None:
@@ -494,7 +529,7 @@ class AzureRetailCatalog:
             product=str(row.get("productName") or "Azure"),
         )
 
-    def _fetch(self, filter_expression: str) -> list[dict[str, Any]]:
+    def _fetch(self, filter_expression: str) -> _Fetched:
         url = (
             AZURE_RETAIL_ENDPOINT
             + "?currencyCode='USD'&$filter="
@@ -505,20 +540,24 @@ class AzureRetailCatalog:
             try:
                 payload = _http_get_json(url)
             except httpx.HTTPError:
-                # A page that fails partway through leaves what was already read. Returning
-                # nothing instead would turn a throttled request into "this model has no
-                # published price", which is a different and far more misleading answer.
+                # A page that fails partway through leaves what was already read, because
+                # returning nothing would turn a throttled request into "this model has no
+                # published price" -- a different and more misleading answer. But the caller has
+                # to be told, or a half-read model looks exactly like a fully-read one whose
+                # vendor publishes fewer buckets. Reading pages 1 of 2 and writing the result
+                # blanks every rate that lived on page 2.
                 if page == 0:
                     raise
-                break
+                return _Fetched(rows=rows, complete=False)
             items = payload.get("Items")
             if isinstance(items, list):
                 rows.extend(item for item in items if isinstance(item, dict))
             next_link = payload.get("NextPageLink")
             if not isinstance(next_link, str) or not next_link:
-                break
+                return _Fetched(rows=rows, complete=True)
             url = next_link
-        return rows
+        # Ran out of page budget with a next link still pending: also a partial read.
+        return _Fetched(rows=rows, complete=False)
 
 
 def _odata_literal(value: str) -> str:

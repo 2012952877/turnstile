@@ -9,6 +9,7 @@ other test in this suite, so wherever the two disagree, the suite agrees with th
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -155,10 +156,82 @@ def test_a_list_price_that_jumped_waits_for_a_person() -> None:
     )
     assert update.status is PriceSyncStatus.REVIEW_NEEDED
     assert update.writes is False
-    assert update.list_input_cost_per_million == pytest.approx(4.0), (
-        "the new list price is still reported, so a person can see what it wants to become"
-    )
     assert update.input_cost_per_million is None
+    assert update.pending_list_price == {
+        "input": 4.0, "output": 1.60, "cached": 0.10, "cache_write": None,
+    }, "the figure is still reported, so a person can see what it wants to become"
+    assert update.list_input_cost_per_million is None, (
+        "but it must not reach the accepted baseline, or the next run compares it with itself"
+    )
+
+
+def test_a_price_held_for_review_is_still_held_on_the_next_run() -> None:
+    """The first version marked the jump, then moved the baseline to the unapproved figure.
+
+    The second run then measured 4 against 4, found no drift, and charged the discounted price
+    that nobody had approved. A threshold that approves itself on the second attempt is not a
+    threshold, so the baseline only moves when a run actually accepts the price.
+    """
+    catalog = StubCatalog(entry(input_per_million=4.0))
+    priced = model(list_input_cost_per_million=0.40, effective_discount_percent=90)
+
+    first = only(plan_price_sync([priced], catalog))
+    assert first.status is PriceSyncStatus.REVIEW_NEEDED
+
+    # The registry after the first run: baseline untouched, proposal recorded.
+    after_first = model(
+        id=priced.id,
+        list_input_cost_per_million=first.list_input_cost_per_million or 0.40,
+        effective_discount_percent=90,
+    )
+    second = only(plan_price_sync([after_first], catalog))
+    assert second.status is PriceSyncStatus.REVIEW_NEEDED, (
+        "the same unapproved price must stop the second run exactly as it stopped the first"
+    )
+    assert second.writes is False
+
+
+@pytest.mark.parametrize(
+    ("moved", "label"),
+    [
+        ({"output_per_million": 16.0}, "输出价"),
+        ({"cached_per_million": 1.0}, "缓存读取价"),
+    ],
+)
+def test_any_bucket_moving_far_enough_waits_for_a_person(
+    moved: dict[str, float], label: str
+) -> None:
+    """Checking only the input rate let an output price triple with nobody asked."""
+    update = only(
+        plan_price_sync(
+            [model(list_input_cost_per_million=0.40, list_output_cost_per_million=1.60,
+                   list_cached_cost_per_million=0.10, effective_discount_percent=90)],
+            StubCatalog(entry(**moved)),
+        )
+    )
+    assert update.status is PriceSyncStatus.REVIEW_NEEDED
+    assert update.writes is False
+    assert label in (update.message or "")
+
+
+def test_a_source_read_only_in_part_keeps_the_rates_it_cannot_confirm() -> None:
+    """Page 2 of the price feed fails. Page 1 carried input and output; cached lived on page 2.
+
+    Writing what arrived would set the cached rate to NULL -- indistinguishable from a vendor
+    that does not publish one -- and the billing path would silently start charging cached
+    tokens at the full input rate.
+    """
+    partial = entry(cached_per_million=None)
+    update = only(
+        plan_price_sync(
+            [model(cached_cost_per_million=0.45, effective_discount_percent=90)],
+            StubCatalog(replace(partial, complete=False)),
+        )
+    )
+    assert update.status is PriceSyncStatus.STALE
+    assert update.writes is False
+    assert update.cached_cost_per_million is None
+    assert "只读到一部分" in (update.message or "")
 
 
 def test_an_ordinary_repricing_passes_unattended() -> None:
@@ -212,8 +285,25 @@ def registry_with(model_discount: float | None, runtime_discount: float | None) 
         runtimes=[{"id": runtime_id, "provider_id": uuid4(),
                    "price_discount_percent": runtime_discount}],
         models=[{"id": uuid4(), "runtime_id": runtime_id, "model_key": "m",
+                 "price_source": "azure_retail", "price_reference": REFERENCE,
                  "price_discount_percent": model_discount}],
     )
+
+
+def sync_result(model_id: UUID, **overrides: Any) -> dict[str, Any]:
+    """A planned write, carrying the configuration it was planned against."""
+    planned: dict[str, Any] = {
+        "model_id": model_id, "writes": True, "status": "ok", "message": None,
+        "input_cost_per_million": 0.36, "output_cost_per_million": 1.44,
+        "cached_cost_per_million": 0.09, "cache_write_cost_per_million": None,
+        "list_input_cost_per_million": 0.40, "list_output_cost_per_million": 1.60,
+        "list_cached_cost_per_million": 0.10, "list_cache_write_cost_per_million": None,
+        "pending_list_price": None,
+        "expected_source": "azure_retail", "expected_reference": REFERENCE,
+        "expected_discount_percent": 90,
+    }
+    planned.update(overrides)
+    return planned
 
 
 @pytest.mark.parametrize(
@@ -235,18 +325,80 @@ def test_the_fake_resolves_the_discount_the_way_the_query_does(
 def test_a_sync_result_lands_on_the_model_the_fake_reports() -> None:
     registry = registry_with(None, 90)
     model_id: UUID = registry.models[0]["id"]
-    written = registry.apply_model_price_sync([
-        {"model_id": model_id, "writes": True, "status": "ok", "message": None,
-         "input_cost_per_million": 0.36, "output_cost_per_million": 1.44,
-         "cached_cost_per_million": 0.09, "cache_write_cost_per_million": None,
-         "list_input_cost_per_million": 0.40, "list_output_cost_per_million": 1.60,
-         "list_cached_cost_per_million": 0.10, "list_cache_write_cost_per_million": None},
-    ])
+    written = registry.apply_model_price_sync([sync_result(model_id)])
     assert written == 1
     stored = registry.registry()["models"][0]
     assert stored["input_cost_per_million"] == pytest.approx(0.36)
     assert stored["list_input_cost_per_million"] == pytest.approx(0.40)
     assert stored["price_sync_status"] == "ok"
+
+
+@pytest.mark.parametrize(
+    ("edit", "what_changed"),
+    [
+        ({"price_source": "manual", "price_reference": None, "input_cost_per_million": 7.0},
+         "切回手工并自己填了单价"),
+        ({"price_reference": "azure_retail:Azure OpenAI:gpt 4.1:Global:*"},
+         "改指向了另一个价目条目"),
+        ({"price_discount_percent": 50}, "改了这个模型的折扣"),
+    ],
+)
+def test_a_result_planned_before_an_edit_does_not_land_after_it(
+    edit: dict[str, Any], what_changed: str
+) -> None:
+    """The sync reads every model, talks to a price feed over the network, then writes.
+
+    Someone opening the model in that window and saving is not a race anyone can see: the write
+    lands on a row that no longer means what the plan assumed, and the rate it leaves behind is
+    one nobody chose. `manual` with a synced rate on it is the worst version -- the screen says
+    the number was typed by a person.
+    """
+    registry = registry_with(None, 90)
+    model = registry.models[0]
+    model["input_cost_per_million"] = 7.0
+    planned = sync_result(model["id"])
+
+    model.update(edit)  # the person saves while the sync is still out on the network
+
+    written = registry.apply_model_price_sync([planned])
+
+    assert written == 0, what_changed
+    stored = registry.registry()["models"][0]
+    assert stored["input_cost_per_million"] == pytest.approx(
+        edit.get("input_cost_per_million", 7.0)
+    ), "the rate the person is looking at has to survive"
+    assert stored["price_sync_status"] == "superseded"
+
+
+def test_an_unchanged_configuration_still_lets_the_write_through() -> None:
+    """The guard has to be narrow enough to be invisible in the normal case."""
+    registry = registry_with(None, 90)
+    written = registry.apply_model_price_sync([sync_result(registry.models[0]["id"])])
+    assert written == 1
+
+
+def test_accepting_a_price_clears_the_proposal_waiting_on_it() -> None:
+    registry = registry_with(None, 90)
+    model = registry.models[0]
+    model["pending_list_price"] = {"input": 4.0, "output": 16.0,
+                                   "cached": None, "cache_write": None}
+    registry.apply_model_price_sync([sync_result(model["id"])])
+    assert registry.registry()["models"][0]["pending_list_price"] is None
+
+
+def test_a_run_that_could_not_read_the_source_leaves_the_proposal_standing() -> None:
+    """Forgetting what is waiting for review because the next run timed out loses the ask."""
+    registry = registry_with(None, 90)
+    model = registry.models[0]
+    model["pending_list_price"] = {"input": 4.0, "output": 16.0,
+                                   "cached": None, "cache_write": None}
+    registry.apply_model_price_sync([
+        sync_result(model["id"], writes=False, status="stale", message="读不到",
+                    pending_list_price=None),
+    ])
+    stored = registry.registry()["models"][0]
+    assert stored["pending_list_price"] == {"input": 4.0, "output": 16.0,
+                                            "cached": None, "cache_write": None}
 
 
 def test_a_skipped_sync_records_the_reason_without_moving_the_rates() -> None:

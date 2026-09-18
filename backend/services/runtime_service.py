@@ -40,6 +40,7 @@ from turnstile_core.domain.runtime_models import (
     PriceCatalogModelsResponse,
     PriceCatalogOption,
     PriceCatalogOptionsResponse,
+    PriceSource,
     PriceSyncDetail,
     PriceSyncResponse,
     PriceSyncStatus,
@@ -171,6 +172,7 @@ class ModelRuntimeService:
                     reference=option.reference,
                     deployment=option.deployment,
                     regions=list(option.regions),
+                    references_by_region=dict(option.references_by_region),
                     region_required=option.region_required,
                     input_per_million=option.entry.input_per_million,
                     output_per_million=option.entry.output_per_million,
@@ -182,6 +184,7 @@ class ModelRuntimeService:
             unreadable=list(found.unreadable),
             other_meters=list(found.other_meters),
             note=found.note,
+            complete=found.complete,
         )
 
     def sync_prices(self, only: Sequence[UUID] | None = None) -> PriceSyncResponse:
@@ -881,6 +884,34 @@ class ModelRuntimeService:
             raise HTTPException(
                 status_code=409, detail="Changing model operation requires a publication"
             )
+        price_fields = (
+            "runtime_id", "price_source", "price_reference", "price_discount_percent",
+            "input_cost_per_million", "output_cost_per_million",
+            "cached_cost_per_million", "cache_write_cost_per_million",
+        )
+        current_model = ManagedModel.model_validate(current) if current is not None else None
+        if write.price_source is not PriceSource.MANUAL and (
+            current_model is None
+            or any(getattr(current_model, field) != getattr(write, field) for field in price_fields)
+        ):
+            try:
+                entry = self._price_catalog.lookup(write.price_reference or "")
+            except Exception as error:  # noqa: BLE001
+                raise HTTPException(
+                    status_code=503, detail="The selected price source is unavailable"
+                ) from error
+            if (
+                entry is None
+                or not entry.complete
+                or entry.input_per_million is None
+                or entry.output_per_million is None
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "The selected catalog price is incomplete; existing prices are unchanged"
+                    ),
+                )
         self._save("model", write.model_dump(mode="python"), item_id)
         return self.registry()
 

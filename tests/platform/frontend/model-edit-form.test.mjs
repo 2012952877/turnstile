@@ -30,6 +30,12 @@ let component
 try { component = (await bundle.generate({ format: "cjs" })).output[0].code }
 finally { await bundle.close() }
 
+const priceEntry = fileURLToPath(new URL("../../../frontend/src/components/model-management/model-price-source.tsx", import.meta.url))
+const priceBundle = await rolldown({ input: priceEntry, external: path => path !== priceEntry, transform: { jsx: { runtime: "automatic" } }, treeshake: false })
+let priceComponent
+try { priceComponent = (await priceBundle.generate({ format: "cjs" })).output[0].code }
+finally { await priceBundle.close() }
+
 function editorHarness(model, providerKind = "microsoft_foundry") {
   const slots = []
   let cursor = 0
@@ -350,4 +356,132 @@ test("a stored reference points back at the model it was chosen from", () => {
     "anthropic:Anthropic:Claude Opus 5")
   // Anything that is not a reference has no model to point at, and saying so beats guessing.
   assert.equal(modelKeyFromReference("nonsense"), null)
+})
+
+function catalogResponse(overrides = {}) {
+  return {
+    model_entry: { key: "azure_retail:Azure OpenAI:gpt 4.1", label: "gpt 4.1", product: "Azure OpenAI", source: "azure_retail" },
+    options: [catalogOption()], complete: true, unreadable: [], other_meters: [], note: null,
+    ...overrides,
+  }
+}
+
+function priceSourceHarness(response, model = savedModel()) {
+  const slots = []
+  const effects = []
+  const pending = []
+  let cursor = 0
+  let effectCursor = 0
+  let draft = { ...createModelEditDraft(model), priceSource: "azure_retail" }
+  const imports = {
+    react: {
+      useState(initial) {
+        const index = cursor++
+        if (!(index in slots)) slots[index] = typeof initial === "function" ? initial() : initial
+        return [slots[index], value => { slots[index] = typeof value === "function" ? value(slots[index]) : value }]
+      },
+      useMemo: callback => callback(),
+      useEffect(callback, dependencies) {
+        const index = effectCursor++
+        const previous = effects[index]
+        if (previous && dependencies.every((value, position) => Object.is(value, previous.dependencies[position]))) return
+        effects[index] = { dependencies }
+        pending.push(() => {
+          previous?.cleanup?.()
+          effects[index].cleanup = callback()
+        })
+      },
+    },
+    "react/jsx-runtime": frontendRequire("react/jsx-runtime"),
+    "./model-edit-form": modelEditForm,
+    "../../data-sources/apim/api": { dataSource: { priceCatalogOptions: async () => response } },
+  }
+  const exports = {}
+  runInNewContext(priceComponent, { exports, require: name => imports[name] ?? new Proxy({}, { get: (_target, key) => key }) })
+  const nodes = value => Array.isArray(value) ? value.flatMap(nodes)
+    : value && typeof value === "object" ? [value, ...nodes(typeof value.type === "function" ? value.type(value.props) : value.props?.children)] : []
+  const render = () => {
+    cursor = 0
+    effectCursor = 0
+    const tree = exports.ModelPriceSourceFields({ model, draft, setDraft: updater => { draft = updater(draft) }, busy: false, connectionDiscount: 90 })
+    for (const effect of pending.splice(0)) effect()
+    return nodes(tree)
+  }
+  return {
+    get draft() { return draft },
+    payload: () => modelEditPayload(model, draft),
+    all: render,
+    find: predicate => render().find(predicate),
+    async flush() { await Promise.resolve(); await Promise.resolve(); return render() },
+  }
+}
+
+for (const complete of [false, undefined]) {
+  test(`an incomplete catalog (${complete}) cannot replace the model's typed prices`, async () => {
+    const response = catalogResponse({ complete, options: [catalogOption({ cached_per_million: null })] })
+    const harness = priceSourceHarness(response)
+    const before = { ...harness.draft }
+
+    await harness.find(node => node.type?.name === "ModelStep").props.onChoose(response.model_entry)
+
+    assert.deepEqual(harness.draft, before)
+    assert.equal(validateModelEdit(harness.draft), "price_reference")
+    assert.throws(() => harness.payload(), /price_reference/)
+    assert.equal(harness.find(node => node.props?.name === "price-deployment").props.disabled, true)
+    harness.find(node => node.type?.name === "DeploymentStep").props.onChoose(response.options[0])
+    assert.deepEqual(harness.draft, before)
+  })
+}
+
+test("partial prices do not overwrite saved buckets when a discount changes", async () => {
+  const response = catalogResponse({ complete: false, options: [catalogOption({ cached_per_million: null })] })
+  const model = savedModel({ price_source: "azure_retail", price_reference: response.options[0].reference })
+  const harness = priceSourceHarness(response, model)
+  harness.all()
+  await harness.flush()
+
+  const discount = harness.find(node => node.props?.id === "model-discount")
+  assert.equal(discount.props.disabled, true)
+  discount.props.onChange({ target: { value: "80" } })
+  harness.all()
+
+  for (const field of ["input_cost_per_million", "output_cost_per_million", "cached_cost_per_million", "cache_write_cost_per_million", "price_reference"]) {
+    assert.equal(harness.payload()[field], model[field], field)
+  }
+})
+
+test("complete catalog selection still applies the connection discount", async () => {
+  const response = catalogResponse()
+  const harness = priceSourceHarness(response)
+
+  await harness.find(node => node.type?.name === "ModelStep").props.onChoose(response.model_entry)
+
+  assert.equal(harness.payload().input_cost_per_million, 1.8)
+  assert.equal(harness.payload().cached_cost_per_million, 0.45)
+  assert.equal(validateModelEdit(harness.draft), null)
+  assert.equal(harness.find(node => node.props?.name === "price-deployment").props.disabled, false)
+})
+
+test("the selected region survives saving, discount changes, and reopening", async () => {
+  const references = Object.fromEntries(["eastus", "westus", "northeurope"].map(region => [region, `azure_retail:Azure OpenAI:gpt 4.1:Regional:${region}`]))
+  const response = catalogResponse({ options: [
+    catalogOption({ reference: references.eastus, deployment: "Regional", regions: ["eastus", "westus"], region_required: true, references_by_region: { eastus: references.eastus, westus: references.westus } }),
+    catalogOption({ reference: references.northeurope, deployment: "Regional", regions: ["northeurope"], region_required: true, references_by_region: { northeurope: references.northeurope }, input_per_million: 3 }),
+  ] })
+  const harness = priceSourceHarness(response)
+  await harness.find(node => node.type?.name === "ModelStep").props.onChoose(response.model_entry)
+  const westus = harness.find(node => node.type === "option" && node.props.children === "westus")
+  assert.equal(westus.props.value, references.westus)
+  harness.find(node => node.type === "select").props.onChange({ target: { value: westus.props.value } })
+  assert.equal(harness.payload().price_reference, references.westus)
+
+  harness.find(node => node.props?.id === "model-discount").props.onChange({ target: { value: "80" } })
+  harness.all()
+  assert.equal(harness.payload().input_cost_per_million, 1.6)
+  assert.equal(harness.payload().price_reference, references.westus)
+
+  const reopened = priceSourceHarness(response, savedModel(harness.payload()))
+  reopened.all()
+  await reopened.flush()
+  assert.equal(reopened.find(node => node.type === "select").props.value, references.westus)
 })

@@ -438,21 +438,20 @@ class AzureRetailCatalog:
         options: list[CatalogOption] = []
         for deployment, groups in by_deployment.items():
             region_required = len(groups) > 1
+            reference_prefix = f"azure_retail:{model.product}:{model.label}:{deployment}"
             for rates, regions in groups.items():
                 regions_sorted = tuple(sorted(regions))
-
-                def reference_for(region: str) -> str:
-                    return f"azure_retail:{model.product}:{model.label}:{deployment}:{region}"
 
                 # A shape that charges one figure everywhere needs no region in its reference:
                 # pinning one would make the stored mapping look region-specific when it is not.
                 anchor = regions_sorted[0] if region_required else "*"
+                reference = f"{reference_prefix}:{anchor}"
                 options.append(
                     CatalogOption(
-                        reference=reference_for(anchor),
+                        reference=reference,
                         deployment=deployment,
                         entry=CatalogEntry(
-                            reference=reference_for(anchor),
+                            reference=reference,
                             label=model.label,
                             source=PriceSource.AZURE_RETAIL,
                             detail=deployment,
@@ -468,7 +467,7 @@ class AzureRetailCatalog:
                         # the third region. The group exists because they charge alike now, not
                         # because they are the same region.
                         references_by_region={
-                            region: reference_for(region) for region in regions_sorted
+                            region: f"{reference_prefix}:{region}" for region in regions_sorted
                         },
                     )
                 )

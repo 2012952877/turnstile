@@ -110,7 +110,7 @@ export function ModelPriceSourceFields({ model, draft, setDraft, busy, connectio
   // Re-pricing on a discount change keeps the rates honest while the dialog is open; without it
   // the box would say 66% while the rates below still showed the old figures.
   useEffect(() => {
-    if (!following || !selectedOption || !chosenModel) return
+    if (!following || !selectedOption || !chosenModel || !details?.complete) return
     setDraft((current) =>
       applyCatalogOption(current, chosenModel.source, selectedOption, discount.percent))
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -143,7 +143,7 @@ export function ModelPriceSourceFields({ model, draft, setDraft, busy, connectio
       const response = await dataSource.priceCatalogOptions(candidate.key)
       setDetails(response)
       const first = response.options[0]
-      if (first) {
+      if (response.complete && first) {
         setDraft((current) =>
           applyCatalogOption(current, candidate.source, first, discount.percent))
       }
@@ -155,7 +155,7 @@ export function ModelPriceSourceFields({ model, draft, setDraft, busy, connectio
   }
 
   const chooseOption = (option: PriceCatalogOption) => {
-    if (!chosenModel) return
+    if (!chosenModel || !details?.complete) return
     setDraft((current) =>
       applyCatalogOption(current, chosenModel.source, option, discount.percent))
   }
@@ -193,17 +193,19 @@ export function ModelPriceSourceFields({ model, draft, setDraft, busy, connectio
       </p>}
 
       {details && <DeploymentStep
-        details={details} selected={selectedOption} busy={busy} onChoose={chooseOption} />}
+        details={details} selected={selectedOption}
+        busy={busy || !details.complete} onChoose={chooseOption} />}
 
       {regionPeers.length > 1 && <RegionStep
-        peers={regionPeers} selected={selectedOption} busy={busy} onChoose={chooseOption} />}
+        peers={regionPeers} selected={selectedOption}
+        busy={busy || !details?.complete} onChoose={chooseOption} />}
 
       <DiscountField
-        draft={draft} setDraft={setDraft} busy={busy}
+        draft={draft} setDraft={setDraft} busy={busy || details?.complete === false}
         connectionDiscount={connectionDiscount} discount={discount} />
 
       <PriceArithmetic model={model} draft={draft} percent={discount.percent}
-        option={selectedOption} />
+        option={details?.complete ? selectedOption : null} />
 
       {details && <CatalogNotices details={details} />}
     </div>}

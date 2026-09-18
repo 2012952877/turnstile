@@ -101,7 +101,35 @@ def merge_observed_users(
     )
 
 
+def governance_directory(*, include_seeded_people: bool) -> EnterpriseEntityCatalog:
+    """The catalog an administrator reads: the org structure, and which people belong in it.
+
+    `enterprise_catalog()` carries twenty fixture people so the traffic generator has
+    somewhere to attribute generated calls that is deliberately not a real employee. That is
+    the right call for generated traffic and a poor first impression for a real deployment:
+    the budget page opens on `test.user01@contoso.com` through `test.user20@contoso.com`, none
+    of whom exist at the customer, none of whom can be deleted -- they are generated on every
+    request -- and all of whom stand between the operator and the people they came to allocate.
+
+    With the fixtures excluded the roster starts empty and fills from `merge_observed_users`,
+    which is how real employees have always arrived. The departments stay either way: a
+    discovered person has to resolve to a known department to hang in the budget hierarchy.
+
+    The flag is passed in rather than read here because the domain layer imports no
+    configuration -- see the layering test.
+    """
+    catalog = enterprise_catalog()
+    if include_seeded_people:
+        return catalog
+    return catalog.model_copy(update={"users": []})
+
+
 def enterprise_catalog() -> EnterpriseEntityCatalog:
+    """Everything seeded, fixture people included.
+
+    Only the traffic generator should take the people from here. Anything an administrator
+    reads goes through `governance_directory()`.
+    """
     departments = [
         ("department-platform", "AI Platform"),
         ("department-commerce", "Commerce"),

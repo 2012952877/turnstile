@@ -33,7 +33,7 @@ from turnstile_core.domain.control_plane import (
 )
 from turnstile_core.domain.enterprise import (
     configured_invocation_tester,
-    enterprise_catalog,
+    governance_directory,
     merge_application_owners,
     merge_observed_users,
 )
@@ -841,7 +841,12 @@ def _bind_invocation_identity(
             effective_user_name = identity.name or identity.email
         else:
             catalog = merge_application_owners(
-                merge_observed_users(enterprise_catalog(), repository.observed_users()),
+                merge_observed_users(
+                    governance_directory(
+                        include_seeded_people=settings.seed_demo_directory
+                    ),
+                    repository.observed_users(),
+                ),
                 repository.application_owners(),
             )
             tester = configured_invocation_tester(

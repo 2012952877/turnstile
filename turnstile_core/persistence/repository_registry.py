@@ -149,6 +149,9 @@ class PostgreSqlRegistryRepositoryMixin:
     def apply_model_price_sync(self, updates: Sequence[Mapping[str, Any]]) -> int:
         written = 0
         with self._connection() as connection, connection.transaction():
+            connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended('model-pricing', 0))"
+            )
             for update in updates:
                 parameters = dict(update)
                 parameters["pending_list_price"] = (
@@ -650,6 +653,10 @@ class PostgreSqlRegistryRepositoryMixin:
             parameters["config"] = Jsonb(parameters["config"])
         parameters["id"] = item_id
         with self._connection() as connection, connection.transaction():
+            if kind in {"model", "runtime"}:
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended('model-pricing', 0))"
+                )
             if kind == "model":
                 removing = connection.execute(
                     """SELECT id FROM gateway_publication

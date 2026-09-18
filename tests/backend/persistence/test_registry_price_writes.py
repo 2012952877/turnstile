@@ -222,6 +222,22 @@ def sync_result(**overrides: Any) -> dict[str, Any]:
     return planned
 
 
+@pytest.mark.parametrize("kind", ["model", "runtime"])
+def test_sync_and_edits_lock_pricing_before_reading_configuration(kind: str) -> None:
+    sync_proxy, sync_recorder = proxy_with([{"id": uuid4()}])
+    sync_proxy.apply_model_price_sync([sync_result()])
+    rows: list[Row] = [model_row(uuid4()), None]
+    if kind == "model":
+        rows.insert(0, None)
+    edit_proxy, edit_recorder = proxy_with(rows)
+
+    edit_proxy.update_registry_item(kind, uuid4(), {"price_discount_percent": 80})
+
+    lock = "SELECT pg_advisory_xact_lock(hashtextextended('model-pricing', 0))"
+    assert sync_recorder.statements[0] == lock
+    assert edit_recorder.statements[0] == lock
+
+
 def test_a_sync_writes_the_charged_rates_to_managed_model_and_nothing_else() -> None:
     """The rates are what the billing path reads and have always lived there. Only the record
     of where they came from is new, and only that record moved."""

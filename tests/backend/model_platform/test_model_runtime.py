@@ -5,6 +5,7 @@ import subprocess
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 from uuid import UUID
 
 import httpx
@@ -35,6 +36,7 @@ from turnstile_core.domain.runtime_models import (
     ModelInvocationRequest,
     ModelVendorKey,
     OAuthClientCredentialsConfig,
+    PriceSource,
     ProviderKind,
     ProviderTarget,
     ProviderWrite,
@@ -55,6 +57,13 @@ from turnstile_core.integrations.gateway import (
     _openai_usage,
 )
 from turnstile_core.persistence.in_memory import InMemoryRepository
+from turnstile_core.pricing.catalog import (
+    CatalogEntry,
+    CatalogModel,
+    CatalogOption,
+    CatalogOptions,
+    CompositeCatalog,
+)
 from turnstile_core.security import CredentialCipher
 
 
@@ -1501,6 +1510,137 @@ def test_anthropic_adapter_reports_databricks_error() -> None:
     detail = str(captured.value)
     assert "`temperature` is deprecated for this model" in detail
     assert "error_code=BAD_REQUEST" in detail
+
+
+@pytest.fixture
+def price_edit_service(
+    tmp_path: Path,
+) -> tuple[ModelRuntimeService, Mock, ManagedModelWrite, UUID]:
+    repository = InMemoryRepository()
+    model_id = UUID("40000000-0000-4000-8000-000000000003")
+    repository.update_registry_item("model", model_id, {"cached_cost_per_million": 0.45})
+    catalog = Mock(spec=CompositeCatalog)
+    reference = "azure_retail:Azure OpenAI:gpt 4.1:Global:*"
+    catalog.lookup.return_value = CatalogEntry(
+        reference=reference, label="gpt 4.1", source=PriceSource.AZURE_RETAIL,
+        input_per_million=2.0, output_per_million=8.0,
+    )
+    service = ModelRuntimeService(
+        repository, Settings(credential_key_file=tmp_path / "credential.key"),
+        price_catalog=catalog,
+    )
+    current = next(model for model in service.registry().models if model.id == model_id)
+    write = ManagedModelWrite.model_validate(
+        current.model_dump(include=set(ManagedModelWrite.model_fields))
+        | {"price_source": "azure_retail", "price_reference": reference,
+           "cached_cost_per_million": None}
+    )
+    return service, catalog, write, model_id
+
+
+@pytest.mark.parametrize("complete", [True, False])
+def test_price_catalog_response_preserves_completeness_and_region_references(
+    price_edit_service: tuple[ModelRuntimeService, Mock, ManagedModelWrite, UUID],
+    complete: bool,
+) -> None:
+    service, catalog, _write, _model_id = price_edit_service
+    references = {
+        region: f"azure_retail:Azure OpenAI:gpt 4.1:Regional:{region}"
+        for region in ("eastus", "westus")
+    }
+    model = CatalogModel(
+        key="azure_retail:Azure OpenAI:gpt 4.1", label="gpt 4.1",
+        product="Azure OpenAI", source=PriceSource.AZURE_RETAIL,
+    )
+    entry = CatalogEntry(
+        reference=references["eastus"], label=model.label, source=model.source,
+        input_per_million=2.0, output_per_million=8.0, complete=complete,
+    )
+    catalog.options.return_value = CatalogOptions(
+        model=model, complete=complete,
+        options=(CatalogOption(
+            reference=entry.reference, deployment="Regional", entry=entry,
+            regions=tuple(references), region_required=True, references_by_region=references,
+        ),),
+    )
+
+    response = service.price_catalog_options(model.key).model_dump(mode="json")
+
+    assert response["complete"] is complete
+    assert response["options"][0]["references_by_region"] == references
+    assert response["options"][0]["regions"] == ["eastus", "westus"]
+
+
+@pytest.mark.parametrize("creating", [False, True])
+@pytest.mark.parametrize("failure", ["partial", "missing", "unavailable"])
+def test_catalog_price_save_rejects_unusable_prices_without_changing_registry(
+    price_edit_service: tuple[ModelRuntimeService, Mock, ManagedModelWrite, UUID],
+    creating: bool,
+    failure: str,
+) -> None:
+    service, catalog, write, model_id = price_edit_service
+    if failure == "partial":
+        catalog.lookup.return_value = CatalogEntry(
+            reference=write.price_reference or "", label="gpt 4.1",
+            source=PriceSource.AZURE_RETAIL, input_per_million=2.0,
+            output_per_million=8.0, complete=False,
+        )
+    elif failure == "missing":
+        catalog.lookup.return_value = None
+    else:
+        catalog.lookup.side_effect = TimeoutError("price source unavailable")
+    before = service.registry().models
+
+    with pytest.raises(HTTPException) as caught:
+        service.save_model(write, None if creating else model_id)
+
+    assert caught.value.status_code == (503 if failure == "unavailable" else 409)
+    assert service.registry().models == before
+    assert next(model for model in before if model.id == model_id).cached_cost_per_million == 0.45
+
+
+def test_complete_catalog_price_can_be_saved(
+    price_edit_service: tuple[ModelRuntimeService, Mock, ManagedModelWrite, UUID],
+) -> None:
+    service, catalog, write, model_id = price_edit_service
+
+    result = service.save_model(write, model_id)
+
+    saved = next(model for model in result.models if model.id == model_id)
+    assert saved.price_source is PriceSource.AZURE_RETAIL
+    assert saved.cached_cost_per_million is None
+    catalog.lookup.assert_called_once_with(write.price_reference)
+
+
+def test_non_pricing_edit_does_not_require_an_available_catalog(
+    price_edit_service: tuple[ModelRuntimeService, Mock, ManagedModelWrite, UUID],
+) -> None:
+    service, catalog, write, model_id = price_edit_service
+    service.save_model(write, model_id)
+    catalog.lookup.reset_mock()
+    catalog.lookup.side_effect = TimeoutError("price source unavailable")
+
+    result = service.save_model(write.model_copy(update={"display_name": "Renamed"}), model_id)
+
+    assert next(model for model in result.models if model.id == model_id).display_name == "Renamed"
+    catalog.lookup.assert_not_called()
+
+
+def test_manual_price_save_does_not_read_the_catalog(
+    price_edit_service: tuple[ModelRuntimeService, Mock, ManagedModelWrite, UUID],
+) -> None:
+    service, catalog, write, model_id = price_edit_service
+    catalog.lookup.side_effect = TimeoutError("price source unavailable")
+    manual = write.model_copy(update={
+        "price_source": PriceSource.MANUAL, "price_reference": None,
+        "input_cost_per_million": 7.0,
+    })
+
+    result = service.save_model(manual, model_id)
+
+    saved = next(model for model in result.models if model.id == model_id)
+    assert saved.input_cost_per_million == 7.0
+    catalog.lookup.assert_not_called()
 
 
 def test_registry_redacts_secret_and_invocation_records_attribution(

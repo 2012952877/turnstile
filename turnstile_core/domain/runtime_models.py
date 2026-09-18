@@ -559,6 +559,7 @@ class PriceCatalogOption(StrictModel):
 class PriceCatalogOptionsResponse(StrictModel):
     model_entry: PriceCatalogModel
     options: list[PriceCatalogOption] = Field(default_factory=list)
+    complete: bool = True
     # Meters that mention this model but that the vocabulary could not read. Reported rather
     # than dropped: a parser meeting an unfamiliar naming convention should look like a gap,
     # not like a model with no published price.

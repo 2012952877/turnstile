@@ -576,6 +576,7 @@ export type PriceCatalogOption = {
 export type PriceCatalogOptionsResponse = {
   model_entry: PriceCatalogModel
   options: PriceCatalogOption[]
+  complete: boolean
   unreadable: string[]
   other_meters: string[]
   note: string | null

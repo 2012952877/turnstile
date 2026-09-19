@@ -67,6 +67,17 @@ from turnstile_core.pricing.catalog import (
 from turnstile_core.security import CredentialCipher
 
 
+def test_http_runtime_requests_reuse_the_price_catalog() -> None:
+    from backend.http.service_dependencies import runtime_service
+
+    repository = InMemoryRepository()
+    first = runtime_service(repository)
+    second = runtime_service(repository)
+
+    assert first is not second
+    assert first._price_catalog is second._price_catalog
+
+
 def request(*, model: str = "gpt-4.1", runtime: str = "Foundry Test") -> ModelInvocationRequest:
     return ModelInvocationRequest(
         metadata=InvocationMetadata(

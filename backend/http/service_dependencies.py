@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from functools import lru_cache
 from typing import Annotated
 
 from fastapi import Depends, Header
@@ -11,6 +12,7 @@ from turnstile_core.integrations.apim_subscription_key_client import (
     AzureApimSubscriptionKeyClient,
 )
 from turnstile_core.integrations.ledger import LedgerSyncService, TableStorageLedger
+from turnstile_core.pricing.catalog import CompositeCatalog, build_default_catalog
 from turnstile_core.security import CredentialCipher
 from turnstile_core.services.application_access import ApplicationAccessService
 from turnstile_core.services.control_plane import GatewayControlPlaneService
@@ -22,8 +24,13 @@ from ..services.runtime_service import ModelRuntimeService
 from .dependencies import Repository
 
 
+@lru_cache(maxsize=1)
+def price_catalog() -> CompositeCatalog:
+    return build_default_catalog()
+
+
 def runtime_service(repository: Repository) -> ModelRuntimeService:
-    return ModelRuntimeService(repository, get_settings())
+    return ModelRuntimeService(repository, get_settings(), price_catalog=price_catalog())
 
 
 RuntimeService = Annotated[ModelRuntimeService, Depends(runtime_service)]

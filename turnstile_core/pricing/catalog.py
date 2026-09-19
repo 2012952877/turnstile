@@ -770,11 +770,12 @@ class CompositeCatalog:
     def options(self, model_key: str) -> CatalogOptions | None:
         for catalog in self._catalogs:
             try:
-                for model in catalog.models():
-                    if model.key == model_key:
-                        return catalog.options(model)
+                models = catalog.models()
             except (httpx.HTTPError, ValueError):
                 continue
+            for model in models:
+                if model.key == model_key:
+                    return catalog.options(model)
         return None
 
     def lookup(self, reference: str) -> CatalogEntry | None:

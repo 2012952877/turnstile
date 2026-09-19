@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
 import pytest
 
 from turnstile_core.domain.runtime_models import PriceSource
@@ -401,6 +402,21 @@ def test_an_unreachable_source_is_named_rather_than_pretended_empty() -> None:
     found = CompositeCatalog([Broken(), StubAzure(GPT_41)]).search_models("gpt 4.1")
     assert [model.label for model in found.models] == ["gpt 4.1"]
     assert found.unavailable == (str(PriceSource.ANTHROPIC),)
+
+
+@pytest.mark.parametrize("error", [
+    httpx.ReadTimeout("options unavailable"),
+    ValueError("options unavailable"),
+])
+def test_known_model_options_preserve_source_failures(error: Exception) -> None:
+    class BrokenOptions(StubAzure):
+        def options(self, model: CatalogModel) -> CatalogOptions:
+            raise error
+
+    catalog = CompositeCatalog([BrokenOptions(GPT_41)])
+    assert catalog.search_models("gpt 4.1").models == (GPT_41_MODEL,)
+    with pytest.raises(type(error), match="options unavailable"):
+        catalog.options(GPT_41_MODEL.key)
 
 
 # --------------------------------------------------------------------------------------------

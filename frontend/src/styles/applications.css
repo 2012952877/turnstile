@@ -44,8 +44,15 @@
 .application-inventory-toolbar .application-filters { margin: 0; }
 .application-inventory-toolbar .application-filters button { height: 32px; }
 .application-inventory-toolbar .model-search-control { margin-left: auto; }
-.application-model-table { --model-table-min-width: 790px; }
+.application-model-table { --model-table-min-width: 950px; }
 .application-department-cell em { color: var(--muted-foreground); font-style: normal; }
+.application-owner-cell em { color: var(--muted-foreground); font-style: normal; }
+.application-owner-cell b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.application-owner-hint {
+  display: flex; align-items: flex-start; gap: 6px;
+  color: var(--warning-foreground, var(--muted-foreground));
+}
+.application-owner-hint svg { flex: none; margin-top: 2px; }
 .application-department-filter { display: flex; align-items: center; gap: 10px; padding: 8px 16px; flex-wrap: wrap; font-size: 12px; }
 .application-department-filter label { display: flex; align-items: center; gap: 6px; }
 .application-department-filter select { min-width: 140px; }

@@ -188,11 +188,51 @@ def _with_structure(
     )
 
 
+def merge_subscription_owners(
+    catalog: EnterpriseEntityCatalog,
+    applications: Iterable[Mapping[str, Any]],
+) -> EnterpriseEntityCatalog:
+    """Add the people named as holding a gateway subscription.
+
+    Usage attributed through a subscription never writes a person into `token_usage.user_id` --
+    that column is immutable per correlation, so it keeps saying `unattributed` -- which means a
+    holder would never appear in the roster built from observed traffic, and could therefore
+    never be given a budget however much their key spent. Naming someone as the holder of a key
+    is the same statement as calling the gateway as them, and has to put them in the same list.
+
+    The same two rules as a discovered person: an email-shaped id, because the budget hierarchy
+    refuses anything else and the `@` is what keeps machine identities out; and a department that
+    exists, because organization -> department -> user is where a person hangs.
+    """
+    known_departments = {item.id for item in catalog.departments}
+    existing = {item.id.casefold() for item in catalog.users}
+    discovered: list[EnterpriseEntity] = []
+    for row in applications:
+        if row.get("system_managed"):
+            continue
+        owner_id = (row.get("owner_id") or "").strip()
+        department_id = (row.get("department_id") or "").strip()
+        if "@" not in owner_id or department_id not in known_departments:
+            continue
+        if owner_id.casefold() in existing:
+            continue
+        existing.add(owner_id.casefold())
+        discovered.append(
+            EnterpriseEntity(id=owner_id, name=owner_id, parent_id=department_id)
+        )
+    if not discovered:
+        return catalog
+    return catalog.model_copy(
+        update={"users": sorted([*catalog.users, *discovered], key=lambda item: item.id)}
+    )
+
+
 def governance_directory(
     observed: Iterable[Mapping[str, Any]],
     *,
     include_seeded_people: bool,
     units: Iterable[Mapping[str, Any]] | None = None,
+    applications: Iterable[Mapping[str, Any]] | None = None,
 ) -> EnterpriseEntityCatalog:
     """The catalog an administrator reads: the org structure and the people in it.
 
@@ -218,12 +258,16 @@ def governance_directory(
     """
     catalog = _with_structure(enterprise_catalog(), units)
     if include_seeded_people:
-        return merge_observed_users(catalog, observed)
-    return merge_observed_users(
-        catalog.model_copy(update={"users": []}),
-        observed,
-        excluded_ids=frozenset(user.id for user in catalog.users),
-    )
+        roster = merge_observed_users(catalog, observed)
+    else:
+        roster = merge_observed_users(
+            catalog.model_copy(update={"users": []}),
+            observed,
+            excluded_ids=frozenset(user.id for user in catalog.users),
+        )
+    if applications is None:
+        return roster
+    return merge_subscription_owners(roster, applications)
 
 
 def governance_departments(

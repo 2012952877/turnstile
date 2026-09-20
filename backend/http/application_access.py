@@ -16,6 +16,7 @@ from turnstile_core.domain.application_access import (
     GatewayApplicationDetail,
     GatewayApplicationList,
     GatewayApplicationModelAccessUpdate,
+    GatewayApplicationOwnerUpdate,
     GatewayApplicationSubscriptionCreate,
     GatewayApplicationSubscriptionKeyRotation,
     GatewayApplicationSubscriptionKeySecret,
@@ -253,6 +254,24 @@ def update_gateway_application_department(
         return service.update_application_department(
             application_id, request, identity.email
         )
+    except ControlPlaneNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@router.put(
+    "/applications/{application_id}/owner",
+    response_model=GatewayApplicationDetail,
+)
+def update_gateway_application_owner(
+    application_id: UUID,
+    request: GatewayApplicationOwnerUpdate,
+    service: ApplicationAccessServiceDependency,
+    identity: OwnerSession,
+) -> GatewayApplicationDetail:
+    try:
+        return service.update_application_owner(application_id, request, identity.email)
     except ControlPlaneNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:

@@ -329,6 +329,11 @@ class QueryRepository(ABC):
     def list_token_budgets(self, period_start: date) -> Sequence[dict[str, Any]]: ...
 
     @abstractmethod
+    def subscription_attributed_usage(
+        self, from_: datetime, to: datetime
+    ) -> Sequence[dict[str, Any]]: ...
+
+    @abstractmethod
     def token_usage_by_budget_scope(
         self, from_: datetime, to: datetime
     ) -> Sequence[dict[str, Any]]: ...
@@ -786,6 +791,17 @@ class QueryRepository(ABC):
         department_id: str | None,
         actor: str,
     ) -> dict[str, Any] | None: ...
+
+    @abstractmethod
+    def update_gateway_application_owner(
+        self,
+        application_id: UUID,
+        owner_id: str | None,
+        actor: str,
+    ) -> dict[str, Any] | None: ...
+
+    @abstractmethod
+    def list_gateway_application_attribution(self) -> Sequence[dict[str, Any]]: ...
 
     @abstractmethod
     def list_gateway_application_subscriptions(

@@ -64,7 +64,13 @@ import { useTimezone } from "../providers/timezone-provider"
 type ApplicationFilter = "all" | "active" | "attention" | "system"
 type SubscriptionCategory = "applications" | "agents"
 
-const APPLICATION_TABLE_COLUMN_MIN_WIDTHS = [180, 130, 120, 180, 80] as const
+const APPLICATION_TABLE_COLUMN_MIN_WIDTHS = [180, 130, 120, 160, 170, 80] as const
+
+const OWNER_SOURCE_LABELS: Record<string, string> = {
+  apim: "来自 APIM",
+  derived: "按名称推导",
+  manual: "人工指定",
+}
 
 const statusLabels: Record<GatewayApplicationStatus, string> = {
   active: "活动",
@@ -352,10 +358,21 @@ function ApplicationDepartmentDialog({ application, open, writeAvailable, onOpen
   const entities = useQuery(finopsQueries.entities())
   const departments = entities.data?.departments ?? []
   const [departmentId, setDepartmentId] = useState(application.department_id ?? "")
+  const [ownerId, setOwnerId] = useState(application.owner_id ?? "")
+  const ownerChanged = (ownerId.trim() || null) !== (application.owner_id ?? null)
   const mutation = useMutation({
-    mutationFn: () => dataSource.updateGatewayApplicationDepartment(application.id, {
-      department_id: departmentId || null,
-    }),
+    mutationFn: async () => {
+      // The owner goes first: it is the one that can be refused, and applying the department
+      // before a rejected owner would leave the dialog open on a half-saved change.
+      if (ownerChanged) {
+        await dataSource.updateGatewayApplicationOwner(application.id, {
+          owner_id: ownerId.trim() || null,
+        })
+      }
+      return dataSource.updateGatewayApplicationDepartment(application.id, {
+        department_id: departmentId || null,
+      })
+    },
     onSuccess: (value) => {
       queryClient.setQueryData(finopsKeys.gatewayApplication(application.id), value)
       void queryClient.invalidateQueries({ queryKey: finopsKeys.gatewayApplications })
@@ -366,7 +383,7 @@ function ApplicationDepartmentDialog({ application, open, writeAvailable, onOpen
   return <Dialog open={open} onOpenChange={(next) => { if (!mutation.isPending) onOpenChange(next) }}>
     <DialogContent className="registry-editor-dialog application-governance-dialog" finalFocus={false}>
       <form className="registry-editor" onSubmit={(event) => { event.preventDefault(); mutation.mutate() }}>
-        <DialogHeader className="registry-editor-header"><DialogTitle>编辑所属部门</DialogTitle><DialogDescription>{application.display_name}</DialogDescription></DialogHeader>
+        <DialogHeader className="registry-editor-header"><DialogTitle>编辑归属</DialogTitle><DialogDescription>{application.display_name}</DialogDescription></DialogHeader>
         <button type="button" className="registry-editor-close" onClick={() => onOpenChange(false)} disabled={mutation.isPending} aria-label="关闭"><X size={16} /></button>
         <div className="registry-editor-body application-governance-form">
           {!writeAvailable && <div className="application-governance-unavailable"><AlertTriangle size={14} />此环境尚未发布编辑 API，部署新后端后可保存。</div>}
@@ -376,7 +393,17 @@ function ApplicationDepartmentDialog({ application, open, writeAvailable, onOpen
               <option value="">未归属</option>
               {departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}
             </select>
-            <small>用于按部门查看和归类订阅。部门预算统计的是请求里声明的部门，不是这里配的，所以改这里不会改变任何预算数字。</small>
+            <small>这个订阅的用量计入该部门的预算，从下一次调用开始生效。</small>
+          </label>
+          <label className="registry-editor-field">
+            <span>归属人</span>
+            <Input value={ownerId} disabled={mutation.isPending} placeholder="name@company.com"
+              onChange={(event) => setOwnerId(event.target.value)} />
+            <small>填了才能给这个人单独配额度。必须是邮箱。</small>
+            {(application.person_group_size ?? 1) > 1 && <small className="application-owner-hint">
+              <AlertTriangle size={12} />
+              {`还有 ${(application.person_group_size ?? 1) - 1} 个订阅去掉用途后缀后同名，可能是同一个人。两个订阅各自算各自的额度。`}
+            </small>}
           </label>
           {mutation.error && <div className="registry-error">{String(mutation.error)}</div>}
         </div>
@@ -463,6 +490,12 @@ function ApplicationInventoryRow({ application, category, timezone, selected, ca
     <div className="model-runtime-cell application-department-cell">{application.department_name
       ? <b data-no-localize>{application.department_name}</b>
       : <em>未归属</em>}</div>
+    <div className="model-runtime-cell application-owner-cell">{application.owner_id
+      ? <><b data-no-localize title={application.owner_id}>{application.owner_id}</b>
+        <span>{OWNER_SOURCE_LABELS[application.owner_source ?? "manual"]}</span></>
+      : <><em>未指定</em>
+        {(application.person_group_size ?? 1) > 1 && <span title="订阅名去掉用途后缀后相同">
+          {`与另 ${(application.person_group_size ?? 1) - 1} 把钥匙同名`}</span>}</>}</div>
     <div className="model-pricing-cell" title={`已使用 ${usage.toFixed(2)}%`}><b>{formatFullCount(application.usage.total_tokens)} Token · {usage.toFixed(2)}%</b><span>{`${application.usage.request_count} 个请求`} · {formatTimestamp(application.usage.last_request_at, timezone)}</span></div>
     <div className="model-status-cell"><ApplicationStatus application={application} /></div>
   </a>
@@ -624,6 +657,9 @@ function ApplicationDetailView({
           <header className="application-card-head"><div><Gauge size={14} /><h2>归因状态</h2></div>{canManage && !application.system_managed && <div className="application-card-actions"><Button type="button" variant="ghost" size="icon-sm" onClick={() => setDepartmentEditorOpen(true)} aria-label="编辑所属部门" title="编辑所属部门"><Edit3 size={14} /></Button></div>}</header>
           <dl>
             <div><dt>所属部门</dt><dd>{application.department_name ?? (application.department_id ?? "未归属")}</dd></div>
+            <div><dt>归属人</dt><dd>{application.owner_id
+              ? `${application.owner_id}（${OWNER_SOURCE_LABELS[application.owner_source ?? "manual"]}）`
+              : "未指定"}</dd></div>
             <div><dt>{consumer}</dt><dd>已绑定</dd></div>
             <div><dt>调用身份</dt><dd>{isAgent ? "智能体" : application.application_type === "delegated_user" ? "应用 + 人员" : application.system_managed ? "系统" : "服务"}</dd></div>
             <div><dt>额度账本</dt><dd>{budget?.ledger_snapshot_at ? "已投影" : budget ? "未同步" : "未配置"}</dd></div>
@@ -892,7 +928,7 @@ export function ApplicationsPage() {
         </div>}
         <ResizableGridTable className="model-table application-model-table" role="table" aria-label={`${consumer}列表`} headerSelector=".application-table-head" minWidths={APPLICATION_TABLE_COLUMN_MIN_WIDTHS} columnGap={12} horizontalPadding={32}>
           <div className="model-table-head application-table-head" role="row">
-            {[consumer, "类型 / 订阅", "部门", "本月用量 / 最近请求", "状态"].map((label) => <span className="model-table-heading" role="columnheader" aria-label={label} key={label}><span>{label}</span></span>)}
+            {[consumer, "类型 / 订阅", "部门", "归属人", "本月用量 / 最近请求", "状态"].map((label) => <span className="model-table-heading" role="columnheader" aria-label={label} key={label}><span>{label}</span></span>)}
           </div>
           <div className="model-table-body application-inventory-list" role="rowgroup">
           {visible.map((application) => <ApplicationInventoryRow application={application} category={category} timezone={timezone} key={application.id}

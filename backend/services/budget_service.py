@@ -97,6 +97,11 @@ class TokenBudgetService:
                 self._repository.observed_users(),
                 include_seeded_people=self._seed_demo_directory,
                 units=self._repository.org_units(),
+                # Usage attributed through a subscription leaves `token_usage.user_id` saying
+                # `unattributed`, so a key's holder never appears in the roster built from
+                # observed traffic -- and an entity absent from the roster cannot be given a
+                # budget, however much their key spends.
+                applications=self._repository.list_gateway_applications(),
             ),
             self._repository.application_owners(),
         )
@@ -140,6 +145,17 @@ class TokenBudgetService:
             (row["scope_type"], row["scope_id"]): int(row["used_tokens"])
             for row in usage_rows
         }
+        # Usage that declared no identity of its own, attributed to the subscription that
+        # produced it. The query above drops those rows in its final
+        # `WHERE scope_id <> 'unattributed'`, so this adds rather than overlaps: at an install
+        # where nothing sets the attribution headers it is the difference between a budget page
+        # that reports zero forever and one that reports what was actually spent.
+        for row in self._repository.subscription_attributed_usage(
+            datetime.combine(period_start, time.min, tzinfo=UTC),
+            datetime.combine(period_end, time.min, tzinfo=UTC),
+        ):
+            key = (row["scope_type"], row["scope_id"])
+            usage[key] = usage.get(key, 0) + int(row["used_tokens"])
         now = datetime.now(UTC)
         items: list[dict[str, Any]] = []
         risk_items: list[dict[str, Any]] = []

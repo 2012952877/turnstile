@@ -998,6 +998,8 @@ export type GatewayApplicationUserUsage = {
   last_request_at: string
 }
 
+export type GatewayAttributionSource = "apim" | "derived" | "manual"
+
 export type GatewayApplicationSummary = {
   id: string
   gateway_profile_id: string
@@ -1005,8 +1007,12 @@ export type GatewayApplicationSummary = {
   display_name: string
   description: string | null
   owner_id: string | null
+  owner_source?: GatewayAttributionSource | null
   department_id: string | null
   department_name?: string | null
+  department_source?: GatewayAttributionSource | null
+  person_group?: string | null
+  person_group_size?: number
   application_type: GatewayApplicationType
   status: GatewayApplicationStatus
   system_managed: boolean

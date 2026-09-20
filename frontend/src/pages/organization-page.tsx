@@ -124,7 +124,7 @@ function CreateDepartment() {
     <label><span>部门标识</span>
       <Input value={effectiveId} disabled={mutation.isPending} placeholder="department-xxx"
         onChange={(event) => { setTouchedId(true); setId(event.target.value) }} />
-      <small>标识一旦创建就不能再改：预算、用量和订阅记录的都是它。名称随时可改。</small>
+      <small>标识建好后不能再改，名称可以随时改。</small>
     </label>
     {mutation.error && <div className="registry-error">{String(mutation.error)}</div>}
     <div className="org-create-actions">
@@ -212,7 +212,7 @@ export function OrganizationPage() {
             <code data-no-localize>{data.organization.id}</code>
           </div>
         : <p className="org-card-note">这个部署还没有组织。</p>}
-      <p className="org-card-note">改名不影响任何已有数据：预算、用量和订阅记录的都是标识，不是名称。</p>
+      <p className="org-card-note">改名是安全的，不影响已有的预算和用量。</p>
     </section>
 
     <section className="org-card">

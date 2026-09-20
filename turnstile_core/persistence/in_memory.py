@@ -164,6 +164,8 @@ class InMemoryRepository(
         self.gateway_application_model_policies: dict[UUID, dict[str, Any]] = {}
         self.gateway_application_model_access: dict[UUID, set[UUID]] = {}
         self.gateway_application_audit: list[dict[str, Any]] = []
+        self.gateway_application_attribution: dict[UUID, dict[str, Any]] = {}
+        self.gateway_application_attribution_audit: list[dict[str, Any]] = []
         # Mirrors what migration 009 seeds, so the fake and a migrated database answer the
         # same structure to anything that reads it.
         self.org_units_by_id: dict[str, dict[str, Any]] = {

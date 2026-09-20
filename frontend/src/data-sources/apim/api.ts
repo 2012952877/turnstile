@@ -480,6 +480,14 @@ export const dataSource = {
     value,
     "PUT",
   ),
+  updateGatewayApplicationOwner: (
+    id: string,
+    value: { owner_id: string | null },
+  ) => writeJson<GatewayApplicationDetail>(
+    `/api/v1/application-access/applications/${encodeURIComponent(id)}/owner`,
+    value,
+    "PUT",
+  ),
   updateGatewayApplicationDepartmentBulk: (value: {
     application_ids: string[]
     department_id: string | null

@@ -64,7 +64,7 @@ import { useTimezone } from "../providers/timezone-provider"
 type ApplicationFilter = "all" | "active" | "attention" | "system"
 type SubscriptionCategory = "applications" | "agents"
 
-const APPLICATION_TABLE_COLUMN_MIN_WIDTHS = [180, 130, 180, 80] as const
+const APPLICATION_TABLE_COLUMN_MIN_WIDTHS = [180, 130, 140, 180, 80] as const
 
 const statusLabels: Record<GatewayApplicationStatus, string> = {
   active: "活动",
@@ -154,6 +154,13 @@ function applicationFromUrl() {
 
 function subscriptionCategoryFromUrl(): SubscriptionCategory {
   return new URL(window.location.href).searchParams.get("consumer") === "agents" ? "agents" : "applications"
+}
+
+// Arriving from the organization screen, where the channel count on a department is a link.
+// Kept in the URL rather than in component state so the link is shareable and survives a
+// reload -- the operator who sent it is usually asking a colleague to look at the same list.
+function departmentFromUrl(): string | null {
+  return new URL(window.location.href).searchParams.get("department")
 }
 
 function applicationRouteHref(applicationId: string | null, category = subscriptionCategoryFromUrl()) {
@@ -452,6 +459,9 @@ function ApplicationInventoryRow({ application, category, timezone }: {
       {application.system_managed && <em>系统</em>}
     </div>
     <div className="model-runtime-cell"><b>{typeLabels[application.application_type]}</b><span>{application.system_managed ? "系统管理" : "消费对象"} · {application.active_subscription_count} / {application.subscription_count} 个订阅</span></div>
+    <div className="model-runtime-cell application-department-cell">{application.department_name
+      ? <><b data-no-localize>{application.department_name}</b><span data-no-localize>{application.owner_id ?? ""}</span></>
+      : <em>未归属</em>}</div>
     <div className="model-pricing-cell" title={`已使用 ${usage.toFixed(2)}%`}><b>{formatFullCount(application.usage.total_tokens)} Token · {usage.toFixed(2)}%</b><span>{`${application.usage.request_count} 个请求`} · {formatTimestamp(application.usage.last_request_at, timezone)}</span></div>
     <div className="model-status-cell"><ApplicationStatus application={application} /></div>
   </a>
@@ -654,6 +664,7 @@ export function ApplicationsPage() {
   })
   const [applicationId, setApplicationId] = useState<string | null>(applicationFromUrl)
   const [category, setCategory] = useState<SubscriptionCategory>(subscriptionCategoryFromUrl)
+  const [department, setDepartment] = useState<string | null>(departmentFromUrl)
   const applications = useQuery({
     ...finopsQueries.gatewayApplications(),
     enabled: !applicationId,
@@ -675,10 +686,21 @@ export function ApplicationsPage() {
         || (filter === "active" && application.status === "active" && application.stale_subscription_count === 0)
         || (filter === "attention" && (application.status !== "active" || application.stale_subscription_count > 0))
         || (filter === "system" && application.system_managed)
-      const searchMatch = !normalized || `${application.display_name} ${application.slug} ${application.owner_id ?? ""} ${application.department_id ?? ""}`.toLocaleLowerCase().includes(normalized)
-      return filterMatch && searchMatch
+      const searchMatch = !normalized || `${application.display_name} ${application.slug} ${application.owner_id ?? ""} ${application.department_id ?? ""} ${application.department_name ?? ""}`.toLocaleLowerCase().includes(normalized)
+      const departmentMatch = !department
+        || (department === "unassigned" ? !application.department_id : application.department_id === department)
+      return filterMatch && searchMatch && departmentMatch
     })
-  }, [categoryItems, filter, search])
+  }, [categoryItems, filter, search, department])
+  // Resolved from the rows themselves rather than by fetching the directory again: the list
+  // already carries every channel's department name, and a filter that has no matching row
+  // has nothing to label anyway.
+  const departmentLabel = useMemo(() => {
+    if (!department) return ""
+    if (department === "unassigned") return "未归属"
+    return categoryItems.find((item) => item.department_id === department)?.department_name
+      ?? department
+  }, [categoryItems, department])
   useEffect(() => {
     setMobileActionsTarget(document.getElementById("mobile-topbar-end-actions"))
   }, [])
@@ -686,6 +708,7 @@ export function ApplicationsPage() {
     const sync = () => {
       setApplicationId(applicationFromUrl())
       setCategory(subscriptionCategoryFromUrl())
+      setDepartment(departmentFromUrl())
       setActiveOperationId(applicationOperationIdFromUrl(window.location.href))
     }
     window.addEventListener("popstate", sync)
@@ -788,9 +811,18 @@ export function ApplicationsPage() {
           <div className="application-filters" role="group" aria-label={`${consumer}状态筛选`}>{filters.filter((item) => item.id === "all" || item.count > 0).map((item) => <button type="button" key={item.id} className={filter === item.id ? "active" : ""} aria-pressed={filter === item.id} onClick={() => setFilter(item.id)}><span>{item.label}</span><small>{item.count}</small></button>)}</div>
           <ExpandableSearch key={category} value={search} onChange={setSearch} placeholder={`搜索${consumer}或订阅 ID...`} ariaLabel={`搜索${consumer}`} />
         </div>
+        {department && <div className="application-department-filter">
+          <span>只看部门：<b data-no-localize>{departmentLabel}</b></span>
+          <Button type="button" variant="ghost" size="sm" onClick={() => {
+            const url = new URL(window.location.href)
+            url.searchParams.delete("department")
+            window.history.pushState(null, "", `${url.pathname}${url.search}`)
+            setDepartment(null)
+          }}><X size={13} />显示全部</Button>
+        </div>}
         <ResizableGridTable className="model-table application-model-table" role="table" aria-label={`${consumer}列表`} headerSelector=".application-table-head" minWidths={APPLICATION_TABLE_COLUMN_MIN_WIDTHS} columnGap={12} horizontalPadding={32}>
           <div className="model-table-head application-table-head" role="row">
-            {[consumer, "类型 / 订阅", "本月用量 / 最近请求", "状态"].map((label) => <span className="model-table-heading" role="columnheader" aria-label={label} key={label}><span>{label}</span></span>)}
+            {[consumer, "类型 / 订阅", "部门 / 负责人", "本月用量 / 最近请求", "状态"].map((label) => <span className="model-table-heading" role="columnheader" aria-label={label} key={label}><span>{label}</span></span>)}
           </div>
           <div className="model-table-body application-inventory-list" role="rowgroup">
           {visible.map((application) => <ApplicationInventoryRow application={application} category={category} timezone={timezone} key={application.id} />)}

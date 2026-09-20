@@ -8,6 +8,7 @@ import { ResizableGridTable } from "../components/ui/resizable-table"
 import { dataSource } from "../data-sources/apim/api"
 import { finopsKeys, finopsQueries } from "../data-sources/apim/queries"
 import type { ConsoleMemberList, OrganizationDirectory, OrgUnit } from "../data-sources/apim/types"
+import { FINOPS_NAVIGATE_EVENT } from "../lib/navigation"
 import { useAuth } from "../providers/auth-provider"
 
 // Mirrors `suggested_unit_id` on the server: an id is proposed where the name allows one and
@@ -17,6 +18,25 @@ import { useAuth } from "../providers/auth-provider"
 function suggestedId(displayName: string): string {
   const slug = displayName.trim().toLocaleLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")
   return slug ? `department-${slug}`.slice(0, 63).replace(/-$/, "") : ""
+}
+
+function channelsHref(departmentId: string) {
+  const url = new URL(window.location.href)
+  url.searchParams.set("page", "applications")
+  url.searchParams.set("consumer", "applications")
+  url.searchParams.set("department", departmentId)
+  url.searchParams.delete("application")
+  return `${url.pathname}${url.search}`
+}
+
+function openChannels(departmentId: string) {
+  return (event: React.MouseEvent<HTMLAnchorElement>) => {
+    if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey) return
+    if (event.button !== 0) return
+    event.preventDefault()
+    window.history.pushState(null, "", channelsHref(departmentId))
+    window.dispatchEvent(new Event(FINOPS_NAVIGATE_EVENT))
+  }
 }
 
 function useDirectoryMutation(onDone?: () => void) {
@@ -69,7 +89,10 @@ function DepartmentRow({ unit, canManage }: { unit: OrgUnit; canManage: boolean 
     <span role="cell" className="org-unit-references">
       <span title="预算">{budgets}</span>
       <span title="用量记录">{usage}</span>
-      <span title="通道">{applications}</span>
+      {/* The count was the only place a department's channels were visible, and it was a
+          number with no way through to what it counted. */}
+      <a title="查看这个部门下的订阅" href={channelsHref(unit.id)}
+        onClick={openChannels(unit.id)}>{applications}</a>
     </span>
     <span role="cell">
       {canManage && <Button type="button" variant="outline" size="sm" disabled={mutation.isPending}

@@ -44,9 +44,11 @@
 .application-inventory-toolbar .application-filters { margin: 0; }
 .application-inventory-toolbar .application-filters button { height: 32px; }
 .application-inventory-toolbar .model-search-control { margin-left: auto; }
-.application-model-table { --model-table-min-width: 638px; }
+.application-model-table { --model-table-min-width: 790px; }
+.application-department-cell em { color: var(--muted-foreground); font-style: normal; }
+.application-department-filter { display: flex; align-items: center; gap: 8px; }
 .application-model-table .model-table-head,
-.application-model-table .model-list-row { grid-template-columns: var(--resizable-table-columns, minmax(180px, 1.2fr) minmax(130px, .75fr) minmax(180px, 1fr) 80px); }
+.application-model-table .model-list-row { grid-template-columns: var(--resizable-table-columns, minmax(180px, 1.2fr) minmax(130px, .75fr) minmax(140px, .8fr) minmax(180px, 1fr) 80px); }
 .application-inventory-list { min-height: 0; }
 .application-inventory-row { color: var(--foreground); text-decoration: none; }
 .application-inventory-row:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }

@@ -128,7 +128,15 @@ def test_applications_use_two_level_inventory_and_detail_routes() -> None:
     assert "FINOPS_NAVIGATE_EVENT" in page
     assert 'className="model-list-row application-inventory-row"' in page
     assert 'className="model-table application-model-table"' in page
-    assert "APPLICATION_TABLE_COLUMN_MIN_WIDTHS = [180, 130, 180, 80]" in page
+    # Five columns since the inventory started carrying the department a channel is filed
+    # under: the count on the organization screen was the only place that was visible, and a
+    # count is not a list.
+    assert "APPLICATION_TABLE_COLUMN_MIN_WIDTHS = [180, 130, 140, 180, 80]" in page
+    assert 'className="model-runtime-cell application-department-cell"' in page
+    assert '"部门 / 负责人"' in page
+    # Filtering to one department lives in the URL so the view can be sent to someone else.
+    assert "function departmentFromUrl()" in page
+    assert 'searchParams.get("department")' in page
     assert "application-row-action" not in page
     assert "subscriptions-category-chevron" not in page
     assert 'className="application-detail-workspace"' in page
@@ -157,7 +165,9 @@ def test_applications_use_two_level_inventory_and_detail_routes() -> None:
     assert "application.user_count" in page
     assert "application-timeline" in page
     assert ".application-inventory-row" in styles
-    assert "--model-table-min-width: 638px" in styles
+    # Widened for the department column; the point of the assertion is that the inventory
+    # still declares a minimum, so a five-column grid cannot silently collapse.
+    assert "--model-table-min-width: 790px" in styles
     assert ".application-avatar-editor" in styles
     assert "container: subscription-content / inline-size" in styles
     assert "grid-template-columns: var(--subscriptions-nav-width, 276px) minmax(0, 1fr)" in styles

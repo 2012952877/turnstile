@@ -100,3 +100,36 @@ class OrgUnitRename(StrictModel):
 
 class OrgUnitStatusUpdate(StrictModel):
     status: UnitStatus
+
+
+class ConsoleMember(StrictModel):
+    """Someone who can sign in to the console.
+
+    Distinct from the people in the governance directory, who are there because they called
+    the gateway or own an application. A colleague who signs in with Microsoft and looks at a
+    report is in neither of those sets, so before this list existed they were stored in
+    `app_user`, granted the member role, and shown on no screen anywhere -- including the one
+    that would have explained why every edit control was missing for them.
+    """
+
+    email: str
+    display_name: str | None
+    role: Literal["owner", "member"]
+    enabled: bool
+    sign_in: Literal["password", "microsoft"]
+    created_at: datetime
+    last_login_at: datetime | None
+    is_self: bool
+
+
+class ConsoleMemberList(StrictModel):
+    members: list[ConsoleMember]
+    owner_count: int = Field(ge=0)
+
+
+class ConsoleMemberRoleUpdate(StrictModel):
+    role: Literal["owner", "member"]
+
+
+class ConsoleMemberStatusUpdate(StrictModel):
+    enabled: bool

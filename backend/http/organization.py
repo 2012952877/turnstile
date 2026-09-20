@@ -3,6 +3,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 
 from turnstile_core.domain.organization import (
+    ConsoleMember,
+    ConsoleMemberList,
+    ConsoleMemberRoleUpdate,
+    ConsoleMemberStatusUpdate,
     OrganizationDirectory,
     OrgUnitCreate,
     OrgUnitRename,
@@ -17,6 +21,7 @@ from .dependencies import Repository
 from .session import (
     CurrentSession,
     OwnerSession,
+    Store,
     require_allowed_write_origin,
     require_authenticated_session,
 )
@@ -84,3 +89,65 @@ def set_unit_status(
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+def _members(store: Store, viewer_email: str) -> ConsoleMemberList:
+    rows = store.list_users()
+    members = [
+        ConsoleMember.model_validate({
+            "email": row["email"],
+            "display_name": row.get("display_name"),
+            "role": row["role"],
+            "enabled": row["enabled"],
+            # How they got in, not how they are allowed in: an account created by the
+            # bootstrap command has a password, and one provisioned on first Microsoft
+            # sign-in never does. Showing it is what makes an empty password column
+            # explicable rather than alarming.
+            "sign_in": "password" if row.get("has_password") else "microsoft",
+            "created_at": row["created_at"],
+            "last_login_at": row.get("last_login_at"),
+            "is_self": str(row["email"]).casefold() == viewer_email.casefold(),
+        })
+        for row in rows
+    ]
+    return ConsoleMemberList(
+        members=members,
+        owner_count=sum(1 for item in members if item.role == "owner" and item.enabled),
+    )
+
+
+@router.get("/members", response_model=ConsoleMemberList)
+def list_console_members(store: Store, identity: CurrentSession) -> ConsoleMemberList:
+    return _members(store, identity.email)
+
+
+@router.put("/members/{email}/role", response_model=ConsoleMemberList)
+def set_console_member_role(
+    email: str,
+    request: ConsoleMemberRoleUpdate,
+    store: Store,
+    identity: OwnerSession,
+) -> ConsoleMemberList:
+    try:
+        updated = store.set_user_role(email, request.role, identity.email)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"No account for {email}")
+    return _members(store, identity.email)
+
+
+@router.put("/members/{email}/status", response_model=ConsoleMemberList)
+def set_console_member_status(
+    email: str,
+    request: ConsoleMemberStatusUpdate,
+    store: Store,
+    identity: OwnerSession,
+) -> ConsoleMemberList:
+    try:
+        updated = store.set_user_enabled(email, request.enabled, identity.email)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"No account for {email}")
+    return _members(store, identity.email)

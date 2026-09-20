@@ -30,6 +30,7 @@ import type {
   GatewayApplicationList,
   GatewayApplicationModelAccessUpdate,
   GatewayApplicationOwnershipUpdate,
+  ConsoleMemberList,
   OrganizationDirectory,
   GatewayApplicationSubscriptionCreate,
   GatewayApplicationSubscriptionKeyKind,
@@ -493,6 +494,19 @@ export const dataSource = {
     writeJson<OrganizationDirectory>(
       `/api/v1/organization/units/${encodeURIComponent(unitId)}/status`,
       { status },
+      "PUT",
+    ),
+  consoleMembers: () => request<ConsoleMemberList>("/api/v1/organization/members"),
+  setConsoleMemberRole: (email: string, role: "owner" | "member") =>
+    writeJson<ConsoleMemberList>(
+      `/api/v1/organization/members/${encodeURIComponent(email)}/role`,
+      { role },
+      "PUT",
+    ),
+  setConsoleMemberEnabled: (email: string, enabled: boolean) =>
+    writeJson<ConsoleMemberList>(
+      `/api/v1/organization/members/${encodeURIComponent(email)}/status`,
+      { enabled },
       "PUT",
     ),
   syncGatewayApplications: (gatewayId: string) =>

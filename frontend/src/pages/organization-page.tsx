@@ -1,13 +1,13 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Building2, Check, Copy, Edit3, Plus, RefreshCw, RotateCcw, X } from "lucide-react"
+import { Building2, Check, Copy, Edit3, Plus, RefreshCw, RotateCcw, ShieldAlert, Users, X } from "lucide-react"
 
 import { Button } from "../components/ui/button"
 import { Input } from "../components/ui/input"
 import { ResizableGridTable } from "../components/ui/resizable-table"
 import { dataSource } from "../data-sources/apim/api"
 import { finopsKeys, finopsQueries } from "../data-sources/apim/queries"
-import type { OrganizationDirectory, OrgUnit } from "../data-sources/apim/types"
+import type { ConsoleMemberList, OrganizationDirectory, OrgUnit } from "../data-sources/apim/types"
 import { useAuth } from "../providers/auth-provider"
 
 // Mirrors `suggested_unit_id` on the server: an id is proposed where the name allows one and
@@ -149,6 +149,61 @@ function EntraMirror({ directory }: { directory: OrganizationDirectory }) {
   </section>
 }
 
+function MembersCard({ canManage }: { canManage: boolean }) {
+  const queryClient = useQueryClient()
+  const members = useQuery(finopsQueries.consoleMembers())
+  const onSuccess = (value: ConsoleMemberList) => {
+    queryClient.setQueryData(finopsKeys.consoleMembers, value)
+  }
+  const role = useMutation({
+    mutationFn: (input: { email: string; role: "owner" | "member" }) =>
+      dataSource.setConsoleMemberRole(input.email, input.role),
+    onSuccess,
+  })
+  const enabled = useMutation({
+    mutationFn: (input: { email: string; enabled: boolean }) =>
+      dataSource.setConsoleMemberEnabled(input.email, input.enabled),
+    onSuccess,
+  })
+  const rows = members.data?.members ?? []
+  const busy = role.isPending || enabled.isPending
+  const error = role.error ?? enabled.error
+  return <section className="org-card">
+    <header><h2><Users size={15} />控制台账号</h2></header>
+    <p className="org-card-note">用 Microsoft 登录的人会在第一次登录时自动出现在这里，角色是成员。成员能看，Owner 能改。</p>
+    <ResizableGridTable className="org-table org-member-table" role="table" aria-label="控制台账号"
+      headerSelector=".org-table-head" minWidths={[260, 110, 110, 160, 180]} columnGap={12}>
+      <div className="org-table-head" role="row">
+        {["账号", "登录方式", "角色", "最近登录", ""].map((label, index) =>
+          <span className="org-table-heading" role="columnheader" key={label || index}><span>{label}</span></span>)}
+      </div>
+      <div role="rowgroup">
+        {rows.map((member) => <div className="org-row" role="row" key={member.email}
+          data-retired={!member.enabled || undefined}>
+          <span role="cell"><b data-no-localize>{member.email}</b>{member.is_self && <small> （你自己）</small>}</span>
+          <span role="cell">{member.sign_in === "password" ? "密码" : "Microsoft"}</span>
+          <span role="cell">{member.role === "owner" ? "Owner" : "成员"}</span>
+          <span role="cell" data-no-localize>{member.last_login_at ? member.last_login_at.slice(0, 16).replace("T", " ") : "—"}</span>
+          <span role="cell" className="org-member-actions">
+            {canManage && <>
+              <Button type="button" variant="outline" size="sm" disabled={busy}
+                onClick={() => role.mutate({ email: member.email, role: member.role === "owner" ? "member" : "owner" })}>
+                {member.role === "owner" ? "降为成员" : "设为 Owner"}
+              </Button>
+              <Button type="button" variant="ghost" size="sm" disabled={busy}
+                onClick={() => enabled.mutate({ email: member.email, enabled: !member.enabled })}>
+                {member.enabled ? "停用" : "启用"}
+              </Button>
+            </>}
+          </span>
+        </div>)}
+      </div>
+    </ResizableGridTable>
+    {error && <div className="registry-error">{String(error)}</div>}
+    <p className="org-card-note">最后一个 Owner 不能被降级或停用，自己也不能撤自己的 Owner —— 这两件事出错只能上机器用命令行救。</p>
+  </section>
+}
+
 export function OrganizationPage() {
   const { user } = useAuth()
   const canManage = user?.role === "owner"
@@ -161,6 +216,7 @@ export function OrganizationPage() {
     return <main className="org-page"><div className="org-loading">读取组织结构失败</div></main>
   }
   return <main className="org-page">
+    {!canManage && <div className="org-readonly"><ShieldAlert size={14} />你当前是成员，只能查看。要修改，请让一位 Owner 在下方「控制台账号」里把你设为 Owner。</div>}
     <section className="org-card">
       <header><h2><Building2 size={15} />组织</h2></header>
       {data.organization
@@ -190,6 +246,7 @@ export function OrganizationPage() {
       <p className="org-card-note">部门不能删除，只能停用。停用后不再出现在任何可选项里，但已经记在它名下的预算和用量原样保留。</p>
     </section>
 
+    <MembersCard canManage={canManage} />
     <EntraMirror directory={data} />
   </main>
 }

@@ -95,6 +95,29 @@
   grid-template-columns: var(--resizable-table-columns, minmax(220px, 1.4fr) minmax(160px, 1fr));
 }
 
+.org-member-table .org-table-head,
+.org-member-table .org-row {
+  grid-template-columns: var(--resizable-table-columns, minmax(260px, 1.6fr) 110px 110px 160px minmax(180px, 1fr));
+}
+
+.org-member-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.org-readonly {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--muted) 60%, transparent);
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+
 .org-table-heading {
   font-weight: 500;
   color: var(--muted-foreground);

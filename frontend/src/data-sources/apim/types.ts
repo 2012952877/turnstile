@@ -1057,6 +1057,19 @@ export type OrganizationDirectory = {
   employee_department_map: Record<string, string>
 }
 
+export type ConsoleMember = {
+  email: string
+  display_name: string | null
+  role: "owner" | "member"
+  enabled: boolean
+  sign_in: "password" | "microsoft"
+  created_at: string
+  last_login_at: string | null
+  is_self: boolean
+}
+
+export type ConsoleMemberList = { members: ConsoleMember[]; owner_count: number }
+
 export type GatewayApplicationAvatar = {
   avatar_url: string | null
   updated_at: string | null

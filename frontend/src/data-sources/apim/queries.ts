@@ -75,6 +75,7 @@ export const finopsKeys = {
   all: ["finops"] as const,
   entities: ["reference", "enterprise-entities"] as const,
   organizationDirectory: ["reference", "organization-directory"] as const,
+  consoleMembers: ["reference", "console-members"] as const,
   registry: ["reference", "model-registry"] as const,
   modelBackendPool: (id: string) => ["model-platform", "model-backend-pool", id] as const,
   gatewayPublications: ["control-plane", "gateway-publications"] as const,
@@ -125,6 +126,11 @@ export const finopsQueries = {
   organizationDirectory: () => queryOptions({
     queryKey: finopsKeys.organizationDirectory,
     queryFn: dataSource.organizationDirectory,
+    ...cachePolicies.reference,
+  }),
+  consoleMembers: () => queryOptions({
+    queryKey: finopsKeys.consoleMembers,
+    queryFn: dataSource.consoleMembers,
     ...cachePolicies.reference,
   }),
   registry: () => queryOptions({

@@ -8,7 +8,6 @@ from typing import Any, cast
 from turnstile_core.domain.enterprise import (
     governance_directory,
     merge_application_owners,
-    merge_observed_users,
 )
 from turnstile_core.domain.models import (
     BudgetScopeType,
@@ -94,11 +93,9 @@ class TokenBudgetService:
         # Merged, not seeded: a person who has actually used the gateway must be
         # allocatable, otherwise governance only covers identities with no traffic.
         catalog = merge_application_owners(
-            merge_observed_users(
-                governance_directory(
-                    include_seeded_people=self._seed_demo_directory
-                ),
+            governance_directory(
                 self._repository.observed_users(),
+                include_seeded_people=self._seed_demo_directory,
             ),
             self._repository.application_owners(),
         )

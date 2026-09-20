@@ -942,7 +942,7 @@ def test_people_budget_directory_is_bounded_at_ten_thousand_users(
         ],
     )
     monkeypatch.setattr(
-        budget_service, "governance_directory", lambda **_: catalog
+        budget_service, "governance_directory", lambda *_args, **_kwargs: catalog
     )
     repository = InMemoryRepository()
     app.dependency_overrides[get_repository] = lambda: repository

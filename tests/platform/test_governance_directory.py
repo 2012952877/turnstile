@@ -16,11 +16,7 @@ import ast
 import pathlib
 
 from turnstile_core.config import Settings
-from turnstile_core.domain.enterprise import (
-    enterprise_catalog,
-    governance_directory,
-    merge_observed_users,
-)
+from turnstile_core.domain.enterprise import enterprise_catalog, governance_directory
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 GOVERNANCE_MODULES = (
@@ -30,14 +26,19 @@ GOVERNANCE_MODULES = (
     "backend/services/assistant.py",
 )
 
+ZHANG = {"user_id": "zhang.san@insilico.ai", "user_ref": "Zhang San",
+         "department_id": "department-platform"}
+FIXTURE = {"user_id": "test.user01@contoso.com", "user_ref": "test.user01@contoso.com",
+           "department_id": "department-platform"}
+
 
 def test_the_default_keeps_every_existing_deployment_as_it_was() -> None:
     assert Settings().seed_demo_directory is True
-    assert governance_directory(include_seeded_people=True) == enterprise_catalog()
+    assert governance_directory([], include_seeded_people=True) == enterprise_catalog()
 
 
 def test_turning_it_off_empties_the_roster_and_nothing_else() -> None:
-    directory = governance_directory(include_seeded_people=False)
+    directory = governance_directory([], include_seeded_people=False)
     seeded = enterprise_catalog()
 
     assert directory.users == []
@@ -57,12 +58,31 @@ def test_the_traffic_generator_keeps_its_fixtures_either_way() -> None:
 
 def test_a_real_person_who_used_the_gateway_is_still_listed() -> None:
     """With the fixtures off the roster is empty until someone calls, and then it is them."""
-    merged = merge_observed_users(
-        governance_directory(include_seeded_people=False),
-        [{"user_id": "zhang.san@insilico.ai", "user_ref": "Zhang San",
-          "department_id": "department-platform"}],
-    )
+    merged = governance_directory([ZHANG], include_seeded_people=False)
     assert [item.id for item in merged.users] == ["zhang.san@insilico.ai"]
+
+
+def test_a_call_from_a_fixture_identity_does_not_make_it_an_employee() -> None:
+    """One acceptance check ran as test.user01@contoso.com -- a 403, no tokens, no cost --
+    and that single row was enough to put the name back on the budget page, where it reads
+    as a colleague rather than as the check it was.
+
+    Disowning the fixtures has to mean disowning their traffic too, or the roster fills back
+    up one test call at a time.
+    """
+    disowned = governance_directory([FIXTURE, ZHANG], include_seeded_people=False)
+    assert [item.id for item in disowned.users] == ["zhang.san@insilico.ai"]
+
+    kept = governance_directory([FIXTURE, ZHANG], include_seeded_people=True)
+    assert "test.user01@contoso.com" in {item.id for item in kept.users}, (
+        "a demo install still wants its fixtures, with or without traffic"
+    )
+
+
+def test_the_exclusion_is_case_insensitive() -> None:
+    """Gateway ids come from token claims and arrive in whatever case the directory used."""
+    shouting = dict(FIXTURE, user_id="TEST.USER01@CONTOSO.COM")
+    assert governance_directory([shouting], include_seeded_people=False).users == []
 
 
 def test_governance_reads_the_directory_rather_than_the_seeded_catalogue() -> None:

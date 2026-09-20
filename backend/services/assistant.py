@@ -43,7 +43,6 @@ from turnstile_core.domain.assistant_models import (
 from turnstile_core.domain.enterprise import (
     governance_directory,
     merge_application_owners,
-    merge_observed_users,
 )
 from turnstile_core.domain.models import EnterpriseEntityCatalog
 from turnstile_core.domain.runtime_models import (
@@ -161,11 +160,9 @@ class AssistantService:
 
     def _catalog(self) -> EnterpriseEntityCatalog:
         return merge_application_owners(
-            merge_observed_users(
-                governance_directory(
-                    include_seeded_people=self._settings.seed_demo_directory
-                ),
+            governance_directory(
                 self._repository.observed_users(),
+                include_seeded_people=self._settings.seed_demo_directory,
             ),
             self._repository.application_owners(),
         )

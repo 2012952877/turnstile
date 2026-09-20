@@ -1798,6 +1798,7 @@ export const ENGLISH_CORE_PHRASES: Record<string, string> = {
   "用 Microsoft 登录的人会在第一次登录时自动出现在这里，角色是成员。成员能看，Owner 能改。": "Anyone who signs in with Microsoft appears here on their first sign-in, as a member. Members can read; Owners can change.",
   "最后一个 Owner 不能被降级或停用，自己也不能撤自己的 Owner —— 这两件事出错只能上机器用命令行救。": "The last Owner cannot be demoted or disabled, and nobody can remove their own Owner role. Getting either wrong is only repairable from a shell on the deployment.",
   "你当前是成员，只能查看。要修改，请让一位 Owner 在下方「控制台账号」里把你设为 Owner。": "You are a member and can only read. To change anything, ask an Owner to make you one in Console accounts below.",
+  "角色可以赋给人，也可以赋给组，两条路会叠加。一个人只应该拿到一个 department- 角色——拿到多个时，网关取的是令牌里排在前面的那个，归到哪个部门就不确定了。": "A role reaches a token both by being assigned to the person and by being assigned to a group they are in, and the two add up. Someone should hold exactly one department- role: with more than one, the gateway takes whichever the token lists first, so which department they land in is undefined.",
   "编辑模型访问": "Edit model access",
   "编辑归属": "Edit attribution",
   "保存归属": "Save attribution",

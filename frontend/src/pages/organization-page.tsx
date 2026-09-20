@@ -146,6 +146,7 @@ function EntraMirror({ directory }: { directory: OrganizationDirectory }) {
       </Button>
     </div>
     <p className="org-card-note">部门映射表是部署参数 employeeDepartmentMap 的值，网关用它把标识显示成名称。</p>
+    <p className="org-card-note">角色可以赋给人，也可以赋给组，两条路会叠加。一个人只应该拿到一个 department- 角色——拿到多个时，网关取的是令牌里排在前面的那个，归到哪个部门就不确定了。</p>
   </section>
 }
 

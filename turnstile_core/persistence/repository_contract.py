@@ -775,6 +775,9 @@ class QueryRepository(ABC):
     def org_unit_references(self, unit_id: str) -> dict[str, int]: ...
 
     @abstractmethod
+    def channel_owners(self) -> Sequence[dict[str, Any]]: ...
+
+    @abstractmethod
     def list_org_unit_audit(
         self, unit_id: str, limit: int = 20
     ) -> Sequence[dict[str, Any]]: ...

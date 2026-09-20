@@ -65,6 +65,48 @@ def merge_application_owners(
     )
 
 
+def merge_channel_owners(
+    catalog: EnterpriseEntityCatalog, channels: Iterable[Mapping[str, Any]]
+) -> EnterpriseEntityCatalog:
+    """Add the people an administrator has made answerable for a channel.
+
+    Before this, a person entered the directory by calling the gateway or by holding a console
+    Owner account, and someone who had done neither could not be given a budget: the budget API
+    validates a user scope against this catalog. That excluded exactly the population an install
+    with per-person subscription keys cares about -- several hundred people who each hold a key,
+    most of whom have not called anything yet, and whose department an administrator has just
+    finished recording on the channel itself.
+
+    A channel contributes a person only when it names both an owner and a department. The
+    hierarchy is organization -> department -> user, so an owner with no department has nowhere
+    to hang; recording them anyway would put a name on the page that no budget can be allocated
+    against, which is worse than the blank.
+
+    These are merged before observed traffic, which is the one place this overrides something.
+    A department on a channel was typed by an administrator; a department on a request was
+    declared by whatever sent the request. When they disagree, the person who decided it wins.
+    """
+    known_departments = {item.id for item in catalog.departments}
+    existing = {item.id.casefold() for item in catalog.users}
+    discovered: list[EnterpriseEntity] = []
+    for row in channels:
+        owner_id = str(row.get("owner_id") or "").strip().lower()
+        department_id = str(row.get("department_id") or "").strip()
+        if "@" not in owner_id or owner_id in existing:
+            continue
+        if department_id not in known_departments:
+            continue
+        existing.add(owner_id)
+        discovered.append(
+            EnterpriseEntity(id=owner_id, name=owner_id, parent_id=department_id)
+        )
+    if not discovered:
+        return catalog
+    return catalog.model_copy(
+        update={"users": [*catalog.users, *sorted(discovered, key=lambda item: item.id)]}
+    )
+
+
 def merge_observed_users(
     catalog: EnterpriseEntityCatalog,
     observed: Iterable[Mapping[str, Any]],
@@ -193,6 +235,7 @@ def governance_directory(
     *,
     include_seeded_people: bool,
     units: Iterable[Mapping[str, Any]] | None = None,
+    channels: Iterable[Mapping[str, Any]] = (),
 ) -> EnterpriseEntityCatalog:
     """The catalog an administrator reads: the org structure and the people in it.
 
@@ -218,9 +261,9 @@ def governance_directory(
     """
     catalog = _with_structure(enterprise_catalog(), units)
     if include_seeded_people:
-        return merge_observed_users(catalog, observed)
+        return merge_observed_users(merge_channel_owners(catalog, channels), observed)
     return merge_observed_users(
-        catalog.model_copy(update={"users": []}),
+        merge_channel_owners(catalog.model_copy(update={"users": []}), channels),
         observed,
         excluded_ids=frozenset(user.id for user in catalog.users),
     )

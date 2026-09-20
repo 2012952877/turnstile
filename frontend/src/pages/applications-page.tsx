@@ -384,7 +384,7 @@ function ApplicationOwnershipDialog({ application, open, writeAvailable, onOpenC
               <option value="">未归属</option>
               {departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}
             </select>
-            <small>决定这条通道的用量归入哪个部门。只能选择治理目录里已有的部门。</small>
+            <small>决定这个订阅的用量归入哪个部门。只能选择治理目录里已有的部门。</small>
           </label>
           {mutation.error && <div className="registry-error">{String(mutation.error)}</div>}
         </div>
@@ -441,10 +441,13 @@ function ApplicationModelAccessDialog({ application, models, open, writeAvailabl
   </Dialog>
 }
 
-function ApplicationInventoryRow({ application, category, timezone }: {
+function ApplicationInventoryRow({ application, category, timezone, selected, canSelect, onToggle }: {
   application: GatewayApplicationSummary
   category: SubscriptionCategory
   timezone: string
+  selected?: boolean
+  canSelect?: boolean
+  onToggle?: (checked: boolean) => void
 }) {
   const usage = application.budget?.usage_percent ?? 0
   return <a
@@ -454,6 +457,12 @@ function ApplicationInventoryRow({ application, category, timezone }: {
     onClick={openApplicationRoute(application.id, category)}
   >
     <div className="model-primary-cell application-primary-cell">
+      {canSelect && <span className="application-row-select"
+        onClick={(event) => { event.preventDefault(); event.stopPropagation() }}>
+        <Checkbox checked={selected === true}
+          onCheckedChange={(checked) => onToggle?.(checked === true)}
+          aria-label={`选择 ${application.display_name}`} />
+      </span>}
       <ApplicationAvatar application={application} showStatus />
       <div><b title={application.display_name}>{application.display_name}</b><code data-no-localize>{application.slug}</code></div>
       {application.system_managed && <em>系统</em>}
@@ -644,8 +653,72 @@ function ApplicationDetailView({
   </div>
 }
 
+function BulkOwnershipBar({ selected, visible, onClear }: {
+  selected: Set<string>
+  visible: GatewayApplicationSummary[]
+  onClear: () => void
+}) {
+  const queryClient = useQueryClient()
+  const entities = useQuery(finopsQueries.entities())
+  const [departmentId, setDepartmentId] = useState("")
+  const [owner, setOwner] = useState<"keep" | "suggested" | "clear">("suggested")
+  const [result, setResult] = useState<{ updated: number; without_suggestion: string[] } | null>(null)
+  const mutation = useMutation({
+    mutationFn: () => dataSource.updateGatewayApplicationOwnershipBulk({
+      application_ids: [...selected],
+      department_id: departmentId || null,
+      owner,
+    }),
+    onSuccess: (value) => {
+      setResult(value)
+      void queryClient.invalidateQueries({ queryKey: finopsKeys.gatewayApplications })
+      void queryClient.invalidateQueries({ queryKey: finopsKeys.entities })
+      void queryClient.invalidateQueries({ queryKey: finopsKeys.organizationDirectory })
+      onClear()
+    },
+  })
+  const chosen = visible.filter((item) => selected.has(item.id))
+  const withSuggestion = chosen.filter((item) => item.owner_suggestion).length
+  return <div className="application-bulk-bar">
+    <span>{`已选 ${selected.size} 个订阅`}</span>
+    <label>
+      <span>归到部门</span>
+      <select value={departmentId} disabled={mutation.isPending}
+        onChange={(event) => setDepartmentId(event.target.value)}>
+        <option value="">不改部门</option>
+        {(entities.data?.departments ?? []).map((department) =>
+          <option key={department.id} value={department.id}>{department.name}</option>)}
+      </select>
+    </label>
+    <label>
+      <span>负责人</span>
+      <select value={owner} disabled={mutation.isPending}
+        onChange={(event) => setOwner(event.target.value as "keep" | "suggested" | "clear")}>
+        <option value="suggested">{`采用订阅名称里的邮箱，${withSuggestion} / ${chosen.length} 个能认出`}</option>
+        <option value="keep">不改负责人</option>
+        <option value="clear">清空负责人</option>
+      </select>
+    </label>
+    <Button type="button" disabled={mutation.isPending || !selected.size}
+      onClick={() => { setResult(null); mutation.mutate() }}>
+      {mutation.isPending ? <RefreshCw className="spin" size={14} /> : null}应用
+    </Button>
+    <Button type="button" variant="ghost" size="sm" disabled={mutation.isPending} onClick={onClear}>
+      取消选择
+    </Button>
+    {mutation.error && <span className="registry-error">{String(mutation.error)}</span>}
+    {result && <span className="application-bulk-result">
+      {`已更新 ${result.updated} 个订阅`}
+      {result.without_suggestion.length
+        ? `，${result.without_suggestion.length} 个名称里没有邮箱，负责人保持原样`
+        : ""}
+    </span>}
+  </div>
+}
+
 export function ApplicationsPage() {
   const { user } = useAuth()
+  const canManage = user?.role === "owner"
   const { timezone } = useTimezone()
   const queryClient = useQueryClient()
   const [mobileActionsTarget, setMobileActionsTarget] = useState<HTMLElement | null>(null)
@@ -665,6 +738,8 @@ export function ApplicationsPage() {
   const [applicationId, setApplicationId] = useState<string | null>(applicationFromUrl)
   const [category, setCategory] = useState<SubscriptionCategory>(subscriptionCategoryFromUrl)
   const [department, setDepartment] = useState<string | null>(departmentFromUrl)
+  const [selected, setSelected] = useState<Set<string>>(() => new Set())
+  const departmentOptions = useQuery(finopsQueries.entities()).data?.departments
   const applications = useQuery({
     ...finopsQueries.gatewayApplications(),
     enabled: !applicationId,
@@ -811,6 +886,30 @@ export function ApplicationsPage() {
           <div className="application-filters" role="group" aria-label={`${consumer}状态筛选`}>{filters.filter((item) => item.id === "all" || item.count > 0).map((item) => <button type="button" key={item.id} className={filter === item.id ? "active" : ""} aria-pressed={filter === item.id} onClick={() => setFilter(item.id)}><span>{item.label}</span><small>{item.count}</small></button>)}</div>
           <ExpandableSearch key={category} value={search} onChange={setSearch} placeholder={`搜索${consumer}或订阅 ID...`} ariaLabel={`搜索${consumer}`} />
         </div>
+        {canManage && selected.size > 0 && <BulkOwnershipBar selected={selected} visible={visible}
+          onClear={() => setSelected(new Set())} />}
+        {canManage && <div className="application-department-filter">
+          <label><span>部门</span>
+            <select value={department ?? ""} onChange={(event) => {
+              const value = event.target.value
+              const url = new URL(window.location.href)
+              if (value) url.searchParams.set("department", value)
+              else url.searchParams.delete("department")
+              window.history.pushState(null, "", `${url.pathname}${url.search}`)
+              setDepartment(value || null)
+              setSelected(new Set())
+            }}>
+              <option value="">全部部门</option>
+              <option value="unassigned">未归属</option>
+              {(departmentOptions ?? []).map((item) =>
+                <option key={item.id} value={item.id}>{item.name}</option>)}
+            </select>
+          </label>
+          {!!visible.length && <Button type="button" variant="outline" size="sm"
+            onClick={() => setSelected(new Set(visible.filter((item) => !item.system_managed).map((item) => item.id)))}>
+            {`全选当前 ${visible.length} 个`}
+          </Button>}
+        </div>}
         {department && <div className="application-department-filter">
           <span>只看部门：<b data-no-localize>{departmentLabel}</b></span>
           <Button type="button" variant="ghost" size="sm" onClick={() => {
@@ -825,7 +924,14 @@ export function ApplicationsPage() {
             {[consumer, "类型 / 订阅", "部门 / 负责人", "本月用量 / 最近请求", "状态"].map((label) => <span className="model-table-heading" role="columnheader" aria-label={label} key={label}><span>{label}</span></span>)}
           </div>
           <div className="model-table-body application-inventory-list" role="rowgroup">
-          {visible.map((application) => <ApplicationInventoryRow application={application} category={category} timezone={timezone} key={application.id} />)}
+          {visible.map((application) => <ApplicationInventoryRow application={application} category={category} timezone={timezone} key={application.id}
+            selected={selected.has(application.id)} canSelect={canManage && !application.system_managed}
+            onToggle={(checked) => setSelected((current) => {
+              const next = new Set(current)
+              if (checked) next.add(application.id)
+              else next.delete(application.id)
+              return next
+            })} />)}
           {!visible.length && <div className="application-list-empty"><ConsumerIcon size={18} /><span>{categoryItems.length ? `没有匹配的${consumer}` : `没有已发现的${consumer}`}</span></div>}
           </div>
         </ResizableGridTable>

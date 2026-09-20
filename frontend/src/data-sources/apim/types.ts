@@ -1048,13 +1048,9 @@ export type OrgUnit = {
   updated_at: string
 }
 
-export type EntraAppRole = { value: string; display_name: string; description: string }
-
 export type OrganizationDirectory = {
   organization: OrgUnit | null
   departments: OrgUnit[]
-  entra_app_roles: EntraAppRole[]
-  employee_department_map: Record<string, string>
 }
 
 export type ConsoleMember = {

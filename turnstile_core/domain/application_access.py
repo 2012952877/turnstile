@@ -262,6 +262,40 @@ class GatewayApplicationOwnershipUpdate(StrictModel):
         return value.casefold() if value else value
 
 
+class GatewayApplicationBulkOwnership(StrictModel):
+    """Attribute a batch of subscriptions in one action.
+
+    An install that names a subscription per person arrives with several hundred of them, all
+    unattributed. Doing that one dialog at a time is not a slow version of this feature -- it
+    is the reason nobody does it, and an unattributed inventory is the state this whole area
+    exists to get out of.
+
+    `owner` decides what happens to the owner column, separately from the department, because
+    the two are known at different times. `suggested` adopts the address in each subscription's
+    own name where there is one and leaves the rest alone, which is what turns several hundred
+    rows into one action at the install this was built for.
+    """
+
+    application_ids: list[UUID] = Field(min_length=1, max_length=500)
+    department_id: str | None = Field(default=None, max_length=255)
+    owner: Literal["keep", "suggested", "clear"] = "keep"
+
+    @field_validator("department_id")
+    @classmethod
+    def normalize_blank_to_absent(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
+
+
+class GatewayApplicationBulkOwnershipResult(StrictModel):
+    updated: int = Field(ge=0)
+    unchanged: int = Field(ge=0)
+    # Named rather than counted: "12 had no address in their name" is a number to wonder
+    # about, and the list is what an administrator acts on next.
+    without_suggestion: list[str] = Field(default_factory=list)
+
+
 class GatewayApplicationAvatarUpdate(StrictModel):
     avatar_data_url: str | None = Field(default=None, max_length=90_000)
 

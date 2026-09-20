@@ -480,6 +480,15 @@ export const dataSource = {
     value,
     "PUT",
   ),
+  updateGatewayApplicationOwnershipBulk: (value: {
+    application_ids: string[]
+    department_id: string | null
+    owner: "keep" | "suggested" | "clear"
+  }) => writeJson<{ updated: number; unchanged: number; without_suggestion: string[] }>(
+    "/api/v1/application-access/applications/ownership",
+    value,
+    "PUT",
+  ),
   organizationDirectory: () =>
     request<OrganizationDirectory>("/api/v1/organization/directory"),
   createDepartment: (value: { id: string; display_name: string }) =>

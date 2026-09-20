@@ -53,31 +53,9 @@ class OrgUnit(StrictModel):
     updated_at: datetime
 
 
-class EntraAppRole(StrictModel):
-    """What an administrator has to create in Entra for a department to carry identity.
-
-    The gateway reads the department from the `roles` claim, matching the entry that starts
-    with `department-`. So the app role's value is the department id exactly -- not its name,
-    which is free to change and would break the match the moment it did.
-
-    It matches the *first* such entry, and app roles reach a token by two routes that add up:
-    assigned to the person, and assigned to a group they are in. Someone holding two
-    `department-` roles is therefore attributed to whichever one Entra happened to list first
-    -- measured, not theorised: a user assigned directly to one department and through a group
-    to another came back with both in the claim. Nothing here can see Entra to detect it, so
-    the screen says it instead.
-    """
-
-    value: str
-    display_name: str
-    description: str
-
-
 class OrganizationDirectory(StrictModel):
     organization: OrgUnit | None
     departments: list[OrgUnit]
-    entra_app_roles: list[EntraAppRole]
-    employee_department_map: dict[str, str]
 
 
 class OrgUnitCreate(StrictModel):

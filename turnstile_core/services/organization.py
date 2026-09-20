@@ -4,7 +4,6 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..domain.organization import (
-    EntraAppRole,
     OrganizationDirectory,
     OrgUnit,
     OrgUnitCreate,
@@ -51,24 +50,9 @@ class OrganizationService:
         units = [self._unit(row) for row in rows]
         organization = next((item for item in units if item.unit_type == "organization"), None)
         departments = [item for item in units if item.unit_type == "department"]
-        active = [item for item in departments if item.status == "active"]
         return OrganizationDirectory(
             organization=organization,
             departments=departments,
-            # What the administrator has to mirror into Entra for these departments to be
-            # able to carry identity. Retired departments are left out: an app role that
-            # grants attribution to something nobody may be attributed to is a loose end.
-            entra_app_roles=[
-                EntraAppRole(
-                    value=item.id,
-                    display_name=item.display_name,
-                    description=(
-                        f"Attributes this person's gateway traffic to {item.display_name}."
-                    ),
-                )
-                for item in active
-            ],
-            employee_department_map={item.id: item.display_name for item in active},
         )
 
     def create_department(self, request: OrgUnitCreate, actor: str) -> OrganizationDirectory:

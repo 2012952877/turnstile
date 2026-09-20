@@ -100,31 +100,6 @@ def test_a_department_can_be_created_and_is_immediately_attributable() -> None:
         _uninstall()
 
 
-def test_a_new_department_comes_with_what_entra_needs_to_mirror_it() -> None:
-    """The half that makes "define here, sync there" actually work.
-
-    The gateway reads a person's department from the `roles` claim, so a department only
-    carries identity once an Entra app role exists whose value is its id. Leaving the
-    administrator to derive that by hand is how the two drift apart.
-    """
-    repository = InMemoryRepository()
-    _install(repository)
-    try:
-        client.post(
-            DEPARTMENTS,
-            json={"id": "department-drug-discovery", "display_name": "Drug Discovery"},
-        )
-        body = client.get(DIRECTORY).json()
-        role = next(
-            item for item in body["entra_app_roles"]
-            if item["value"] == "department-drug-discovery"
-        )
-        assert role["display_name"] == "Drug Discovery"
-        assert body["employee_department_map"]["department-drug-discovery"] == "Drug Discovery"
-    finally:
-        _uninstall()
-
-
 def test_retiring_a_department_reports_what_still_names_it() -> None:
     repository = InMemoryRepository()
     repository.token_budgets[(date(2026, 9, 1), "department", "department-support")] = {
@@ -152,9 +127,6 @@ def test_retiring_a_department_reports_what_still_names_it() -> None:
         departments = {item["id"]: item for item in response.json()["departments"]}
         assert departments["department-support"]["status"] == "retired"
         # Still stored, so the budget keeps naming something real; no longer offered.
-        assert "department-support" not in {
-            item["value"] for item in response.json()["entra_app_roles"]
-        }
         entities = client.get("/api/v1/enterprise/entities").json()
         assert "department-support" not in {item["id"] for item in entities["departments"]}
     finally:

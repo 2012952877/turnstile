@@ -2,6 +2,11 @@ const plural = (value: string, singular: string, pluralForm = `${singular}s`) =>
   Number(value.replace(/,/g, "")) === 1 ? singular : pluralForm
 
 export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
+  [/^全选当前\s*([\d,]+)\s*个$/g, (_match, value) => `Select all ${value}`],
+  [/^，([\d,]+)\s*个名称里没有邮箱，负责人保持原样$/g, (_match, value) => `; ${value} had no address in the name and kept their owner`],
+  [/^已更新\s*([\d,]+)\s*个订阅$/g, (_match, value) => `${value} updated`],
+  [/^采用订阅名称里的邮箱，([\d,]+)\s*\/\s*([\d,]+)\s*个能认出$/g, (_match, found, total) => `Use the address in the subscription name (${found} of ${total} recognised)`],
+  [/^已选\s*([\d,]+)\s*个订阅$/g, (_match, value) => `${value} selected`],
   [/^复制 (Primary|Secondary) Key$/g, (_match, kind) => `Copy ${kind} Key`],
   [/^轮换 (Primary|Secondary) Key$/g, (_match, kind) => `Rotate ${kind} Key`],
   [/^轮换 (Primary|Secondary) Key？$/g, (_match, kind) => `Rotate ${kind} Key?`],

@@ -13,6 +13,8 @@ from ..domain.application_access import (
     GatewayApplicationAvatarUpdate,
     GatewayApplicationBudget,
     GatewayApplicationBudgetUpdate,
+    GatewayApplicationBulkOwnership,
+    GatewayApplicationBulkOwnershipResult,
     GatewayApplicationDetail,
     GatewayApplicationDiscovery,
     GatewayApplicationList,
@@ -389,6 +391,62 @@ class ApplicationAccessService:
         if row is None:
             raise ControlPlaneNotFoundError("Application not found")
         return self.application(application_id)
+
+    def update_application_ownership_bulk(
+        self, request: GatewayApplicationBulkOwnership, actor: str
+    ) -> GatewayApplicationBulkOwnershipResult:
+        if request.department_id is not None:
+            known = {item.id for item in governance_departments(self._repository.org_units())}
+            if request.department_id not in known:
+                raise ValueError(f"Unknown department: {request.department_id}")
+        # Snapshotted, not held by reference. The in-memory repository hands back the same
+        # dicts it stores and updates them in place, so comparing afterwards against a row
+        # read before the write reports every change as a no-op.
+        rows = {
+            UUID(str(row["id"])): {
+                "display_name": row.get("display_name"),
+                "owner_id": row.get("owner_id"),
+                "department_id": row.get("department_id"),
+                "system_managed": row.get("system_managed"),
+            }
+            for row in self._repository.list_gateway_applications()
+        }
+        updated = 0
+        unchanged = 0
+        without_suggestion: list[str] = []
+        for application_id in request.application_ids:
+            row = rows.get(application_id)
+            if row is None or row.get("system_managed"):
+                # A system-managed channel belongs to the platform, not to a person; silently
+                # skipping it is kinder than failing a batch of four hundred over one row.
+                unchanged += 1
+                continue
+            display_name = str(row.get("display_name") or "")
+            if request.owner == "keep":
+                owner_id = row.get("owner_id")
+            elif request.owner == "clear":
+                owner_id = None
+            else:
+                owner_id = suggested_owner_id(display_name)
+                if owner_id is None:
+                    without_suggestion.append(display_name)
+                    owner_id = row.get("owner_id")
+            result = self._repository.update_gateway_application_ownership(
+                application_id,
+                str(owner_id) if owner_id else None,
+                request.department_id,
+                actor,
+            )
+            if result is None or (
+                row.get("owner_id") == (str(owner_id) if owner_id else None)
+                and row.get("department_id") == request.department_id
+            ):
+                unchanged += 1
+            else:
+                updated += 1
+        return GatewayApplicationBulkOwnershipResult(
+            updated=updated, unchanged=unchanged, without_suggestion=without_suggestion
+        )
 
     def update_application_model_access(
         self,

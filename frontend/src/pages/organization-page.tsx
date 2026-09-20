@@ -124,7 +124,7 @@ function CreateDepartment() {
     <label><span>部门标识</span>
       <Input value={effectiveId} disabled={mutation.isPending} placeholder="department-xxx"
         onChange={(event) => { setTouchedId(true); setId(event.target.value) }} />
-      <small>标识一旦创建就不能再改：预算、用量、通道和 Entra 的角色名都靠它对上。名称随时可改。</small>
+      <small>标识一旦创建就不能再改：预算、用量和订阅记录的都是它。名称随时可改。</small>
     </label>
     {mutation.error && <div className="registry-error">{String(mutation.error)}</div>}
     <div className="org-create-actions">
@@ -134,43 +134,6 @@ function CreateDepartment() {
       </Button>
     </div>
   </form>
-}
-
-function EntraMirror({ directory }: { directory: OrganizationDirectory }) {
-  const [copied, setCopied] = useState<string | null>(null)
-  const map = JSON.stringify(directory.employee_department_map, null, 2)
-  const copy = (label: string, text: string) => {
-    void navigator.clipboard?.writeText(text)
-    setCopied(label)
-    window.setTimeout(() => setCopied(null), 1500)
-  }
-  return <section className="org-card">
-    <header><h2>同步到 Entra</h2></header>
-    <p className="org-card-note">部门在这里定义，Entra 里要有同名的应用角色，网关才能从令牌里读出一个人属于哪个部门。角色的值必须等于部门标识，不是名称。</p>
-    <ResizableGridTable className="org-table org-role-table" role="table" aria-label="Entra 应用角色"
-      headerSelector=".org-table-head" minWidths={[220, 160]} columnGap={12}>
-      <div className="org-table-head" role="row">
-        {["应用角色的值", "显示名"].map((label) => <span className="org-table-heading" role="columnheader" key={label}><span>{label}</span></span>)}
-      </div>
-      <div role="rowgroup">
-        {directory.entra_app_roles.map((role) => <div className="org-row" role="row" key={role.value}>
-          <span role="cell"><code data-no-localize>{role.value}</code></span>
-          <span role="cell" data-no-localize>{role.display_name}</span>
-        </div>)}
-      </div>
-    </ResizableGridTable>
-    <div className="org-card-actions">
-      <Button type="button" variant="outline" size="sm"
-        onClick={() => copy("roles", directory.entra_app_roles.map((role) => role.value).join("\n"))}>
-        <Copy size={13} />{copied === "roles" ? "已复制" : "复制角色清单"}
-      </Button>
-      <Button type="button" variant="outline" size="sm" onClick={() => copy("map", map)}>
-        <Copy size={13} />{copied === "map" ? "已复制" : "复制部门映射表"}
-      </Button>
-    </div>
-    <p className="org-card-note">部门映射表是部署参数 employeeDepartmentMap 的值，网关用它把标识显示成名称。</p>
-    <p className="org-card-note">角色可以赋给人，也可以赋给组，两条路会叠加。一个人只应该拿到一个 department- 角色——拿到多个时，网关取的是令牌里排在前面的那个，归到哪个部门就不确定了。</p>
-  </section>
 }
 
 function MembersCard({ canManage }: { canManage: boolean }) {
@@ -249,7 +212,7 @@ export function OrganizationPage() {
             <code data-no-localize>{data.organization.id}</code>
           </div>
         : <p className="org-card-note">这个部署还没有组织。</p>}
-      <p className="org-card-note">改名不影响任何已有数据：预算、用量和通道记录的都是标识，不是名称。</p>
+      <p className="org-card-note">改名不影响任何已有数据：预算、用量和订阅记录的都是标识，不是名称。</p>
     </section>
 
     <section className="org-card">
@@ -260,7 +223,7 @@ export function OrganizationPage() {
       <ResizableGridTable className="org-table org-department-table" role="table" aria-label="部门列表"
         headerSelector=".org-table-head" minWidths={[200, 220, 90, 140, 120]} columnGap={12}>
         <div className="org-table-head" role="row">
-          {["名称", "标识", "状态", "预算 / 用量 / 通道", ""].map((label, index) =>
+          {["名称", "标识", "状态", "预算 / 用量 / 订阅", ""].map((label, index) =>
             <span className="org-table-heading" role="columnheader" key={label || index}><span>{label}</span></span>)}
         </div>
         <div role="rowgroup">
@@ -271,6 +234,5 @@ export function OrganizationPage() {
     </section>
 
     <MembersCard canManage={canManage} />
-    <EntraMirror directory={data} />
   </main>
 }

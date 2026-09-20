@@ -1035,6 +1035,28 @@ export type GatewayApplicationOwnershipUpdate = {
   department_id: string | null
 }
 
+export type OrgUnitReferences = { budgets: number; usage_records: number; applications: number }
+
+export type OrgUnit = {
+  id: string
+  unit_type: "organization" | "department"
+  parent_id: string | null
+  display_name: string
+  status: "active" | "retired"
+  references: OrgUnitReferences
+  updated_by: string
+  updated_at: string
+}
+
+export type EntraAppRole = { value: string; display_name: string; description: string }
+
+export type OrganizationDirectory = {
+  organization: OrgUnit | null
+  departments: OrgUnit[]
+  entra_app_roles: EntraAppRole[]
+  employee_department_map: Record<string, string>
+}
+
 export type GatewayApplicationAvatar = {
   avatar_url: string | null
   updated_at: string | null

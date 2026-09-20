@@ -31,6 +31,18 @@ def merge_application_owners(
 ) -> EnterpriseEntityCatalog:
     """Add Owner accounts before they generate gateway traffic."""
     existing = {item.id for item in catalog.users}
+    known = [item.id for item in catalog.departments]
+    # The department an Owner is parked under is configurable now that departments are, so
+    # the constant can no longer be assumed present. Parking them under a department this
+    # install has retired would hide them from the budget tree, which is the one place an
+    # administrator account has to be visible.
+    parent = (
+        DEFAULT_APPLICATION_USER_DEPARTMENT_ID
+        if DEFAULT_APPLICATION_USER_DEPARTMENT_ID in known
+        else next(iter(known), None)
+    )
+    if parent is None:
+        return catalog
     discovered: list[EnterpriseEntity] = []
     for row in users:
         if row.get("role") != "owner":
@@ -43,7 +55,7 @@ def merge_application_owners(
             EnterpriseEntity(
                 id=user_id,
                 name=str(row.get("display_name") or user_id).strip() or user_id,
-                parent_id=DEFAULT_APPLICATION_USER_DEPARTMENT_ID,
+                parent_id=parent,
             )
         )
     if not discovered:
@@ -112,8 +124,75 @@ def merge_observed_users(
     )
 
 
+def organization_structure(
+    units: Iterable[Mapping[str, Any]],
+) -> tuple[list[EnterpriseEntity], list[EnterpriseEntity]]:
+    """Split stored org units into the organizations and the departments, active only.
+
+    Retired units are dropped rather than marked, because every caller of this asks the same
+    question -- what may something be attributed to now -- and a retired department that still
+    appears in a picker is a department that is still being chosen.
+
+    Their history survives regardless: budgets, usage and channels reference the id as text, so
+    a retired department keeps every row that ever pointed at it. What it loses is the ability
+    to collect new ones.
+    """
+    organizations: list[EnterpriseEntity] = []
+    departments: list[EnterpriseEntity] = []
+    for row in units:
+        if str(row.get("status") or "active") != "active":
+            continue
+        entity = EnterpriseEntity(
+            id=str(row["id"]),
+            name=str(row.get("display_name") or row["id"]),
+            parent_id=str(row["parent_id"]) if row.get("parent_id") else None,
+        )
+        if str(row.get("unit_type")) == "organization":
+            organizations.append(entity)
+        else:
+            departments.append(entity)
+    return (
+        sorted(organizations, key=lambda item: item.name),
+        sorted(departments, key=lambda item: item.name),
+    )
+
+
+def _with_structure(
+    catalog: EnterpriseEntityCatalog, units: Iterable[Mapping[str, Any]] | None
+) -> EnterpriseEntityCatalog:
+    """Replace the seeded organization and departments with the ones this install stores.
+
+    `units=None` keeps the seeded structure, which is what the traffic generator and every
+    test that predates the table want. Once a deployment has the table, its rows win.
+
+    Projects are re-parented by filtering rather than by reassignment: a project whose
+    department has been retired drops out with it. Moving it to a surviving department would
+    invent an attribution nobody asked for, and projects are seeded scaffolding that no real
+    install populates -- the customer's traffic reports `project_id: unattributed` for every
+    call.
+    """
+    if units is None:
+        return catalog
+    organizations, departments = organization_structure(units)
+    known = {item.id for item in departments}
+    projects = [item for item in catalog.projects if item.parent_id in known]
+    surviving = {item.id for item in projects}
+    return catalog.model_copy(
+        update={
+            "organizations": organizations,
+            "departments": departments,
+            "projects": projects,
+            "agents": [item for item in catalog.agents if item.parent_id in surviving],
+            "users": [item for item in catalog.users if item.parent_id in known],
+        }
+    )
+
+
 def governance_directory(
-    observed: Iterable[Mapping[str, Any]], *, include_seeded_people: bool
+    observed: Iterable[Mapping[str, Any]],
+    *,
+    include_seeded_people: bool,
+    units: Iterable[Mapping[str, Any]] | None = None,
 ) -> EnterpriseEntityCatalog:
     """The catalog an administrator reads: the org structure and the people in it.
 
@@ -134,10 +213,10 @@ def governance_directory(
     name back on the budget page as though it were an employee. If this install says the
     fixtures are not its people, a call from one does not make them one.
 
-    The flag is passed in rather than read here because the domain layer imports no
-    configuration -- see the layering test.
+    The flag and the stored structure are both passed in rather than read here because the
+    domain layer imports neither configuration nor persistence -- see the layering test.
     """
-    catalog = enterprise_catalog()
+    catalog = _with_structure(enterprise_catalog(), units)
     if include_seeded_people:
         return merge_observed_users(catalog, observed)
     return merge_observed_users(
@@ -147,15 +226,19 @@ def governance_directory(
     )
 
 
-def governance_departments() -> list[EnterpriseEntity]:
+def governance_departments(
+    units: Iterable[Mapping[str, Any]] | None = None,
+) -> list[EnterpriseEntity]:
     """The departments an administrator may attribute something to.
 
     Separate from `governance_directory` because the seeded-people flag does not reach
-    departments -- both modes carry the same five -- so a caller that only needs the
+    departments -- both modes carry the same set -- so a caller that only needs the
     structure should not have to read the traffic table to get it, nor reach into
     `enterprise_catalog()` and pick up the fixture people on the way past.
     """
-    return enterprise_catalog().departments
+    if units is None:
+        return enterprise_catalog().departments
+    return organization_structure(units)[1]
 
 
 def enterprise_catalog() -> EnterpriseEntityCatalog:

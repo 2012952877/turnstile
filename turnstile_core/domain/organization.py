@@ -1,0 +1,102 @@
+from __future__ import annotations
+
+import re
+from datetime import datetime
+from typing import Literal
+
+from pydantic import Field, field_validator
+
+from .models import StrictModel
+
+UnitType = Literal["organization", "department"]
+UnitStatus = Literal["active", "retired"]
+UNIT_ID_PATTERN = r"^[a-z0-9][a-z0-9-]{0,62}$"
+_UNIT_ID = re.compile(UNIT_ID_PATTERN)
+
+
+def suggested_unit_id(display_name: str, prefix: str = "department") -> str | None:
+    """An id proposed from the name, or nothing when the name cannot produce one.
+
+    Returning None rather than a mangled fallback is the point. The id is a join key that
+    four tables, the gateway policy and a set of Entra app roles all carry as text, and it
+    can never be changed once anything references it. A name written in a non-Latin script
+    -- which is the normal case at an install whose departments are named in Chinese --
+    slugifies to nothing, and inventing `department-1` on their behalf would hand them a
+    permanent identifier that says nothing about what it identifies.
+
+    So the screen asks. A suggestion is offered where one is obvious and the field is left
+    for the administrator where it is not.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", display_name.strip().casefold()).strip("-")
+    if not slug:
+        return None
+    candidate = f"{prefix}-{slug}" if prefix else slug
+    return candidate[:63].rstrip("-") if _UNIT_ID.fullmatch(candidate[:63].rstrip("-")) else None
+
+
+class OrgUnitReferences(StrictModel):
+    """What keeps naming this unit once it stops being offered."""
+
+    budgets: int = Field(ge=0)
+    usage_records: int = Field(ge=0)
+    applications: int = Field(ge=0)
+
+
+class OrgUnit(StrictModel):
+    id: str
+    unit_type: UnitType
+    parent_id: str | None
+    display_name: str
+    status: UnitStatus
+    references: OrgUnitReferences
+    updated_by: str
+    updated_at: datetime
+
+
+class EntraAppRole(StrictModel):
+    """What an administrator has to create in Entra for a department to carry identity.
+
+    The gateway reads the department from the `roles` claim, matching the entry that starts
+    with `department-`. So the app role's value is the department id exactly -- not its name,
+    which is free to change and would break the match the moment it did.
+    """
+
+    value: str
+    display_name: str
+    description: str
+
+
+class OrganizationDirectory(StrictModel):
+    organization: OrgUnit | None
+    departments: list[OrgUnit]
+    entra_app_roles: list[EntraAppRole]
+    employee_department_map: dict[str, str]
+
+
+class OrgUnitCreate(StrictModel):
+    display_name: str = Field(min_length=1, max_length=120)
+    id: str = Field(pattern=UNIT_ID_PATTERN)
+
+    @field_validator("display_name")
+    @classmethod
+    def normalize(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("display_name cannot be blank")
+        return normalized
+
+
+class OrgUnitRename(StrictModel):
+    display_name: str = Field(min_length=1, max_length=120)
+
+    @field_validator("display_name")
+    @classmethod
+    def normalize(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("display_name cannot be blank")
+        return normalized
+
+
+class OrgUnitStatusUpdate(StrictModel):
+    status: UnitStatus

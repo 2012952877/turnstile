@@ -749,6 +749,37 @@ class QueryRepository(ABC):
     ) -> dict[str, Any] | None: ...
 
     @abstractmethod
+    def org_units(self) -> Sequence[dict[str, Any]]: ...
+
+    @abstractmethod
+    def create_org_unit(
+        self,
+        unit_id: str,
+        unit_type: str,
+        parent_id: str | None,
+        display_name: str,
+        actor: str,
+    ) -> dict[str, Any] | None: ...
+
+    @abstractmethod
+    def rename_org_unit(
+        self, unit_id: str, display_name: str, actor: str
+    ) -> dict[str, Any] | None: ...
+
+    @abstractmethod
+    def set_org_unit_status(
+        self, unit_id: str, status: str, actor: str
+    ) -> dict[str, Any] | None: ...
+
+    @abstractmethod
+    def org_unit_references(self, unit_id: str) -> dict[str, int]: ...
+
+    @abstractmethod
+    def list_org_unit_audit(
+        self, unit_id: str, limit: int = 20
+    ) -> Sequence[dict[str, Any]]: ...
+
+    @abstractmethod
     def update_gateway_application_ownership(
         self,
         application_id: UUID,

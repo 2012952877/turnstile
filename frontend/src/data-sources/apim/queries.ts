@@ -74,6 +74,7 @@ export function trendDimensionForFilters(filters: UsageFilters): TrendDimension 
 export const finopsKeys = {
   all: ["finops"] as const,
   entities: ["reference", "enterprise-entities"] as const,
+  organizationDirectory: ["reference", "organization-directory"] as const,
   registry: ["reference", "model-registry"] as const,
   modelBackendPool: (id: string) => ["model-platform", "model-backend-pool", id] as const,
   gatewayPublications: ["control-plane", "gateway-publications"] as const,
@@ -119,6 +120,11 @@ export const finopsQueries = {
   entities: () => queryOptions({
     queryKey: finopsKeys.entities,
     queryFn: dataSource.entities,
+    ...cachePolicies.reference,
+  }),
+  organizationDirectory: () => queryOptions({
+    queryKey: finopsKeys.organizationDirectory,
+    queryFn: dataSource.organizationDirectory,
     ...cachePolicies.reference,
   }),
   registry: () => queryOptions({

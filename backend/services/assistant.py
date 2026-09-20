@@ -163,6 +163,7 @@ class AssistantService:
             governance_directory(
                 self._repository.observed_users(),
                 include_seeded_people=self._settings.seed_demo_directory,
+                units=self._repository.org_units(),
             ),
             self._repository.application_owners(),
         )

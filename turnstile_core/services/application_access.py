@@ -380,7 +380,7 @@ class ApplicationAccessService:
         gateway first, which is backwards for a key that has never been used.
         """
         if request.department_id is not None:
-            known = {item.id for item in governance_departments()}
+            known = {item.id for item in governance_departments(self._repository.org_units())}
             if request.department_id not in known:
                 raise ValueError(f"Unknown department: {request.department_id}")
         row = self._repository.update_gateway_application_ownership(
@@ -445,7 +445,10 @@ class ApplicationAccessService:
             UUID(str(item["application_id"])): item
             for item in self._repository.list_gateway_application_avatars(application_ids)
         }
-        department_names = {item.id: item.name for item in governance_departments()}
+        department_names = {
+            item.id: item.name
+            for item in governance_departments(self._repository.org_units())
+        }
         summaries: list[GatewayApplicationSummary] = []
         for row, application_id in zip(rows, application_ids, strict=True):
             application_subscriptions = subscriptions.get(application_id, [])

@@ -84,6 +84,7 @@ def get_enterprise_entities(
         governance_directory(
             repository.observed_users(),
             include_seeded_people=settings.seed_demo_directory,
+            units=repository.org_units(),
         ),
         repository.application_owners(),
     )

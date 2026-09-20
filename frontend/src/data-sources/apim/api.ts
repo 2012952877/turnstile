@@ -30,6 +30,7 @@ import type {
   GatewayApplicationList,
   GatewayApplicationModelAccessUpdate,
   GatewayApplicationOwnershipUpdate,
+  OrganizationDirectory,
   GatewayApplicationSubscriptionCreate,
   GatewayApplicationSubscriptionKeyKind,
   GatewayApplicationSubscriptionKeySecret,
@@ -478,6 +479,22 @@ export const dataSource = {
     value,
     "PUT",
   ),
+  organizationDirectory: () =>
+    request<OrganizationDirectory>("/api/v1/organization/directory"),
+  createDepartment: (value: { id: string; display_name: string }) =>
+    writeJson<OrganizationDirectory>("/api/v1/organization/departments", value, "POST"),
+  renameOrgUnit: (unitId: string, displayName: string) =>
+    writeJson<OrganizationDirectory>(
+      `/api/v1/organization/units/${encodeURIComponent(unitId)}/name`,
+      { display_name: displayName },
+      "PUT",
+    ),
+  setOrgUnitStatus: (unitId: string, status: "active" | "retired") =>
+    writeJson<OrganizationDirectory>(
+      `/api/v1/organization/units/${encodeURIComponent(unitId)}/status`,
+      { status },
+      "PUT",
+    ),
   syncGatewayApplications: (gatewayId: string) =>
     request<GatewayReleaseOperationAccepted>(
       `/api/v1/application-access/gateways/${encodeURIComponent(gatewayId)}/sync`,

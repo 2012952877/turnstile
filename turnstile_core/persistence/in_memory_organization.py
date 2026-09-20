@@ -125,18 +125,6 @@ class InMemoryOrganizationRepositoryMixin:
             "applications": applications,
         }
 
-    def channel_owners(self) -> Sequence[dict[str, Any]]:
-        return sorted(
-            (
-                {"owner_id": row["owner_id"], "department_id": row["department_id"]}
-                for row in self.gateway_applications
-                if row.get("owner_id")
-                and row.get("department_id")
-                and row.get("status") != "retired"
-            ),
-            key=lambda row: str(row["owner_id"]),
-        )
-
     def list_org_unit_audit(self, unit_id: str, limit: int = 20) -> Sequence[dict[str, Any]]:
         return sorted(
             (row for row in self.org_unit_audit if row["unit_id"] == unit_id),

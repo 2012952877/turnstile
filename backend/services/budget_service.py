@@ -97,7 +97,6 @@ class TokenBudgetService:
                 self._repository.observed_users(),
                 include_seeded_people=self._seed_demo_directory,
                 units=self._repository.org_units(),
-                channels=self._repository.channel_owners(),
             ),
             self._repository.application_owners(),
         )

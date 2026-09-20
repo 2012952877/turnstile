@@ -844,7 +844,6 @@ def _bind_invocation_identity(
                     repository.observed_users(),
                     include_seeded_people=settings.seed_demo_directory,
                     units=repository.org_units(),
-                    channels=repository.channel_owners(),
                 ),
                 repository.application_owners(),
             )

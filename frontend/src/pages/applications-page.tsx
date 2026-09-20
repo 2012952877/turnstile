@@ -64,7 +64,7 @@ import { useTimezone } from "../providers/timezone-provider"
 type ApplicationFilter = "all" | "active" | "attention" | "system"
 type SubscriptionCategory = "applications" | "agents"
 
-const APPLICATION_TABLE_COLUMN_MIN_WIDTHS = [180, 130, 140, 180, 80] as const
+const APPLICATION_TABLE_COLUMN_MIN_WIDTHS = [180, 130, 120, 180, 80] as const
 
 const statusLabels: Record<GatewayApplicationStatus, string> = {
   active: "活动",
@@ -342,7 +342,7 @@ function ApplicationBudgetDialog({ application, open, writeAvailable, onOpenChan
   </Dialog>
 }
 
-function ApplicationOwnershipDialog({ application, open, writeAvailable, onOpenChange }: {
+function ApplicationDepartmentDialog({ application, open, writeAvailable, onOpenChange }: {
   application: GatewayApplicationDetail
   open: boolean
   writeAvailable: boolean
@@ -351,44 +351,36 @@ function ApplicationOwnershipDialog({ application, open, writeAvailable, onOpenC
   const queryClient = useQueryClient()
   const entities = useQuery(finopsQueries.entities())
   const departments = entities.data?.departments ?? []
-  const [ownerId, setOwnerId] = useState(application.owner_id ?? "")
   const [departmentId, setDepartmentId] = useState(application.department_id ?? "")
-  const suggestion = application.owner_suggestion ?? null
   const mutation = useMutation({
-    mutationFn: () => dataSource.updateGatewayApplicationOwnership(application.id, {
-      owner_id: ownerId.trim() || null,
+    mutationFn: () => dataSource.updateGatewayApplicationDepartment(application.id, {
       department_id: departmentId || null,
     }),
     onSuccess: (value) => {
       queryClient.setQueryData(finopsKeys.gatewayApplication(application.id), value)
       void queryClient.invalidateQueries({ queryKey: finopsKeys.gatewayApplications })
+      void queryClient.invalidateQueries({ queryKey: finopsKeys.organizationDirectory })
       onOpenChange(false)
     },
   })
   return <Dialog open={open} onOpenChange={(next) => { if (!mutation.isPending) onOpenChange(next) }}>
     <DialogContent className="registry-editor-dialog application-governance-dialog" finalFocus={false}>
       <form className="registry-editor" onSubmit={(event) => { event.preventDefault(); mutation.mutate() }}>
-        <DialogHeader className="registry-editor-header"><DialogTitle>编辑归属</DialogTitle><DialogDescription>{application.display_name}</DialogDescription></DialogHeader>
+        <DialogHeader className="registry-editor-header"><DialogTitle>编辑所属部门</DialogTitle><DialogDescription>{application.display_name}</DialogDescription></DialogHeader>
         <button type="button" className="registry-editor-close" onClick={() => onOpenChange(false)} disabled={mutation.isPending} aria-label="关闭"><X size={16} /></button>
         <div className="registry-editor-body application-governance-form">
           {!writeAvailable && <div className="application-governance-unavailable"><AlertTriangle size={14} />此环境尚未发布编辑 API，部署新后端后可保存。</div>}
-          <label className="registry-editor-field">
-            <span>负责人</span>
-            <Input value={ownerId} disabled={mutation.isPending} inputMode="email" placeholder="name@example.com" onChange={(event) => setOwnerId(event.target.value)} />
-            <small>订阅密钥本身不携带身份。这里记录的是由管理员认定、并写入审计的负责人。</small>
-          </label>
-          {suggestion && suggestion !== ownerId.trim().toLocaleLowerCase() && <button type="button" className="application-owner-suggestion" disabled={mutation.isPending} onClick={() => setOwnerId(suggestion)}><UserRound size={13} />采用订阅名称里写的 <b data-no-localize>{suggestion}</b></button>}
           <label className="registry-editor-field">
             <span>所属部门</span>
             <select value={departmentId} disabled={mutation.isPending || !departments.length} onChange={(event) => setDepartmentId(event.target.value)}>
               <option value="">未归属</option>
               {departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}
             </select>
-            <small>决定这个订阅的用量归入哪个部门。只能选择治理目录里已有的部门。</small>
+            <small>用于按部门查看和归类订阅。部门预算统计的是请求里声明的部门，不是这里配的，所以改这里不会改变任何预算数字。</small>
           </label>
           {mutation.error && <div className="registry-error">{String(mutation.error)}</div>}
         </div>
-        <DialogFooter className="registry-editor-footer"><Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={mutation.isPending}>取消</Button><Button type="submit" disabled={!writeAvailable || mutation.isPending}>{mutation.isPending ? <RefreshCw className="spin" size={14} /> : null}{mutation.isPending ? "正在保存" : "保存归属"}</Button></DialogFooter>
+        <DialogFooter className="registry-editor-footer"><Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={mutation.isPending}>取消</Button><Button type="submit" disabled={!writeAvailable || mutation.isPending}>{mutation.isPending ? <RefreshCw className="spin" size={14} /> : null}{mutation.isPending ? "正在保存" : "保存"}</Button></DialogFooter>
       </form>
     </DialogContent>
   </Dialog>
@@ -469,7 +461,7 @@ function ApplicationInventoryRow({ application, category, timezone, selected, ca
     </div>
     <div className="model-runtime-cell"><b>{typeLabels[application.application_type]}</b><span>{application.system_managed ? "系统管理" : "消费对象"} · {application.active_subscription_count} / {application.subscription_count} 个订阅</span></div>
     <div className="model-runtime-cell application-department-cell">{application.department_name
-      ? <><b data-no-localize>{application.department_name}</b><span data-no-localize>{application.owner_id ?? ""}</span></>
+      ? <b data-no-localize>{application.department_name}</b>
       : <em>未归属</em>}</div>
     <div className="model-pricing-cell" title={`已使用 ${usage.toFixed(2)}%`}><b>{formatFullCount(application.usage.total_tokens)} Token · {usage.toFixed(2)}%</b><span>{`${application.usage.request_count} 个请求`} · {formatTimestamp(application.usage.last_request_at, timezone)}</span></div>
     <div className="model-status-cell"><ApplicationStatus application={application} /></div>
@@ -550,7 +542,7 @@ function ApplicationDetailView({
 }) {
   const [budgetEditorOpen, setBudgetEditorOpen] = useState(false)
   const [modelEditorOpen, setModelEditorOpen] = useState(false)
-  const [ownershipEditorOpen, setOwnershipEditorOpen] = useState(false)
+  const [departmentEditorOpen, setDepartmentEditorOpen] = useState(false)
   const { timezone } = useTimezone()
   if (loading) return <div className="application-detail-state"><RefreshCw className="spin" size={20} />加载应用详情</div>
   if (!application) return <div className="application-detail-state"><AppWindow size={24} />选择一个应用</div>
@@ -629,9 +621,8 @@ function ApplicationDetailView({
         {showSubscriptionDetails && <ApplicationSubscriptionCard application={application} canManage={canManage} />}
 
         <section className="application-card application-governance-card">
-          <header className="application-card-head"><div><Gauge size={14} /><h2>归因状态</h2></div>{canManage && !application.system_managed && <div className="application-card-actions"><Button type="button" variant="ghost" size="icon-sm" onClick={() => setOwnershipEditorOpen(true)} aria-label="编辑归属" title="编辑归属"><Edit3 size={14} /></Button></div>}</header>
+          <header className="application-card-head"><div><Gauge size={14} /><h2>归因状态</h2></div>{canManage && !application.system_managed && <div className="application-card-actions"><Button type="button" variant="ghost" size="icon-sm" onClick={() => setDepartmentEditorOpen(true)} aria-label="编辑所属部门" title="编辑所属部门"><Edit3 size={14} /></Button></div>}</header>
           <dl>
-            <div><dt>负责人</dt><dd data-no-localize={application.owner_id ? "" : undefined}>{application.owner_id ?? (application.owner_suggestion ? "未认定" : "未归属")}</dd></div>
             <div><dt>所属部门</dt><dd>{application.department_name ?? (application.department_id ?? "未归属")}</dd></div>
             <div><dt>{consumer}</dt><dd>已绑定</dd></div>
             <div><dt>调用身份</dt><dd>{isAgent ? "智能体" : application.application_type === "delegated_user" ? "应用 + 人员" : application.system_managed ? "系统" : "服务"}</dd></div>
@@ -649,54 +640,39 @@ function ApplicationDetailView({
     </div>
     {budgetEditorOpen && <ApplicationBudgetDialog application={application} open={budgetEditorOpen} writeAvailable={governanceWriteAvailable} onOpenChange={setBudgetEditorOpen} />}
     {modelEditorOpen && <ApplicationModelAccessDialog application={application} models={models} open={modelEditorOpen} writeAvailable={governanceWriteAvailable} onOpenChange={setModelEditorOpen} />}
-    {ownershipEditorOpen && <ApplicationOwnershipDialog application={application} open={ownershipEditorOpen} writeAvailable={governanceWriteAvailable} onOpenChange={setOwnershipEditorOpen} />}
+    {departmentEditorOpen && <ApplicationDepartmentDialog application={application} open={departmentEditorOpen} writeAvailable={governanceWriteAvailable} onOpenChange={setDepartmentEditorOpen} />}
   </div>
 }
 
-function BulkOwnershipBar({ selected, visible, onClear }: {
+function BulkDepartmentBar({ selected, onClear }: {
   selected: Set<string>
-  visible: GatewayApplicationSummary[]
   onClear: () => void
 }) {
   const queryClient = useQueryClient()
   const entities = useQuery(finopsQueries.entities())
   const [departmentId, setDepartmentId] = useState("")
-  const [owner, setOwner] = useState<"keep" | "suggested" | "clear">("suggested")
-  const [result, setResult] = useState<{ updated: number; without_suggestion: string[] } | null>(null)
+  const [result, setResult] = useState<{ updated: number } | null>(null)
   const mutation = useMutation({
-    mutationFn: () => dataSource.updateGatewayApplicationOwnershipBulk({
+    mutationFn: () => dataSource.updateGatewayApplicationDepartmentBulk({
       application_ids: [...selected],
       department_id: departmentId || null,
-      owner,
     }),
     onSuccess: (value) => {
       setResult(value)
       void queryClient.invalidateQueries({ queryKey: finopsKeys.gatewayApplications })
-      void queryClient.invalidateQueries({ queryKey: finopsKeys.entities })
       void queryClient.invalidateQueries({ queryKey: finopsKeys.organizationDirectory })
       onClear()
     },
   })
-  const chosen = visible.filter((item) => selected.has(item.id))
-  const withSuggestion = chosen.filter((item) => item.owner_suggestion).length
   return <div className="application-bulk-bar">
     <span>{`已选 ${selected.size} 个订阅`}</span>
     <label>
       <span>归到部门</span>
       <select value={departmentId} disabled={mutation.isPending}
         onChange={(event) => setDepartmentId(event.target.value)}>
-        <option value="">不改部门</option>
+        <option value="">未归属</option>
         {(entities.data?.departments ?? []).map((department) =>
           <option key={department.id} value={department.id}>{department.name}</option>)}
-      </select>
-    </label>
-    <label>
-      <span>负责人</span>
-      <select value={owner} disabled={mutation.isPending}
-        onChange={(event) => setOwner(event.target.value as "keep" | "suggested" | "clear")}>
-        <option value="suggested">{`采用订阅名称里的邮箱，${withSuggestion} / ${chosen.length} 个能认出`}</option>
-        <option value="keep">不改负责人</option>
-        <option value="clear">清空负责人</option>
       </select>
     </label>
     <Button type="button" disabled={mutation.isPending || !selected.size}
@@ -707,12 +683,7 @@ function BulkOwnershipBar({ selected, visible, onClear }: {
       取消选择
     </Button>
     {mutation.error && <span className="registry-error">{String(mutation.error)}</span>}
-    {result && <span className="application-bulk-result">
-      {`已更新 ${result.updated} 个订阅`}
-      {result.without_suggestion.length
-        ? `，${result.without_suggestion.length} 个名称里没有邮箱，负责人保持原样`
-        : ""}
-    </span>}
+    {result && <span className="application-bulk-result">{`已更新 ${result.updated} 个订阅`}</span>}
   </div>
 }
 
@@ -761,7 +732,7 @@ export function ApplicationsPage() {
         || (filter === "active" && application.status === "active" && application.stale_subscription_count === 0)
         || (filter === "attention" && (application.status !== "active" || application.stale_subscription_count > 0))
         || (filter === "system" && application.system_managed)
-      const searchMatch = !normalized || `${application.display_name} ${application.slug} ${application.owner_id ?? ""} ${application.department_id ?? ""} ${application.department_name ?? ""}`.toLocaleLowerCase().includes(normalized)
+      const searchMatch = !normalized || `${application.display_name} ${application.slug} ${application.department_id ?? ""} ${application.department_name ?? ""}`.toLocaleLowerCase().includes(normalized)
       const departmentMatch = !department
         || (department === "unassigned" ? !application.department_id : application.department_id === department)
       return filterMatch && searchMatch && departmentMatch
@@ -886,7 +857,7 @@ export function ApplicationsPage() {
           <div className="application-filters" role="group" aria-label={`${consumer}状态筛选`}>{filters.filter((item) => item.id === "all" || item.count > 0).map((item) => <button type="button" key={item.id} className={filter === item.id ? "active" : ""} aria-pressed={filter === item.id} onClick={() => setFilter(item.id)}><span>{item.label}</span><small>{item.count}</small></button>)}</div>
           <ExpandableSearch key={category} value={search} onChange={setSearch} placeholder={`搜索${consumer}或订阅 ID...`} ariaLabel={`搜索${consumer}`} />
         </div>
-        {canManage && selected.size > 0 && <BulkOwnershipBar selected={selected} visible={visible}
+        {canManage && selected.size > 0 && <BulkDepartmentBar selected={selected}
           onClear={() => setSelected(new Set())} />}
         {canManage && <div className="application-department-filter">
           <label><span>部门</span>
@@ -921,7 +892,7 @@ export function ApplicationsPage() {
         </div>}
         <ResizableGridTable className="model-table application-model-table" role="table" aria-label={`${consumer}列表`} headerSelector=".application-table-head" minWidths={APPLICATION_TABLE_COLUMN_MIN_WIDTHS} columnGap={12} horizontalPadding={32}>
           <div className="model-table-head application-table-head" role="row">
-            {[consumer, "类型 / 订阅", "部门 / 负责人", "本月用量 / 最近请求", "状态"].map((label) => <span className="model-table-heading" role="columnheader" aria-label={label} key={label}><span>{label}</span></span>)}
+            {[consumer, "类型 / 订阅", "部门", "本月用量 / 最近请求", "状态"].map((label) => <span className="model-table-heading" role="columnheader" aria-label={label} key={label}><span>{label}</span></span>)}
           </div>
           <div className="model-table-body application-inventory-list" role="rowgroup">
           {visible.map((application) => <ApplicationInventoryRow application={application} category={category} timezone={timezone} key={application.id}

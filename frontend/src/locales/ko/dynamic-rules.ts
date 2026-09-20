@@ -1,8 +1,6 @@
 export const DYNAMIC_RULES: Array<[RegExp, (...args: string[]) => string]> = [
   [/^全选当前\s*([\d,]+)\s*个$/g, (_match, value) => `표시된 ${value}개 모두 선택`],
-  [/^，([\d,]+)\s*个名称里没有邮箱，负责人保持原样$/g, (_match, value) => `, ${value}개는 이름에 주소가 없어 담당자를 유지했습니다`],
   [/^已更新\s*([\d,]+)\s*个订阅$/g, (_match, value) => `${value}개 업데이트됨`],
-  [/^采用订阅名称里的邮箱，([\d,]+)\s*\/\s*([\d,]+)\s*个能认出$/g, (_match, found, total) => `구독 이름의 주소 사용 (${found} / ${total}개 인식)`],
   [/^已选\s*([\d,]+)\s*个订阅$/g, (_match, value) => `${value}개 선택됨`],
   [/^复制 (Primary|Secondary) Key$/g, (_match, kind) => `${kind} Key 복사`],
   [/^轮换 (Primary|Secondary) Key$/g, (_match, kind) => `${kind} Key 교체`],

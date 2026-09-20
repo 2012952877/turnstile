@@ -29,7 +29,7 @@ import type {
   GatewayApplicationDetail,
   GatewayApplicationList,
   GatewayApplicationModelAccessUpdate,
-  GatewayApplicationOwnershipUpdate,
+  GatewayApplicationDepartmentUpdate,
   ConsoleMemberList,
   OrganizationDirectory,
   GatewayApplicationSubscriptionCreate,
@@ -472,20 +472,19 @@ export const dataSource = {
     value,
     "PUT",
   ),
-  updateGatewayApplicationOwnership: (
+  updateGatewayApplicationDepartment: (
     id: string,
-    value: GatewayApplicationOwnershipUpdate,
+    value: GatewayApplicationDepartmentUpdate,
   ) => writeJson<GatewayApplicationDetail>(
-    `/api/v1/application-access/applications/${encodeURIComponent(id)}/ownership`,
+    `/api/v1/application-access/applications/${encodeURIComponent(id)}/department`,
     value,
     "PUT",
   ),
-  updateGatewayApplicationOwnershipBulk: (value: {
+  updateGatewayApplicationDepartmentBulk: (value: {
     application_ids: string[]
     department_id: string | null
-    owner: "keep" | "suggested" | "clear"
-  }) => writeJson<{ updated: number; unchanged: number; without_suggestion: string[] }>(
-    "/api/v1/application-access/applications/ownership",
+  }) => writeJson<{ updated: number; unchanged: number }>(
+    "/api/v1/application-access/applications/bulk-department",
     value,
     "PUT",
   ),

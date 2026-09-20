@@ -463,28 +463,20 @@ class InMemoryApplicationRepositoryMixin:
         )
         return after_state
 
-    def update_gateway_application_ownership(
+    def update_gateway_application_department(
         self,
         application_id: UUID,
-        owner_id: str | None,
         department_id: str | None,
         actor: str,
     ) -> dict[str, Any] | None:
         application = self.get_gateway_application(application_id)
         if application is None:
             return None
-        if (
-            application.get("owner_id") == owner_id
-            and application.get("department_id") == department_id
-        ):
+        if application.get("department_id") == department_id:
             return application
-        before_state = {
-            "owner_id": application.get("owner_id"),
-            "department_id": application.get("department_id"),
-        }
+        before_state = {"department_id": application.get("department_id")}
         now = datetime.now(UTC)
         application.update(
-            owner_id=owner_id,
             department_id=department_id,
             updated_by=actor,
             updated_at=now,
@@ -495,7 +487,7 @@ class InMemoryApplicationRepositoryMixin:
                 "application_id": application_id,
                 "operation": "updated",
                 "before_state": before_state,
-                "after_state": {"owner_id": owner_id, "department_id": department_id},
+                "after_state": {"department_id": department_id},
                 "actor": actor,
                 "created_at": now,
             }

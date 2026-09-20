@@ -151,22 +151,6 @@ class PostgreSqlOrganizationRepositoryMixin:
             "applications": int(applications["total"]) if applications else 0,
         }
 
-    def channel_owners(self) -> Sequence[dict[str, Any]]:
-        """Who an administrator has made answerable for a channel, and where it is filed.
-
-        Retired channels are left out: their owner is answerable for something nobody may use,
-        so listing them would put a person on the budget page on the strength of a key that
-        has been taken away.
-        """
-        with self._connection() as connection:
-            rows = connection.execute(
-                """SELECT owner_id, department_id FROM gateway_application
-                   WHERE owner_id IS NOT NULL AND department_id IS NOT NULL
-                     AND status <> 'retired'
-                   ORDER BY owner_id"""
-            ).fetchall()
-        return cast(Sequence[dict[str, Any]], rows)
-
     def list_org_unit_audit(self, unit_id: str, limit: int = 20) -> Sequence[dict[str, Any]]:
         with self._connection() as connection:
             rows = connection.execute(

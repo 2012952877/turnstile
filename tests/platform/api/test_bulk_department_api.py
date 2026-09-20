@@ -1,7 +1,7 @@
-"""Attributing several hundred subscriptions without opening several hundred dialogs.
+"""Filing several hundred subscriptions without opening several hundred dialogs.
 
 One dialog at a time is not a slow version of this; it is the reason an inventory stays
-unattributed, which is the state the whole area exists to get out of.
+unfiled, which is the state the whole area exists to get out of.
 """
 
 from __future__ import annotations
@@ -22,8 +22,7 @@ from turnstile_core.services.application_access import ApplicationAccessService
 
 pytest_plugins = ("tests.platform.api.api_fixtures",)
 
-BULK = "/api/v1/application-access/applications/ownership"
-
+BULK = "/api/v1/application-access/applications/bulk-department"
 PEOPLE = ["a.aiginin", "shalin", "y.zhang"]
 
 
@@ -78,44 +77,45 @@ def _ids(repository: InMemoryRepository, *, include_system: bool = False) -> lis
     ]
 
 
-def test_one_action_files_a_batch_and_adopts_the_address_in_each_name() -> None:
+def test_one_action_files_a_batch() -> None:
     repository = InMemoryRepository()
     _seed(repository)
     try:
         response = client.put(BULK, json={
             "application_ids": _ids(repository),
             "department_id": "department-platform",
-            "owner": "suggested",
         })
         assert response.status_code == 200
-        body = response.json()
-        assert body["updated"] == 4
-        # Chem42 Pipeline has no address in its name, so it keeps whatever owner it had --
-        # naming it is what tells an administrator which rows still need a person.
-        assert body["without_suggestion"] == ["Chem42 Pipeline"]
-
-        rows = {row["display_name"]: row for row in repository.gateway_applications}
+        assert response.json()["updated"] == 4
         assert all(
             row["department_id"] == "department-platform"
-            for row in rows.values() if not row["system_managed"]
+            for row in repository.gateway_applications if not row["system_managed"]
         )
-        assert rows["a.aiginin@insilicomedicine.com - IT Databricks Claude API"][
-            "owner_id"
-        ] == "a.aiginin@insilicomedicine.com"
-        assert rows["Chem42 Pipeline"]["owner_id"] is None
     finally:
         _uninstall()
 
 
-def test_a_system_channel_in_the_batch_is_skipped_rather_than_failing_it() -> None:
-    """Four hundred rows should not be refused because one of them belongs to the platform."""
+def test_filing_a_batch_where_it_already_is_reports_no_change() -> None:
+    repository = InMemoryRepository()
+    _seed(repository)
+    try:
+        body = {"application_ids": _ids(repository), "department_id": "department-finance"}
+        assert client.put(BULK, json=body).json()["updated"] == 4
+        second = client.put(BULK, json=body).json()
+        assert second["updated"] == 0
+        assert second["unchanged"] == 4
+    finally:
+        _uninstall()
+
+
+def test_a_system_subscription_in_the_batch_is_skipped_rather_than_failing_it() -> None:
+    """Four hundred rows should not be refused because one belongs to the platform."""
     repository = InMemoryRepository()
     _seed(repository)
     try:
         response = client.put(BULK, json={
             "application_ids": _ids(repository, include_system=True),
             "department_id": "department-finance",
-            "owner": "keep",
         })
         assert response.status_code == 200
         assert response.json()["unchanged"] >= 1
@@ -134,7 +134,6 @@ def test_the_department_is_still_checked_for_a_batch() -> None:
         response = client.put(BULK, json={
             "application_ids": _ids(repository),
             "department_id": "department-does-not-exist",
-            "owner": "keep",
         })
         assert response.status_code == 422
         assert "department-does-not-exist" in response.json()["detail"]
@@ -145,34 +144,18 @@ def test_the_department_is_still_checked_for_a_batch() -> None:
         _uninstall()
 
 
-def test_owner_can_be_left_alone_or_cleared_independently_of_the_department() -> None:
+def test_a_batch_can_unfile() -> None:
     repository = InMemoryRepository()
     _seed(repository)
     try:
         client.put(BULK, json={
-            "application_ids": _ids(repository),
-            "department_id": "department-platform",
-            "owner": "suggested",
+            "application_ids": _ids(repository), "department_id": "department-platform",
         })
-        # Moving a batch to another department without touching who answers for them.
         client.put(BULK, json={
-            "application_ids": _ids(repository),
-            "department_id": "department-security",
-            "owner": "keep",
-        })
-        rows = {row["display_name"]: row for row in repository.gateway_applications}
-        moved = rows["shalin@insilicomedicine.com - IT Databricks Claude API"]
-        assert moved["department_id"] == "department-security"
-        assert moved["owner_id"] == "shalin@insilicomedicine.com"
-
-        client.put(BULK, json={
-            "application_ids": _ids(repository),
-            "department_id": "department-security",
-            "owner": "clear",
+            "application_ids": _ids(repository), "department_id": None,
         })
         assert all(
-            row["owner_id"] is None for row in repository.gateway_applications
-            if not row["system_managed"]
+            row["department_id"] is None for row in repository.gateway_applications
         )
     finally:
         _uninstall()
@@ -193,7 +176,6 @@ def test_the_batch_route_requires_owner_role() -> None:
         response = client.put(BULK, json={
             "application_ids": _ids(repository),
             "department_id": "department-platform",
-            "owner": "suggested",
         })
         assert response.status_code == 403
         assert all(
@@ -208,12 +190,11 @@ def test_an_empty_or_oversized_batch_is_refused() -> None:
     _seed(repository)
     try:
         assert client.put(BULK, json={
-            "application_ids": [], "department_id": None, "owner": "keep",
+            "application_ids": [], "department_id": None,
         }).status_code == 422
         assert client.put(BULK, json={
             "application_ids": [f"00000000-0000-4000-8000-{index:012d}" for index in range(501)],
             "department_id": None,
-            "owner": "keep",
         }).status_code == 422
     finally:
         _uninstall()

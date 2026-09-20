@@ -128,12 +128,12 @@ def test_applications_use_two_level_inventory_and_detail_routes() -> None:
     assert "FINOPS_NAVIGATE_EVENT" in page
     assert 'className="model-list-row application-inventory-row"' in page
     assert 'className="model-table application-model-table"' in page
-    # Five columns since the inventory started carrying the department a channel is filed
-    # under: the count on the organization screen was the only place that was visible, and a
-    # count is not a list.
-    assert "APPLICATION_TABLE_COLUMN_MIN_WIDTHS = [180, 130, 140, 180, 80]" in page
+    # Five columns since the inventory started carrying the department a subscription is
+    # filed under: the count on the organization screen was the only place that was visible,
+    # and a count is not a list.
+    assert "APPLICATION_TABLE_COLUMN_MIN_WIDTHS = [180, 130, 120, 180, 80]" in page
     assert 'className="model-runtime-cell application-department-cell"' in page
-    assert '"部门 / 负责人"' in page
+    assert '"部门"' in page
     # Filtering to one department lives in the URL so the view can be sent to someone else.
     assert "function departmentFromUrl()" in page
     assert 'searchParams.get("department")' in page

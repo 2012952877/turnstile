@@ -10,12 +10,12 @@ from turnstile_core.domain.application_access import (
     GatewayApplicationAvatar,
     GatewayApplicationAvatarUpdate,
     GatewayApplicationBudgetUpdate,
-    GatewayApplicationBulkOwnership,
-    GatewayApplicationBulkOwnershipResult,
+    GatewayApplicationBulkDepartment,
+    GatewayApplicationBulkDepartmentResult,
+    GatewayApplicationDepartmentUpdate,
     GatewayApplicationDetail,
     GatewayApplicationList,
     GatewayApplicationModelAccessUpdate,
-    GatewayApplicationOwnershipUpdate,
     GatewayApplicationSubscriptionCreate,
     GatewayApplicationSubscriptionKeyRotation,
     GatewayApplicationSubscriptionKeySecret,
@@ -240,17 +240,17 @@ def update_gateway_application_model_access(
 
 
 @router.put(
-    "/applications/{application_id}/ownership",
+    "/applications/{application_id}/department",
     response_model=GatewayApplicationDetail,
 )
-def update_gateway_application_ownership(
+def update_gateway_application_department(
     application_id: UUID,
-    request: GatewayApplicationOwnershipUpdate,
+    request: GatewayApplicationDepartmentUpdate,
     service: ApplicationAccessServiceDependency,
     identity: OwnerSession,
 ) -> GatewayApplicationDetail:
     try:
-        return service.update_application_ownership(
+        return service.update_application_department(
             application_id, request, identity.email
         )
     except ControlPlaneNotFoundError as error:
@@ -260,16 +260,16 @@ def update_gateway_application_ownership(
 
 
 @router.put(
-    "/applications/ownership",
-    response_model=GatewayApplicationBulkOwnershipResult,
+    "/applications/bulk-department",
+    response_model=GatewayApplicationBulkDepartmentResult,
 )
-def update_gateway_application_ownership_bulk(
-    request: GatewayApplicationBulkOwnership,
+def update_gateway_application_department_bulk(
+    request: GatewayApplicationBulkDepartment,
     service: ApplicationAccessServiceDependency,
     identity: OwnerSession,
-) -> GatewayApplicationBulkOwnershipResult:
+) -> GatewayApplicationBulkDepartmentResult:
     try:
-        return service.update_application_ownership_bulk(request, identity.email)
+        return service.update_application_department_bulk(request, identity.email)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 

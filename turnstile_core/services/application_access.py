@@ -13,13 +13,13 @@ from ..domain.application_access import (
     GatewayApplicationAvatarUpdate,
     GatewayApplicationBudget,
     GatewayApplicationBudgetUpdate,
-    GatewayApplicationBulkOwnership,
-    GatewayApplicationBulkOwnershipResult,
+    GatewayApplicationBulkDepartment,
+    GatewayApplicationBulkDepartmentResult,
+    GatewayApplicationDepartmentUpdate,
     GatewayApplicationDetail,
     GatewayApplicationDiscovery,
     GatewayApplicationList,
     GatewayApplicationModelAccessUpdate,
-    GatewayApplicationOwnershipUpdate,
     GatewayApplicationProvisioningDefaults,
     GatewayApplicationSubscription,
     GatewayApplicationSubscriptionKeyRotation,
@@ -31,7 +31,6 @@ from ..domain.application_access import (
     application_id_for,
     application_subscription_id_for,
     decode_application_avatar_data_url,
-    suggested_owner_id,
 )
 from ..domain.enterprise import governance_departments
 from ..domain.models import TrendResponse
@@ -364,37 +363,36 @@ class ApplicationAccessService:
             raise ControlPlaneNotFoundError("Application not found")
         return self.application(application_id)
 
-    def update_application_ownership(
+    def update_application_department(
         self,
         application_id: UUID,
-        request: GatewayApplicationOwnershipUpdate,
+        request: GatewayApplicationDepartmentUpdate,
         actor: str,
     ) -> GatewayApplicationDetail:
-        """Attach a channel to the directory: who answers for it, where it rolls up.
+        """File a subscription under a department.
 
-        The department is checked against the catalog and the owner is not, because
-        they are load-bearing in different ways. A department id is a join key -- the
-        budget hierarchy is organization -> department -> user, and a channel filed
-        under a department that does not exist is filed nowhere, while still reading
-        on screen as though it were attributed. An owner is an assertion about a
-        person, already constrained to an address by the request model; requiring that
-        person to be in the directory would mean requiring them to have called the
-        gateway first, which is backwards for a key that has never been used.
+        The department is checked against the catalog because the id is a join key: a
+        subscription filed under one that does not exist is filed nowhere, while still
+        reading on screen as though it had been filed.
+
+        Filing is grouping. Department budgets are summed from the department recorded on
+        each request, not from this column, so moving a subscription changes what an
+        administrator can see and roll up -- not what any budget counts.
         """
         if request.department_id is not None:
             known = {item.id for item in governance_departments(self._repository.org_units())}
             if request.department_id not in known:
                 raise ValueError(f"Unknown department: {request.department_id}")
-        row = self._repository.update_gateway_application_ownership(
-            application_id, request.owner_id, request.department_id, actor
+        row = self._repository.update_gateway_application_department(
+            application_id, request.department_id, actor
         )
         if row is None:
             raise ControlPlaneNotFoundError("Application not found")
         return self.application(application_id)
 
-    def update_application_ownership_bulk(
-        self, request: GatewayApplicationBulkOwnership, actor: str
-    ) -> GatewayApplicationBulkOwnershipResult:
+    def update_application_department_bulk(
+        self, request: GatewayApplicationBulkDepartment, actor: str
+    ) -> GatewayApplicationBulkDepartmentResult:
         if request.department_id is not None:
             known = {item.id for item in governance_departments(self._repository.org_units())}
             if request.department_id not in known:
@@ -404,8 +402,6 @@ class ApplicationAccessService:
         # read before the write reports every change as a no-op.
         rows = {
             UUID(str(row["id"])): {
-                "display_name": row.get("display_name"),
-                "owner_id": row.get("owner_id"),
                 "department_id": row.get("department_id"),
                 "system_managed": row.get("system_managed"),
             }
@@ -413,40 +409,23 @@ class ApplicationAccessService:
         }
         updated = 0
         unchanged = 0
-        without_suggestion: list[str] = []
         for application_id in request.application_ids:
             row = rows.get(application_id)
             if row is None or row.get("system_managed"):
-                # A system-managed channel belongs to the platform, not to a person; silently
-                # skipping it is kinder than failing a batch of four hundred over one row.
+                # A system-managed subscription belongs to the platform; silently skipping it
+                # is kinder than failing a batch of four hundred over one row.
                 unchanged += 1
                 continue
-            display_name = str(row.get("display_name") or "")
-            if request.owner == "keep":
-                owner_id = row.get("owner_id")
-            elif request.owner == "clear":
-                owner_id = None
-            else:
-                owner_id = suggested_owner_id(display_name)
-                if owner_id is None:
-                    without_suggestion.append(display_name)
-                    owner_id = row.get("owner_id")
-            result = self._repository.update_gateway_application_ownership(
-                application_id,
-                str(owner_id) if owner_id else None,
-                request.department_id,
-                actor,
-            )
-            if result is None or (
-                row.get("owner_id") == (str(owner_id) if owner_id else None)
-                and row.get("department_id") == request.department_id
-            ):
+            if row.get("department_id") == request.department_id:
+                unchanged += 1
+                continue
+            if self._repository.update_gateway_application_department(
+                application_id, request.department_id, actor
+            ) is None:
                 unchanged += 1
             else:
                 updated += 1
-        return GatewayApplicationBulkOwnershipResult(
-            updated=updated, unchanged=unchanged, without_suggestion=without_suggestion
-        )
+        return GatewayApplicationBulkDepartmentResult(updated=updated, unchanged=unchanged)
 
     def update_application_model_access(
         self,
@@ -559,13 +538,13 @@ class ApplicationAccessService:
                 GatewayApplicationSummary.model_validate(
                     {
                         **dict(row),
-                        # Resolved per response rather than stored: a department that
-                        # gets renamed would otherwise keep showing its old name on
-                        # every channel filed under it until someone re-saved each one.
+                        # Resolved per response rather than stored: a
+                        # department that gets renamed would otherwise keep
+                        # showing its old name on every subscription filed
+                        # under it until someone re-saved each one.
                         "department_name": department_names.get(
                             str(row["department_id"] or "")
                         ),
-                        "owner_suggestion": suggested_owner_id(str(row["display_name"])),
                         "avatar_url": _avatar_url(
                             application_id,
                             avatars.get(application_id, {}).get("updated_at"),

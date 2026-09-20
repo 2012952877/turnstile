@@ -147,6 +147,17 @@ def governance_directory(
     )
 
 
+def governance_departments() -> list[EnterpriseEntity]:
+    """The departments an administrator may attribute something to.
+
+    Separate from `governance_directory` because the seeded-people flag does not reach
+    departments -- both modes carry the same five -- so a caller that only needs the
+    structure should not have to read the traffic table to get it, nor reach into
+    `enterprise_catalog()` and pick up the fixture people on the way past.
+    """
+    return enterprise_catalog().departments
+
+
 def enterprise_catalog() -> EnterpriseEntityCatalog:
     """Everything seeded, fixture people included.
 

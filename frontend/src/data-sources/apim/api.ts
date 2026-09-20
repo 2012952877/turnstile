@@ -29,6 +29,7 @@ import type {
   GatewayApplicationDetail,
   GatewayApplicationList,
   GatewayApplicationModelAccessUpdate,
+  GatewayApplicationOwnershipUpdate,
   GatewayApplicationSubscriptionCreate,
   GatewayApplicationSubscriptionKeyKind,
   GatewayApplicationSubscriptionKeySecret,
@@ -466,6 +467,14 @@ export const dataSource = {
     value: GatewayApplicationModelAccessUpdate,
   ) => writeJson<GatewayApplicationDetail>(
     `/api/v1/application-access/applications/${encodeURIComponent(id)}/model-access`,
+    value,
+    "PUT",
+  ),
+  updateGatewayApplicationOwnership: (
+    id: string,
+    value: GatewayApplicationOwnershipUpdate,
+  ) => writeJson<GatewayApplicationDetail>(
+    `/api/v1/application-access/applications/${encodeURIComponent(id)}/ownership`,
     value,
     "PUT",
   ),

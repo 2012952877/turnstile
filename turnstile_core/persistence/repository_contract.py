@@ -749,6 +749,15 @@ class QueryRepository(ABC):
     ) -> dict[str, Any] | None: ...
 
     @abstractmethod
+    def update_gateway_application_ownership(
+        self,
+        application_id: UUID,
+        owner_id: str | None,
+        department_id: str | None,
+        actor: str,
+    ) -> dict[str, Any] | None: ...
+
+    @abstractmethod
     def list_gateway_application_subscriptions(
         self, application_ids: Sequence[UUID]
     ) -> Sequence[dict[str, Any]]: ...

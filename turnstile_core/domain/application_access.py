@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import re
 from datetime import date, datetime
 from typing import Literal
 from uuid import UUID, uuid5
@@ -23,6 +24,31 @@ _APPLICATION_AVATAR_PREFIXES = {
     "image/png": b"\x89PNG\r\n\x1a\n",
     "image/webp": b"RIFF",
 }
+_ADDRESS_IN_TEXT = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
+def suggested_owner_id(display_name: str) -> str | None:
+    """The address a human typed into a subscription's name, if there is one.
+
+    An APIM subscription name is free text. Nothing checks that the address in it
+    belongs to whoever holds the key, that the person still works here, or that the
+    key is not shared. Installations that name subscriptions after people are common
+    enough that retyping those addresses by hand is the difference between attributing
+    a few hundred keys and never doing it -- so the address is offered, and an
+    administrator decides whether it is true.
+
+    It is a suggestion in the response and nowhere else. Nothing stores it, and the
+    owner is only ever written by an explicit request that the audit trail attributes
+    to the person who made it. Adopting the label automatically would reproduce the
+    thing this field exists to replace: an identity that looks settled and that nobody
+    ever confirmed.
+
+    The slug is deliberately not read. `sub-a-aiginin-insilicomedicine-com` cannot be
+    turned back into an address -- which dashes were dots and which one was the `@` is
+    not recoverable -- so any reconstruction is a guess wearing the clothes of a parse.
+    """
+    match = _ADDRESS_IN_TEXT.search(display_name)
+    return match.group(0).casefold() if match else None
 
 
 def application_id_for(gateway_profile_id: UUID, apim_subscription_id: str) -> UUID:
@@ -203,6 +229,39 @@ def decode_application_avatar_data_url(value: str) -> tuple[str, bytes]:
     return media_type, image_bytes
 
 
+class GatewayApplicationOwnershipUpdate(StrictModel):
+    """Who is answerable for a channel, and which department it belongs to.
+
+    Both are clearable: a key whose owner has left should be able to say so rather
+    than keep naming them until someone remembers to overwrite it.
+
+    `owner_id` has to be address-shaped for the same reason a discovered person does
+    -- the domain already treats an id without an `@` as a machine rather than a
+    person, and an owner who is not a person cannot answer for anything. It is not
+    required to already be in the directory: the people who hold these keys have
+    usually never called the gateway, so requiring prior traffic would make the field
+    unfillable exactly where it is most needed. The administrator asserting it, and
+    the audit row naming them, is what makes it more than the label on the key.
+    """
+
+    owner_id: str | None = Field(default=None, max_length=255)
+    department_id: str | None = Field(default=None, max_length=255)
+
+    @field_validator("owner_id", "department_id")
+    @classmethod
+    def normalize_blank_to_absent(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
+
+    @field_validator("owner_id")
+    @classmethod
+    def require_address_shape(cls, value: str | None) -> str | None:
+        if value is not None and not _ADDRESS_IN_TEXT.fullmatch(value):
+            raise ValueError("owner_id must be an email address")
+        return value.casefold() if value else value
+
+
 class GatewayApplicationAvatarUpdate(StrictModel):
     avatar_data_url: str | None = Field(default=None, max_length=90_000)
 
@@ -227,6 +286,8 @@ class GatewayApplicationSummary(StrictModel):
     description: str | None
     owner_id: str | None
     department_id: str | None
+    department_name: str | None = None
+    owner_suggestion: str | None = None
     application_type: ApplicationType
     status: ApplicationStatus
     system_managed: bool

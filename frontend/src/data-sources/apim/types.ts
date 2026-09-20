@@ -1006,6 +1006,8 @@ export type GatewayApplicationSummary = {
   description: string | null
   owner_id: string | null
   department_id: string | null
+  department_name?: string | null
+  owner_suggestion?: string | null
   application_type: GatewayApplicationType
   status: GatewayApplicationStatus
   system_managed: boolean
@@ -1026,6 +1028,11 @@ export type GatewayApplicationSummary = {
 
 export type GatewayApplicationAvatarUpdate = {
   avatar_data_url: string | null
+}
+
+export type GatewayApplicationOwnershipUpdate = {
+  owner_id: string | null
+  department_id: string | null
 }
 
 export type GatewayApplicationAvatar = {

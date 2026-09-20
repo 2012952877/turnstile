@@ -335,6 +335,58 @@ function ApplicationBudgetDialog({ application, open, writeAvailable, onOpenChan
   </Dialog>
 }
 
+function ApplicationOwnershipDialog({ application, open, writeAvailable, onOpenChange }: {
+  application: GatewayApplicationDetail
+  open: boolean
+  writeAvailable: boolean
+  onOpenChange: (open: boolean) => void
+}) {
+  const queryClient = useQueryClient()
+  const entities = useQuery(finopsQueries.entities())
+  const departments = entities.data?.departments ?? []
+  const [ownerId, setOwnerId] = useState(application.owner_id ?? "")
+  const [departmentId, setDepartmentId] = useState(application.department_id ?? "")
+  const suggestion = application.owner_suggestion ?? null
+  const mutation = useMutation({
+    mutationFn: () => dataSource.updateGatewayApplicationOwnership(application.id, {
+      owner_id: ownerId.trim() || null,
+      department_id: departmentId || null,
+    }),
+    onSuccess: (value) => {
+      queryClient.setQueryData(finopsKeys.gatewayApplication(application.id), value)
+      void queryClient.invalidateQueries({ queryKey: finopsKeys.gatewayApplications })
+      onOpenChange(false)
+    },
+  })
+  return <Dialog open={open} onOpenChange={(next) => { if (!mutation.isPending) onOpenChange(next) }}>
+    <DialogContent className="registry-editor-dialog application-governance-dialog" finalFocus={false}>
+      <form className="registry-editor" onSubmit={(event) => { event.preventDefault(); mutation.mutate() }}>
+        <DialogHeader className="registry-editor-header"><DialogTitle>编辑归属</DialogTitle><DialogDescription>{application.display_name}</DialogDescription></DialogHeader>
+        <button type="button" className="registry-editor-close" onClick={() => onOpenChange(false)} disabled={mutation.isPending} aria-label="关闭"><X size={16} /></button>
+        <div className="registry-editor-body application-governance-form">
+          {!writeAvailable && <div className="application-governance-unavailable"><AlertTriangle size={14} />此环境尚未发布编辑 API，部署新后端后可保存。</div>}
+          <label className="registry-editor-field">
+            <span>负责人</span>
+            <Input value={ownerId} disabled={mutation.isPending} inputMode="email" placeholder="name@example.com" onChange={(event) => setOwnerId(event.target.value)} />
+            <small>订阅密钥本身不携带身份。这里记录的是由管理员认定、并写入审计的负责人。</small>
+          </label>
+          {suggestion && suggestion !== ownerId.trim().toLocaleLowerCase() && <button type="button" className="application-owner-suggestion" disabled={mutation.isPending} onClick={() => setOwnerId(suggestion)}><UserRound size={13} />采用订阅名称里写的 <b data-no-localize>{suggestion}</b></button>}
+          <label className="registry-editor-field">
+            <span>所属部门</span>
+            <select value={departmentId} disabled={mutation.isPending || !departments.length} onChange={(event) => setDepartmentId(event.target.value)}>
+              <option value="">未归属</option>
+              {departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}
+            </select>
+            <small>决定这条通道的用量归入哪个部门。只能选择治理目录里已有的部门。</small>
+          </label>
+          {mutation.error && <div className="registry-error">{String(mutation.error)}</div>}
+        </div>
+        <DialogFooter className="registry-editor-footer"><Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={mutation.isPending}>取消</Button><Button type="submit" disabled={!writeAvailable || mutation.isPending}>{mutation.isPending ? <RefreshCw className="spin" size={14} /> : null}{mutation.isPending ? "正在保存" : "保存归属"}</Button></DialogFooter>
+      </form>
+    </DialogContent>
+  </Dialog>
+}
+
 function ApplicationModelAccessDialog({ application, models, open, writeAvailable, onOpenChange }: {
   application: GatewayApplicationDetail
   models: ManagedModel[]
@@ -479,6 +531,7 @@ function ApplicationDetailView({
 }) {
   const [budgetEditorOpen, setBudgetEditorOpen] = useState(false)
   const [modelEditorOpen, setModelEditorOpen] = useState(false)
+  const [ownershipEditorOpen, setOwnershipEditorOpen] = useState(false)
   const { timezone } = useTimezone()
   if (loading) return <div className="application-detail-state"><RefreshCw className="spin" size={20} />加载应用详情</div>
   if (!application) return <div className="application-detail-state"><AppWindow size={24} />选择一个应用</div>
@@ -557,8 +610,10 @@ function ApplicationDetailView({
         {showSubscriptionDetails && <ApplicationSubscriptionCard application={application} canManage={canManage} />}
 
         <section className="application-card application-governance-card">
-          <header className="application-card-head"><div><Gauge size={14} /><h2>归因状态</h2></div></header>
+          <header className="application-card-head"><div><Gauge size={14} /><h2>归因状态</h2></div>{canManage && !application.system_managed && <div className="application-card-actions"><Button type="button" variant="ghost" size="icon-sm" onClick={() => setOwnershipEditorOpen(true)} aria-label="编辑归属" title="编辑归属"><Edit3 size={14} /></Button></div>}</header>
           <dl>
+            <div><dt>负责人</dt><dd data-no-localize={application.owner_id ? "" : undefined}>{application.owner_id ?? (application.owner_suggestion ? "未认定" : "未归属")}</dd></div>
+            <div><dt>所属部门</dt><dd>{application.department_name ?? (application.department_id ?? "未归属")}</dd></div>
             <div><dt>{consumer}</dt><dd>已绑定</dd></div>
             <div><dt>调用身份</dt><dd>{isAgent ? "智能体" : application.application_type === "delegated_user" ? "应用 + 人员" : application.system_managed ? "系统" : "服务"}</dd></div>
             <div><dt>额度账本</dt><dd>{budget?.ledger_snapshot_at ? "已投影" : budget ? "未同步" : "未配置"}</dd></div>
@@ -575,6 +630,7 @@ function ApplicationDetailView({
     </div>
     {budgetEditorOpen && <ApplicationBudgetDialog application={application} open={budgetEditorOpen} writeAvailable={governanceWriteAvailable} onOpenChange={setBudgetEditorOpen} />}
     {modelEditorOpen && <ApplicationModelAccessDialog application={application} models={models} open={modelEditorOpen} writeAvailable={governanceWriteAvailable} onOpenChange={setModelEditorOpen} />}
+    {ownershipEditorOpen && <ApplicationOwnershipDialog application={application} open={ownershipEditorOpen} writeAvailable={governanceWriteAvailable} onOpenChange={setOwnershipEditorOpen} />}
   </div>
 }
 

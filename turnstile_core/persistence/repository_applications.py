@@ -607,6 +607,53 @@ class PostgreSqlApplicationRepositoryMixin:
             )
         return after_state
 
+    def update_gateway_application_ownership(
+        self,
+        application_id: UUID,
+        owner_id: str | None,
+        department_id: str | None,
+        actor: str,
+    ) -> dict[str, Any] | None:
+        with self._connection() as connection, connection.transaction():
+            existing = connection.execute(
+                "SELECT * FROM gateway_application WHERE id = %s FOR UPDATE",
+                (application_id,),
+            ).fetchone()
+            if existing is None:
+                return None
+            before = dict(existing)
+            if before["owner_id"] == owner_id and before["department_id"] == department_id:
+                # Re-confirming the same owner is not a change. Writing one anyway would
+                # bump updated_by and file an audit row saying nothing happened, which
+                # makes the trail harder to read at exactly the moment it is consulted.
+                return before
+            row = connection.execute(
+                """UPDATE gateway_application
+                   SET owner_id = %s, department_id = %s,
+                       updated_by = %s, updated_at = now()
+                   WHERE id = %s
+                   RETURNING *""",
+                (owner_id, department_id, actor, application_id),
+            ).fetchone()
+            connection.execute(
+                """INSERT INTO gateway_application_audit (
+                       application_id, operation, before_state, after_state, actor
+                   ) VALUES (%s, 'updated', %s, %s, %s)""",
+                (
+                    application_id,
+                    Jsonb(_json_value({
+                        "owner_id": before["owner_id"],
+                        "department_id": before["department_id"],
+                    })),
+                    Jsonb(_json_value({
+                        "owner_id": owner_id,
+                        "department_id": department_id,
+                    })),
+                    actor,
+                ),
+            )
+        return cast(dict[str, Any], row)
+
     def list_gateway_application_subscriptions(
         self, application_ids: Sequence[UUID]
     ) -> Sequence[dict[str, Any]]:

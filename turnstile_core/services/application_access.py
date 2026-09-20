@@ -17,6 +17,7 @@ from ..domain.application_access import (
     GatewayApplicationDiscovery,
     GatewayApplicationList,
     GatewayApplicationModelAccessUpdate,
+    GatewayApplicationOwnershipUpdate,
     GatewayApplicationProvisioningDefaults,
     GatewayApplicationSubscription,
     GatewayApplicationSubscriptionKeyRotation,
@@ -28,7 +29,9 @@ from ..domain.application_access import (
     application_id_for,
     application_subscription_id_for,
     decode_application_avatar_data_url,
+    suggested_owner_id,
 )
+from ..domain.enterprise import governance_departments
 from ..domain.models import TrendResponse
 from ..integrations.apim_control_plane_contract import (
     ApimSubscriptionKeyClient,
@@ -359,6 +362,34 @@ class ApplicationAccessService:
             raise ControlPlaneNotFoundError("Application not found")
         return self.application(application_id)
 
+    def update_application_ownership(
+        self,
+        application_id: UUID,
+        request: GatewayApplicationOwnershipUpdate,
+        actor: str,
+    ) -> GatewayApplicationDetail:
+        """Attach a channel to the directory: who answers for it, where it rolls up.
+
+        The department is checked against the catalog and the owner is not, because
+        they are load-bearing in different ways. A department id is a join key -- the
+        budget hierarchy is organization -> department -> user, and a channel filed
+        under a department that does not exist is filed nowhere, while still reading
+        on screen as though it were attributed. An owner is an assertion about a
+        person, already constrained to an address by the request model; requiring that
+        person to be in the directory would mean requiring them to have called the
+        gateway first, which is backwards for a key that has never been used.
+        """
+        if request.department_id is not None:
+            known = {item.id for item in governance_departments()}
+            if request.department_id not in known:
+                raise ValueError(f"Unknown department: {request.department_id}")
+        row = self._repository.update_gateway_application_ownership(
+            application_id, request.owner_id, request.department_id, actor
+        )
+        if row is None:
+            raise ControlPlaneNotFoundError("Application not found")
+        return self.application(application_id)
+
     def update_application_model_access(
         self,
         application_id: UUID,
@@ -414,6 +445,7 @@ class ApplicationAccessService:
             UUID(str(item["application_id"])): item
             for item in self._repository.list_gateway_application_avatars(application_ids)
         }
+        department_names = {item.id: item.name for item in governance_departments()}
         summaries: list[GatewayApplicationSummary] = []
         for row, application_id in zip(rows, application_ids, strict=True):
             application_subscriptions = subscriptions.get(application_id, [])
@@ -466,6 +498,13 @@ class ApplicationAccessService:
                 GatewayApplicationSummary.model_validate(
                     {
                         **dict(row),
+                        # Resolved per response rather than stored: a department that
+                        # gets renamed would otherwise keep showing its old name on
+                        # every channel filed under it until someone re-saved each one.
+                        "department_name": department_names.get(
+                            str(row["department_id"] or "")
+                        ),
+                        "owner_suggestion": suggested_owner_id(str(row["display_name"])),
                         "avatar_url": _avatar_url(
                             application_id,
                             avatars.get(application_id, {}).get("updated_at"),
